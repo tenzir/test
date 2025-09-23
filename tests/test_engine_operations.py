@@ -31,9 +31,7 @@ def reset_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     operations.update_registry_metadata(original_names, original_extensions)
 
 
-def test_get_test_env_sets_inputs_key(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_get_test_env_sets_inputs_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     inputs_dir = tmp_path / "inputs"
     inputs_dir.mkdir(parents=True)
     run.apply_settings(

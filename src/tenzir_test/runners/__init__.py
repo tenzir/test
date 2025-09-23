@@ -133,6 +133,7 @@ def get_runner_for_test(test_path: Path) -> Runner:
         return RUNNERS_BY_NAME[runner_name]
     raise ValueError(f"Runner '{runner_name}' not found - this is a bug")
 
+
 register(AstRunner())
 register(CustomFixture())
 register(CustomPythonFixture())

@@ -86,6 +86,11 @@ class CustomPythonFixture(ExtRunner):
                         return False
             finally:
                 fixture_api.pop_context(context_token)
+        except subprocess.TimeoutExpired:
+            run_mod.report_failure(
+                test, f"└─▶ \033[31mpython fixture hit {timeout}s timeout\033[0m"
+            )
+            return False
         except subprocess.CalledProcessError as e:
             with run_mod.stdout_lock:
                 run_mod.fail(test)

@@ -187,8 +187,6 @@ def _load_project_runners(root: Path) -> None:
     _refresh_registry()
 
 
-
-
 def get_test_env_and_config_args(test: Path) -> tuple[dict[str, str], list[str]]:
     config_file = test.parent / "tenzir.yaml"
     config_args = [f"--config={config_file}"] if config_file.exists() else []
