@@ -24,6 +24,7 @@ from typing import Any, Generator, TypeVar, cast
 import yaml
 
 from . import fixtures as fixture_api
+from . import packages
 from .config import Settings, discover_settings
 from .runners import (
     CustomFixture,  # noqa: F401
@@ -64,13 +65,54 @@ _DEFAULT_RUNNER_BY_SUFFIX: dict[str, str] = {
 }
 
 
+def _iter_project_test_directories(root: Path) -> Iterator[Path]:
+    """Yield directories that contain tests for the current project."""
+
+    if packages.is_package_dir(root):
+        tests_dir = root / "tests"
+        if tests_dir.is_dir():
+            yield tests_dir
+        return
+
+    package_dirs = list(packages.iter_package_dirs(root))
+    if package_dirs:
+        for package_dir in package_dirs:
+            tests_dir = package_dir / "tests"
+            if tests_dir.is_dir():
+                yield tests_dir
+        if package_dirs:
+            return
+
+    default_tests = root / "tests"
+    if default_tests.is_dir():
+        yield default_tests
+        return
+
+    for dir_path in root.iterdir():
+        if not dir_path.is_dir() or dir_path.name.startswith("."):
+            continue
+        if dir_path.name in {"fixtures", "runners"}:
+            continue
+        if _is_inputs_path(dir_path):
+            continue
+        yield dir_path
+
+
 def _is_inputs_path(path: Path) -> bool:
-    """Return True when the path lives under the project root `inputs/` directory."""
+    """Return True when the path lives under an inputs directory."""
     try:
         parts = path.relative_to(ROOT).parts
     except ValueError:
-        return False
-    return bool(parts) and parts[0] == "inputs"
+        parts = path.parts
+
+    for index, part in enumerate(parts):
+        if part != "inputs":
+            continue
+        if index == 0:
+            return True
+        if index > 0 and parts[index - 1] == "tests":
+            return True
+    return False
 
 
 def _refresh_registry() -> None:
@@ -91,6 +133,11 @@ def get_allowed_extensions() -> set[str]:
 
 def _resolve_inputs_dir(root: Path) -> Path:
     direct = root / "inputs"
+    if direct.exists():
+        return direct
+    tests_inputs = root / "tests" / "inputs"
+    if tests_inputs.exists():
+        return tests_inputs
     return direct
 
 
@@ -591,6 +638,14 @@ def run_simple_test(
             env.update(fixture_env)
             _apply_fixture_env(env, fixtures)
 
+            package_root = packages.find_package_root(test)
+            package_args: list[str] = []
+            if package_root is not None:
+                env["TENZIR_PACKAGE_ROOT"] = str(package_root)
+                package_tests_root = package_root / "tests"
+                env["TENZIR_INPUTS"] = str(package_tests_root / "inputs")
+                package_args.append(f"--package-dirs={package_root}")
+
             # Set up environment for code coverage if enabled
             if coverage:
                 coverage_dir = os.environ.get(
@@ -620,6 +675,7 @@ def run_simple_test(
                 "--multi",
                 *config_args,
                 *node_args,
+                *package_args,
                 *args,
                 "-f",
                 str(test),
@@ -835,15 +891,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     todo = set()
     for test in tests:
         if test.resolve() == ROOT:
-            # Collect all tests in all directories
+            # Collect all tests in project-specific locations
             all_tests = []
-            for dir_path in ROOT.iterdir():
-                if dir_path.is_dir() and not dir_path.name.startswith("."):
-                    if dir_path.name in {"fixtures", "runners"}:
-                        continue
-                    if _is_inputs_path(dir_path):
-                        continue
-                    all_tests.extend(list(collect_all_tests(dir_path)))
+            for tests_dir in _iter_project_test_directories(ROOT):
+                all_tests.extend(list(collect_all_tests(tests_dir)))
 
             # Process each test file using its configuration
             for test_path in all_tests:

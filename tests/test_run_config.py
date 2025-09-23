@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -172,6 +173,72 @@ def test_collect_all_tests_skips_inputs(configured_root: Path) -> None:
 
     assert real_test in collected
     assert all(not str(path).startswith(str(data_dir)) for path in collected)
+
+
+def test_iter_project_test_directories_prefers_package_tests(configured_root: Path) -> None:
+    package = configured_root / "sample"
+    package.mkdir()
+    (package / "package.yaml").write_text("name: sample\n", encoding="utf-8")
+    tests_dir = package / "tests"
+    tests_dir.mkdir()
+    (package / "operators").mkdir()
+    (configured_root / "legacy").mkdir()
+
+    discovered = list(run._iter_project_test_directories(configured_root))
+
+    assert discovered == [tests_dir]
+
+
+def test_run_simple_test_injects_package_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    package_root = tmp_path / "pkg"
+    tests_dir = package_root / "tests"
+    tests_dir.mkdir(parents=True)
+    (package_root / "package.yaml").write_text("name: pkg\n", encoding="utf-8")
+    test_file = tests_dir / "case.tql"
+    test_file.write_text("from_file foo\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=package_root,
+            tenzir_binary=sys.executable,
+            tenzir_node_binary=None,
+        )
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeCompletedProcess:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = b"ok"
+
+    def fake_run(cmd, timeout, stdout, env):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(env)
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    try:
+        assert run.run_simple_test(test_file, update=True, output_ext="txt") is True
+    finally:
+        run.apply_settings(original_settings)
+
+    cmd = captured.get("cmd")
+    env = captured.get("env")
+    assert isinstance(cmd, list)
+    assert any(item == f"--package-dirs={package_root}" for item in cmd)
+    assert isinstance(env, dict)
+    assert env["TENZIR_PACKAGE_ROOT"] == str(package_root)
+    expected_inputs = package_root / "tests" / "inputs"
+    assert env["TENZIR_INPUTS"] == str(expected_inputs)
 
 
 def test_parse_fixture_string(tmp_path: Path, configured_root: Path) -> None:
