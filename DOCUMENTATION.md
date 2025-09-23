@@ -51,6 +51,7 @@ Key conventions:
 - `inputs/` stores datasets that scenarios consume at runtime.
 - `fixtures/` collects Python helpers; the CLI imports `fixtures/__init__.py` automatically so you can register fixtures on import.
 - `runners/` collects runner registrations; the CLI imports `runners/__init__.py` automatically and ignores the directory during test discovery.
+- Any `tenzir.yaml` placed in a test directory applies to every test in that directory; the harness passes `--config=<file>` automatically.
 - Everything under `tests/` is organisational. The harness recurses through the tree and discovers eligible files regardless of depth.
 - Reference outputs live next to their tests and end in `.txt` (for example, `dummy.tql` pairs with `dummy.txt`).
 - The harness infers runner selection from the file suffix unless you override it with `runner:` in frontmatter.
@@ -93,6 +94,14 @@ Runner selection happens in two steps:
 
 Pick the runner that matches the artefact you want to compare, or override the default when you
 need a different refinement of the `tenzir` command.
+
+### Directory-scoped Configuration
+
+When a test runs, `tenzir-test` looks for `tenzir.yaml` in the same directory as the test file. If it
+exists, the runner adds `--config=<that file>` to the Tenzir command line; otherwise no configuration
+flag is passed. This means you can	extra a config per suite (one file alongside a set of tests) or per
+test (each test in its own folder with its own `tenzir.yaml`). The harness does not search parent
+directories—only the test’s immediate directory matters.
 
 Project-specific runners live next to your tests. Drop a `runners/` package into
 the project root and `tenzir-test` will import it automatically—just like fixtures. Call
