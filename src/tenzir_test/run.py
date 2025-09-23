@@ -767,7 +767,7 @@ def get_runner_for_test(test_path: Path) -> Runner:
 
 
 def collect_all_tests(directory: Path) -> Iterator[Path]:
-    if directory.name == "fixtures":
+    if directory.name in {"fixtures", "runners"}:
         return
     extensions = _allowed_extensions or {
         ext
@@ -848,7 +848,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             all_tests = []
             for dir_path in ROOT.iterdir():
                 if dir_path.is_dir() and not dir_path.name.startswith("."):
-                    if dir_path.name == "fixtures":
+                    if dir_path.name in {"fixtures", "runners"}:
                         continue
                     if _is_inputs_path(dir_path):
                         continue
