@@ -58,7 +58,6 @@ Every scenario starts with a frontmatter block that configures execution. The mo
 // timeout: 60
 // runner: exec
 // fixtures: [node, sink]
-// node: false
 // error: false
 
 from_file f"{env("TENZIR_INPUTS")}/events.ndjson"
@@ -72,7 +71,6 @@ where severity >= 5
 timeout: 60
 runner: exec
 fixtures: [node, sink]
-node: false
 error: false
 ---
 
@@ -94,7 +92,7 @@ Recognised frontmatter keys:
 - `timeout` – number of seconds before the command times out (default: 30).
 - `runner` – runner prefix (for example `exec`, `ir`, `lexer`). The legacy key `test` remains available.
 - `fixtures` – list of fixture names (use `fixture` for a single helper); the harness exposes them via `TENZIR_TEST_FIXTURES`.
-- `node` – set to `true` to launch `tenzir-node` and forward its endpoint to the test.
+- `node` *(legacy)* – older tests can still toggle this flag, but specifying the `node` fixture now enables node-aware execution automatically.
 - `error` – set to `true` when you expect a non-zero exit code.
 - `skip` – supply an optional string to mark the test as skipped.
 
@@ -162,6 +160,21 @@ The harness propagates fixture selections from frontmatter to the executing proc
 ### Built-in `node` fixture
 
 `tenzir-test` bundles a `node` fixture implemented in `tenzir_test/fixtures/node.py`. When present, the harness automatically starts a transient `tenzir-node`, injects its endpoint through `TENZIR_NODE_CLIENT_ENDPOINT`, and enables node-aware execution (the same as setting `node: true`). The fixture tears the node down and cleans up its temporary state once the test finishes, so pipelines can rely on the provided endpoint safely. This makes it easy to exercise publish/subscribe pipelines:
+
+The harness inspects fixture selections before it spawns test processes. If the
+frontmatter lists `node` but omits `node: true`, the parser flips the flag on so runners
+know they should bind to a node endpoint. During activation `tenzir-test` pushes a
+`FixtureContext` that contains the resolved binaries, timeout budget, configuration args,
+and the current environment. The built-in fixture reads those values (falling back to the
+`TENZIR_NODE_BINARY` and `TENZIR_BINARY` variables when set), launches `tenzir-node` with
+`--print-endpoint`, and returns the trio of `TENZIR_NODE_CLIENT_*` variables.
+
+Once the fixture yields, the runner appends `--endpoint=<value>` when it invokes
+`tenzir`, and any helper code can consume the same environment variables. This deep
+coordination with the core harness—covering coverage configuration, cleanup, and leak
+detection—is why the node fixture ships as part of the `tenzir_test` package rather than
+living in the example project. The legacy `node: true` frontmatter toggle still functions
+for backwards compatibility, but new scenarios can omit it entirely.
 
 ```tql
 // runner: exec
