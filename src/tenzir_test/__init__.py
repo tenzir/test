@@ -40,7 +40,7 @@ def _get_version() -> str:
     try:
         return version("tenzir-test")
     except PackageNotFoundError:  # pragma: no cover - missing metadata during dev
-        return "0.0.1.dev0"
+        return "0.1.0.dev0"
 
 
 __version__ = _get_version()

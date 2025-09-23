@@ -1,6 +1,6 @@
 [project]
 name = "tenzir-test"
-version = "0.0.1"
+version = "0.1.0"
 description = "Reusable test execution framework extracted from the Tenzir repository."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -9,7 +9,7 @@ maintainers = [{ name = "Tenzir Engineering", email = "engineering@tenzir.com" }
 license = { text = "Apache-2.0" }
 keywords = ["tenzir", "testing", "pytest", "automation"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Operating System :: OS Independent",
