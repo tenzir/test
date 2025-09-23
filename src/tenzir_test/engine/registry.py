@@ -2,23 +2,24 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from tenzir_test import run
+from tenzir_test import runners as runner_module
+from tenzir_test.runners import Runner
 
 
-def iter_runners() -> Iterable[run.Runner]:
-    return tuple(run.RUNNERS)
+def iter_runners() -> Iterable[Runner]:
+    return runner_module.iter_runners()
 
 
-def get_runner(prefix: str) -> run.Runner:
-    return run.runners[prefix]
+def get_runner(name: str) -> Runner:
+    return runner_module.runner_map()[name]
 
 
-def has_runner(prefix: str) -> bool:
-    return prefix in run.runners
+def has_runner(name: str) -> bool:
+    return name in runner_module.runner_map()
 
 
 def allowed_extensions() -> set[str]:
-    return run.get_allowed_extensions()
+    return runner_module.allowed_extensions()
 
 
 __all__ = [

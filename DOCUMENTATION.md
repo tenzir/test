@@ -45,10 +45,87 @@ Default runner mapping:
 
 | Suffix | Runner |
 | ------ | ------ |
-| `.tql` | `tenzir` (alias for the exec runner) |
+| `.tql` | `tenzir` |
 | `.py`  | `python` |
 
-Any other suffix falls back to `exec`.
+Any other suffix falls back to `tenzir` unless a custom runner claims the extension.
+
+### Runners
+
+Runners describe how the harness executes a test file. Each runner registers a **name**—the
+value you reference in frontmatter via `runner: <name>`. The built-in Tenzir runners all drive
+the same executable; they simply tweak the flags passed to `tenzir`:
+
+| Runner | Command | Artifact | Purpose |
+| ------ | ------- | -------- | ------- |
+| `tenzir` | `tenzir -f <test>` | `.txt` | Evaluate the pipeline and capture stdout. |
+| `lexer` | `tenzir --dump-tokens -f <test>` | `.txt` | Inspect the token stream. |
+| `ast` | `tenzir --dump-ast -f <test>` | `.txt` | Review the parsed abstract syntax tree. |
+| `ir` | `tenzir --dump-ir -f <test>` | `.txt` | Record the intermediate representation. |
+| `finalize` | `tenzir --dump-finalized -f <test>` | `.txt` | Show the finalized pipeline. |
+| `instantiation` | `tenzir --dump-ir` ⇄ `tenzir --dump-inst-ir` | `.diff` | Diff instantiation rewrites. |
+| `opt` | `tenzir --dump-inst-ir` ⇄ `tenzir --dump-opt-ir` | `.diff` | Diff post-optimization rewrites. |
+
+Other bundled runners cover fixtures and scripting workflows:
+
+- `python` executes Python tests/fixtures and compares combined stdout/stderr with a `.txt` baseline.
+- `custom` runs shell fixtures (`*.sh`) under `bash -eu`, wiring in the harness environment.
+
+Runner selection happens in two steps:
+
+1. The harness looks for a registered runner that claimed the file extension (`.tql` → `tenzir`,
+   `.py` → `python`, custom runners can register their own).
+2. A `runner: <name>` frontmatter entry overrides the automatic choice.
+
+Pick the runner that matches the artefact you want to compare, or override the default when you
+need a different refinement of the `tenzir` command.
+
+Project-specific runners live next to your tests. Drop a `runners/` package into
+the project root and `tenzir-test` will import it automatically—just like fixtures. Call
+`tenzir_test.runners.register` (or the `@tenzir_test.runners.startup()` decorator) to add
+instances and set `replace=True` when you want to override a bundled runner.
+
+```python
+# runners/__init__.py
+import subprocess
+from pathlib import Path
+
+from tenzir_test import runners
+
+
+class XxdRunner(runners.ExtRunner):
+    def __init__(self) -> None:
+        super().__init__(name="xxd", ext="xxd")
+
+    def run(self, test: Path, update: bool, coverage: bool = False) -> bool:
+        del coverage
+        completed = subprocess.run(["xxd", "-g1", str(test)], capture_output=True, check=False)
+        if completed.returncode != 0:
+            return False
+        output = completed.stdout
+        ref_path = test.with_suffix(".txt")
+        if update:
+            ref_path.write_bytes(output)
+            return True
+        if not ref_path.exists() or ref_path.read_bytes() != output:
+            return False
+        return True
+
+
+runners.register(XxdRunner())
+```
+
+The decorator form works well when you prefer factories over manual instantiation:
+
+```python
+from tenzir_test import runners
+
+
+@runners.startup()
+def make_xxd_runner() -> runners.Runner:
+    return XxdRunner()
+```
+
 
 ### Test Frontmatter
 
@@ -56,7 +133,7 @@ Every scenario starts with a frontmatter block that configures execution. The mo
 
 ```tql
 // timeout: 60
-// runner: exec
+// runner: tenzir
 // fixtures: [node, sink]
 // error: false
 
@@ -69,7 +146,7 @@ where severity >= 5
 ```tql
 ---
 timeout: 60
-runner: exec
+runner: tenzir
 fixtures: [node, sink]
 error: false
 ---
@@ -90,12 +167,12 @@ The harness translates frontmatter into environment variables so scenarios can s
 Recognised frontmatter keys:
 
 - `timeout` – number of seconds before the command times out (default: 30).
-- `runner` – runner prefix (for example `exec`, `ir`, `lexer`).
+- `runner` – runner name (for example `tenzir`, `ir`, `lexer`).
 - `fixtures` – list of fixture names (use `fixture` for a single helper); the harness exposes them via `TENZIR_TEST_FIXTURES`.
 - `error` – set to `true` when you expect a non-zero exit code.
 - `skip` – supply an optional string to mark the test as skipped.
 
-When you omit `runner`, the harness maps `.tql` files to `tenzir`, `.py` files to `python`, and other suffixes to `exec`. Enabling `--coverage` stretches timeouts by a factor of five to account for slower instrumented binaries.
+When you omit `runner`, the harness maps `.tql` files to `tenzir`, `.py` files to `python`, and other suffixes to `tenzir`. Enabling `--coverage` stretches timeouts by a factor of five to account for slower instrumented binaries.
 
 ## Running Tests
 
@@ -152,7 +229,7 @@ Fixtures must emit deterministic output and write results to a neighbouring `.tx
 The harness propagates fixture selections from frontmatter to the executing process via `TENZIR_TEST_FIXTURES`. Declare one or more fixtures with either the `fixtures` list or the single-value `fixture` key:
 
 ```tql
-// runner: exec
+// runner: tenzir
 // fixtures: [node, sink]
 ```
 
@@ -174,7 +251,7 @@ core harness—covering coverage configuration, cleanup, and leak detection—is
 fixture ships as part of the `tenzir_test` package rather than living in the example project.
 
 ```tql
-// runner: exec
+// runner: tenzir
 // fixtures: [node]
 
 pipeline::detach {

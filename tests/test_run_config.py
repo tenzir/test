@@ -42,7 +42,7 @@ def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> No
 def test_parse_test_config_override(tmp_path: Path, configured_root: Path) -> None:
     test_file = tmp_path / "custom.tql"
     test_file.write_text(
-        "// timeout: 90\n// error: true\n// runner: exec\n// skip: reason\n",
+        "// timeout: 90\n// error: true\n// runner: ir\n// skip: reason\n",
         encoding="utf-8",
     )
 
@@ -51,7 +51,7 @@ def test_parse_test_config_override(tmp_path: Path, configured_root: Path) -> No
     assert config == {
         "error": True,
         "timeout": 90,
-        "runner": "exec",
+        "runner": "ir",
         "skip": "reason",
         "fixtures": tuple(),
     }
@@ -62,7 +62,7 @@ def test_parse_test_config_yaml_frontmatter(tmp_path: Path, configured_root: Pat
     test_file.write_text(
         """---
 timeout: 75
-runner: exec
+runner: ir
 error: true
 skip: maintenance
 ---
@@ -78,7 +78,7 @@ write json
     assert config == {
         "error": True,
         "timeout": 75,
-        "runner": "exec",
+        "runner": "ir",
         "skip": "maintenance",
         "fixtures": tuple(),
     }

@@ -45,7 +45,7 @@ This guarantees you are using the same interpreter and dependencies the project 
 ## Extending Fixtures and Runners
 
 - Built-in fixtures live in `src/tenzir_test/fixtures/`; each module registers itself on import. Add new fixtures by creating a module in that package and calling `register()` in a module-level scope.
-- We group core runners under `src/tenzir_test/runners/`. To introduce additional runners, add a class there and append it to the `RUNNERS` list so CLI discovery picks it up automatically.
+- We group core runners under `src/tenzir_test/runners/`. To introduce additional runners, add a class there and call `tenzir_test.runners.register` so CLI discovery picks it up automatically.
 
 ## Releasing
 

@@ -26,8 +26,6 @@ import yaml
 from . import fixtures as fixture_api
 from .config import Settings, discover_settings
 from .runners import (
-    RUNNERS as DEFAULT_RUNNERS,
-    RUNNERS_BY_PREFIX as DEFAULT_RUNNERS_BY_PREFIX,
     CustomFixture,  # noqa: F401
     CustomPythonFixture,  # noqa: F401
     ExtRunner,  # noqa: F401
@@ -35,7 +33,8 @@ from .runners import (
     TqlRunner,  # noqa: F401
     allowed_extensions,
     get_runner_for_test as runners_get_runner,
-    runner_prefixes,
+    iter_runners as runners_iter_runners,
+    runner_names,
 )
 
 
@@ -57,7 +56,7 @@ stdout_lock = threading.RLock()
 
 _log_comparisons = bool(os.environ.get("TENZIR_TEST_LOG_COMPARISONS"))
 
-_runner_prefixes: set[str] = set()
+_runner_names: set[str] = set()
 _allowed_extensions: set[str] = set()
 _DEFAULT_RUNNER_BY_SUFFIX: dict[str, str] = {
     ".tql": "tenzir",
@@ -75,14 +74,14 @@ def _is_inputs_path(path: Path) -> bool:
 
 
 def _refresh_registry() -> None:
-    global _runner_prefixes, _allowed_extensions
-    _runner_prefixes = runner_prefixes()
+    global _runner_names, _allowed_extensions
+    _runner_names = runner_names()
     _allowed_extensions = allowed_extensions()
 
 
-def update_registry_metadata(prefixes: list[str], extensions: list[str]) -> None:
-    global _runner_prefixes, _allowed_extensions
-    _runner_prefixes = set(prefixes)
+def update_registry_metadata(names: list[str], extensions: list[str]) -> None:
+    global _runner_names, _allowed_extensions
+    _runner_names = set(names)
     _allowed_extensions = set(extensions)
 
 
@@ -124,6 +123,7 @@ def _import_module_from_path(module_name: str, path: Path, *, package: bool = Fa
 
 
 _PROJECT_FIXTURES_IMPORTED = False
+_PROJECT_RUNNERS_IMPORTED = False
 
 
 def _load_project_fixtures(root: Path) -> None:
@@ -155,6 +155,38 @@ def _load_project_fixtures(root: Path) -> None:
         raise RuntimeError(f"failed to load project fixtures: {exc}") from exc
 
     _PROJECT_FIXTURES_IMPORTED = True
+
+
+def _load_project_runners(root: Path) -> None:
+    global _PROJECT_RUNNERS_IMPORTED
+    if _PROJECT_RUNNERS_IMPORTED:
+        return
+
+    runners_package = root / "runners"
+
+    alias_target = None
+
+    try:
+        if runners_package.is_dir():
+            init_file = runners_package / "__init__.py"
+            if init_file.exists():
+                alias_target = _import_module_from_path(
+                    "_tenzir_project_runners", init_file, package=True
+                )
+            else:
+                for candidate in sorted(runners_package.glob("*.py")):
+                    alias_target = _import_module_from_path(
+                        f"_tenzir_project_runner_{candidate.stem}", candidate
+                    )
+        if alias_target is not None and "runners" not in sys.modules:
+            sys.modules["runners"] = alias_target
+    except Exception as exc:  # pragma: no cover - defensive logging
+        raise RuntimeError(f"failed to load project runners: {exc}") from exc
+
+    _PROJECT_RUNNERS_IMPORTED = True
+    _refresh_registry()
+
+
 
 
 def get_test_env_and_config_args(test: Path) -> tuple[dict[str, str], list[str]]:
@@ -313,10 +345,10 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
                     f"Invalid value for 'runner', expected string, got '{value}'",
                     line_number,
                 )
-            prefixes = _runner_prefixes or {runner.prefix for runner in RUNNERS}
-            if value not in prefixes:
+            names = _runner_names or {runner.name for runner in runners_iter_runners()}
+            if value not in names:
                 _raise(
-                    f"Invalid value for 'runner', expected one of {prefixes}, got '{value}'",
+                    f"Invalid value for 'runner', expected one of {names}, got '{value}'",
                     line_number,
                 )
             config[key] = value
@@ -325,8 +357,6 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
 
     with open(test_file, "r", encoding="utf-8", errors="ignore") as handle:
         lines = handle.readlines()
-
-    full_text = "".join(lines)
 
     consumed_frontmatter = False
     if is_tql:
@@ -383,11 +413,17 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
         timeout_value = cast(int, config["timeout"])
         config["timeout"] = timeout_value * 5
 
-    fixtures = cast(tuple[str, ...], config.get("fixtures", tuple()))
     runner_value = config.get("runner")
     if not isinstance(runner_value, str) or not runner_value:
         suffix = test_file.suffix.lower()
-        default_runner = _DEFAULT_RUNNER_BY_SUFFIX.get(suffix, "exec")
+        default_runner = _DEFAULT_RUNNER_BY_SUFFIX.get(suffix)
+        if default_runner is None:
+            matching_names = [
+                runner.name
+                for runner in runners_iter_runners()
+                if getattr(runner, "_ext", None) == suffix.lstrip(".")
+            ]
+            default_runner = matching_names[0] if matching_names else "tenzir"
         config["runner"] = default_runner
     return config
 
@@ -667,10 +703,11 @@ def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool 
     return "skipped"
 
 
-RUNNERS = list(DEFAULT_RUNNERS)
+def refresh_runner_metadata() -> None:
+    _refresh_registry()
 
-runners: dict[str, Runner] = dict(DEFAULT_RUNNERS_BY_PREFIX)
-_refresh_registry()
+
+refresh_runner_metadata()
 
 
 class Worker:
@@ -733,7 +770,9 @@ def collect_all_tests(directory: Path) -> Iterator[Path]:
     if directory.name == "fixtures":
         return
     extensions = _allowed_extensions or {
-        ext for runner in RUNNERS if (ext := getattr(runner, "_ext", None)) is not None
+        ext
+        for runner in runners_iter_runners()
+        if (ext := getattr(runner, "_ext", None)) is not None
     }
     for ext in extensions:
         for candidate in directory.glob(f"**/*.{ext}"):
@@ -789,13 +828,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         tenzir_node_binary=args.tenzir_node_binary,
     )
     apply_settings(settings)
+    _load_project_runners(settings.root)
     _load_project_fixtures(settings.root)
+    refresh_runner_metadata()
     enable_comparison_logging(args.log_comparisons or _log_comparisons)
     engine_state.refresh()
 
     tests = list(args.tests) if args.tests else [ROOT]
     if args.purge:
-        for _, runner in runners.items():
+        for runner in runners_iter_runners():
             runner.purge()
         return
 

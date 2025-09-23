@@ -10,7 +10,7 @@ from tenzir_test import config, run
 
 @pytest.fixture(autouse=True)
 def reset_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    original_prefixes = [runner.prefix for runner in registry.iter_runners()]
+    original_names = [runner.name for runner in registry.iter_runners()]
     original_extensions = [
         getattr(runner, "_ext", None)
         for runner in registry.iter_runners()
@@ -22,13 +22,13 @@ def reset_registry(monkeypatch: pytest.MonkeyPatch) -> None:
         tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
-    operations.update_registry_metadata(["exec"], ["tql"])
+    operations.update_registry_metadata(["tenzir"], ["tql"])
 
     yield
 
     run.apply_settings(original_settings)
     state.refresh()
-    operations.update_registry_metadata(original_prefixes, original_extensions)
+    operations.update_registry_metadata(original_names, original_extensions)
 
 
 def test_get_test_env_sets_inputs_key(
@@ -46,7 +46,7 @@ def test_get_test_env_sets_inputs_key(
     state.refresh()
     test_file = tmp_path / "suite" / "case.tql"
     test_file.parent.mkdir(parents=True)
-    test_file.write_text("---\nrunner: exec\n---\n", encoding="utf-8")
+    test_file.write_text("---\nrunner: tenzir\n---\n", encoding="utf-8")
 
     env, args = operations.get_test_env_and_config_args(test_file)
 
