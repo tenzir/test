@@ -59,19 +59,19 @@ Runners describe how the harness executes a test file. Each runner registers a *
 value you reference in frontmatter via `runner: <name>`. The built-in Tenzir runners all drive
 the same executable; they simply tweak the flags passed to `tenzir`:
 
-| Runner | Command | Artifact | Purpose |
-| ------ | ------- | -------- | ------- |
-| `tenzir` | `tenzir -f <test>` | `.txt` | Evaluate the pipeline and capture stdout. |
-| `lexer` | `tenzir --dump-tokens -f <test>` | `.txt` | Inspect the token stream. |
-| `ast` | `tenzir --dump-ast -f <test>` | `.txt` | Review the parsed abstract syntax tree. |
-| `ir` | `tenzir --dump-ir -f <test>` | `.txt` | Record the intermediate representation. |
-| `finalize` | `tenzir --dump-finalized -f <test>` | `.txt` | Show the finalized pipeline. |
-| `instantiation` | `tenzir --dump-ir` ⇄ `tenzir --dump-inst-ir` | `.diff` | Diff instantiation rewrites. |
-| `opt` | `tenzir --dump-inst-ir` ⇄ `tenzir --dump-opt-ir` | `.diff` | Diff post-optimization rewrites. |
+| Runner | Command | Input Extension | Artifact | Purpose |
+| ------ | ------- | ---------------- | -------- | ------- |
+| `tenzir` | `tenzir -f <test>` | `.tql` (default) | `.txt` | Evaluate the pipeline and capture stdout. |
+| `lexer` | `tenzir --dump-tokens -f <test>` | `.tql` | `.txt` | Inspect the token stream. |
+| `ast` | `tenzir --dump-ast -f <test>` | `.tql` | `.txt` | Review the parsed abstract syntax tree. |
+| `ir` | `tenzir --dump-ir -f <test>` | `.tql` | `.txt` | Record the intermediate representation. |
+| `finalize` | `tenzir --dump-finalized -f <test>` | `.tql` | `.txt` | Show the finalized pipeline. |
+| `instantiation` | `tenzir --dump-ir` ⇄ `tenzir --dump-inst-ir` | `.tql` | `.diff` | Diff instantiation rewrites. |
+| `opt` | `tenzir --dump-inst-ir` ⇄ `tenzir --dump-opt-ir` | `.tql` | `.diff` | Diff post-optimization rewrites. |
 
 Other bundled runners cover fixtures and scripting workflows:
 
-- `python` executes Python tests/fixtures and compares combined stdout/stderr with a `.txt` baseline.
+- `python` executes Python tests/fixtures (`*.py`) and compares combined stdout/stderr with a `.txt` baseline.
 - `custom` runs shell fixtures (`*.sh`) under `bash -eu`, wiring in the harness environment.
 
 Runner selection happens in two steps:
