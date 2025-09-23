@@ -1,0 +1,8 @@
+// fixtures: [http]
+// timeout: 30
+// error: false
+
+from {x: 42, y: "foo"}
+http env("HTTP_FIXTURE_URL"), method="post", body=this, encode="json" {
+  read_json
+}

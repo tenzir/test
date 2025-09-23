@@ -1,0 +1,123 @@
+[project]
+name = "tenzir-test"
+version = "0.0.1"
+description = "Reusable test execution framework extracted from the Tenzir repository."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Tenzir", email = "engineering@tenzir.com" }]
+maintainers = [{ name = "Tenzir Engineering", email = "engineering@tenzir.com" }]
+license = { text = "Apache-2.0" }
+keywords = ["tenzir", "testing", "pytest", "automation"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Testing",
+  "Topic :: Software Development :: Quality Assurance",
+  "Typing :: Typed",
+]
+dependencies = [
+  "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/tenzir/test"
+Repository = "https://github.com/tenzir/test"
+"Bug Tracker" = "https://github.com/tenzir/test/issues"
+
+[project.scripts]
+tenzir-test = "tenzir_test.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tenzir_test"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src/**/*",
+  "/tests",
+  "/example",
+  "/scripts",
+  "/README.md",
+  "/CONTRIBUTING.md",
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/pyproject.toml",
+]
+exclude = [
+  "*.pyc",
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.coverage.run]
+source = ["src/tenzir_test"]
+branch = true
+omit = [
+  "*/tests/*",
+  "*/__main__.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-cov>=5.0.0",
+  "mypy>=1.11.0",
+  "ruff>=0.7.0",
+  "coverage[toml]>=7.6.0",
+]

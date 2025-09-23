@@ -1,0 +1,8 @@
+{
+  severity: 7,
+  message: "intrusion",
+}
+{
+  severity: 5,
+  message: "login",
+}
