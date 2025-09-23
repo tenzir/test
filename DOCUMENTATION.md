@@ -6,6 +6,17 @@ This guide helps you install `tenzir-test`, organise your project, and author re
 
 We distribute `tenzir-test` as a standard Python package that you can add to any Python 3.12+ project.
 
+## Concepts
+
+- **Project** – The directory you pass via `--root`; it hosts `fixtures/`, `inputs/`, `runners/`, and `tests/`.
+- **Test** – A single file discovered under `tests/`; its frontmatter controls execution.
+- **Runner** – A named strategy that executes a test (for example `tenzir`, `lexer`, `python`).
+- **Fixture** – A reusable environment provider registered in `fixtures/` and requested via frontmatter.
+- **Input** – Data files (typically under `inputs/`) that tests read through `TENZIR_INPUTS`.
+- **Artifact** – The output a runner produces during execution (for example `.txt` or `.diff`).
+- **Reference/Baseline** – The expected artifact stored next to a test; `--update` rewrites it.
+- **Configuration** – Settings resolved from frontmatter plus `tenzir.yaml` files adjacent to tests.
+
 ```sh
 uv add tenzir-test
 # or, with pip
