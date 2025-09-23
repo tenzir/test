@@ -24,6 +24,8 @@ project-root/
 │   └── http.py
 ├── inputs/               <--- Data consumed by tests
 │   └── sample.ndjson
+├── runners/              <--- Custom runner registrations
+│   └── __init__.py
 └── tests/                <--- Freely organised tests
     ├── alerts/
     │   └── sample.py     <--- Python test
@@ -37,6 +39,7 @@ Key conventions:
 
 - `inputs/` stores datasets that scenarios consume at runtime.
 - `fixtures/` collects Python helpers; the CLI imports `fixtures/__init__.py` automatically so you can register fixtures on import.
+- `runners/` collects runner registrations; the CLI imports `runners/__init__.py` automatically and ignores the directory during test discovery.
 - Everything under `tests/` is organisational. The harness recurses through the tree and discovers eligible files regardless of depth.
 - Reference outputs live next to their tests and end in `.txt` (for example, `dummy.tql` pairs with `dummy.txt`).
 - The harness infers runner selection from the file suffix unless you override it with `runner:` in frontmatter.
