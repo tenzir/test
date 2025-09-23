@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import argparse
 import builtins
 import dataclasses
@@ -13,10 +15,11 @@ import sys
 import threading
 import time
 import typing
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
+from types import ModuleType
+from typing import Any, Generator, TypeVar, cast
 
 import yaml
 
@@ -34,6 +37,12 @@ from .runners import (
     get_runner_for_test as runners_get_runner,
     runner_prefixes,
 )
+
+
+TestConfig = dict[str, object]
+
+RunnerQueueItem = tuple[Runner, Path]
+T = TypeVar("T")
 
 _settings = discover_settings()
 TENZIR_BINARY = _settings.tenzir_binary
@@ -98,7 +107,7 @@ def apply_settings(settings: Settings) -> None:
     INPUTS_DIR = _resolve_inputs_dir(settings.root)
 
 
-def _import_module_from_path(module_name: str, path: Path, *, package: bool = False):
+def _import_module_from_path(module_name: str, path: Path, *, package: bool = False) -> ModuleType:
     if package:
         search_locations = [str(path.parent)]
     else:
@@ -167,7 +176,7 @@ def _maybe_warn_inputs_legacy(test_file: Path, content: str) -> None:
     _deprecated_inputs_warned.add(resolved)
 
 
-def get_test_env_and_config_args(test):
+def get_test_env_and_config_args(test: Path) -> tuple[dict[str, str], list[str]]:
     config_file = test.parent / "tenzir.yaml"
     config_args = [f"--config={config_file}"] if config_file.exists() else []
     env = os.environ.copy()
@@ -210,16 +219,16 @@ def log_comparison(test: Path, ref_path: Path, *, mode: str) -> None:
     print(f"{verbose_glyph} {mode} {rel_test} {compare_glyph} {rel_ref}")
 
 
-def report_failure(test, message):
+def report_failure(test: Path, message: str) -> None:
     with stdout_lock:
         fail(test)
         if message:
             print(message)
 
 
-def parse_test_config(test_file: Path, coverage=False):
+def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
     """Parse test configuration from frontmatter at the beginning of the file."""
-    config = {
+    config: TestConfig = {
         "error": False,
         "timeout": 30,
         "runner": None,
@@ -228,7 +237,7 @@ def parse_test_config(test_file: Path, coverage=False):
         "fixtures": tuple(),
     }
 
-    valid_keys = set(config.keys()) | {"test", "fixture"}
+    valid_keys: set[str] = set(config.keys()) | {"test", "fixture"}
     is_tql = test_file.suffix == ".tql"
     is_py = test_file.suffix == ".py"
 
@@ -396,24 +405,26 @@ def parse_test_config(test_file: Path, coverage=False):
     _maybe_warn_inputs_legacy(test_file, full_text)
 
     if coverage:
-        config["timeout"] *= 5
+        timeout_value = cast(int, config["timeout"])
+        config["timeout"] = timeout_value * 5
 
-    fixtures = config.get("fixtures", tuple())
-    if fixtures and config.get("node") is False and "node" in fixtures:
+    fixtures = cast(tuple[str, ...], config.get("fixtures", tuple()))
+    if fixtures and not bool(config.get("node")) and "node" in fixtures:
         config["node"] = True
 
-    if not config["runner"]:
+    runner_value = config.get("runner")
+    if not isinstance(runner_value, str) or not runner_value:
         suffix = test_file.suffix.lower()
         default_runner = _DEFAULT_RUNNER_BY_SUFFIX.get(suffix, "exec")
         config["runner"] = default_runner
     return config
 
 
-def print(*args, **kwargs):
+def print(*args: object, **kwargs: Any) -> None:
     # TODO: Properly solve the synchronization below.
     if "flush" not in kwargs:
         kwargs["flush"] = True
-    return builtins.print(*args, **kwargs)
+    builtins.print(*args, **kwargs)
 
 
 @dataclasses.dataclass
@@ -432,6 +443,8 @@ class Summary:
 
 
 def get_version() -> str:
+    if not TENZIR_BINARY:
+        raise FileNotFoundError("TENZIR_BINARY is not configured")
     return (
         subprocess.check_output(
             [
@@ -456,19 +469,19 @@ def fail(test: Path) -> None:
         print(f"{CROSS} {test.relative_to(ROOT)}")
 
 
-def last_and(gen):
-    previous = None
-    gen = iter(gen)
-    for x in gen:
-        previous = x
-        break
-    for x in gen:
+def last_and(items: Iterable[T]) -> Iterator[tuple[bool, T]]:
+    iterator = iter(items)
+    try:
+        previous = next(iterator)
+    except StopIteration:
+        return
+    for item in iterator:
         yield (False, previous)
-        previous = x
+        previous = item
     yield (True, previous)
 
 
-def print_diff(expected: bytes, actual: bytes, path: Path):
+def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
     diff = list(
         difflib.diff_bytes(
             difflib.unified_diff,
@@ -495,7 +508,7 @@ def print_diff(expected: bytes, actual: bytes, path: Path):
 
 
 @contextmanager
-def check_server(host: str = "127.0.0.1"):
+def check_server(host: str = "127.0.0.1") -> Generator[int, None, None]:
     stop = False
     port_holder: dict[str, int | None] = {"port": None}
 
@@ -527,13 +540,15 @@ def check_server(host: str = "127.0.0.1"):
     while port_holder["port"] is None:
         time.sleep(0.05)
     try:
-        yield port_holder["port"]
+        port = port_holder["port"]
+        assert port is not None
+        yield port
     finally:
         stop = True
         thread.join()
 
 
-def check_group_is_empty(pgid: int):
+def check_group_is_empty(pgid: int) -> None:
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
@@ -545,7 +560,7 @@ def run_simple_test(
     test: Path,
     *,
     update: bool,
-    args: typing.Sequence[str] = (),
+    args: Sequence[str] = (),
     output_ext: str,
     coverage: bool = False,
 ) -> bool:
@@ -557,12 +572,14 @@ def run_simple_test(
         return False
 
     env, config_args = get_test_env_and_config_args(test)
-    fixtures = test_config.get("fixtures", tuple())
+    fixtures = cast(tuple[str, ...], test_config.get("fixtures", tuple()))
+    timeout = cast(int, test_config["timeout"])
+    expect_error = bool(test_config.get("error", False))
 
     context_token = fixture_api.push_context(
         fixture_api.FixtureContext(
             test=test,
-            config=test_config,
+            config=cast(dict[str, Any], test_config),
             coverage=coverage,
             env=env,
             config_args=tuple(config_args),
@@ -588,26 +605,28 @@ def run_simple_test(
                 env["COVERAGE_SOURCE_DIR"] = source_dir
 
             node_args: list[str] = []
-            if test_config.get("node", False):
+            if bool(test_config.get("node", False)):
                 endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
                 if not endpoint:
                     raise RuntimeError("node fixture did not provide TENZIR_NODE_CLIENT_ENDPOINT")
                 node_args.append(f"--endpoint={endpoint}")
 
-            cmd = [
+            if not TENZIR_BINARY:
+                raise RuntimeError("TENZIR_BINARY must be configured before running tests")
+            cmd: list[str] = [
                 TENZIR_BINARY,
                 "--bare-mode",
                 "--console-verbosity=warning",
                 "--multi",
-                *[x for x in config_args if x is not None],
+                *config_args,
                 *node_args,
-                *[x for x in args if x is not None],
+                *args,
                 "-f",
                 str(test),
             ]
             completed = subprocess.run(
                 cmd,
-                timeout=test_config["timeout"],
+                timeout=timeout,
                 stdout=subprocess.PIPE,
                 env=env,
             )
@@ -615,7 +634,7 @@ def run_simple_test(
         output = output.replace(str(ROOT).encode() + b"/", b"")
         good = completed.returncode == 0
     except subprocess.TimeoutExpired:
-        report_failure(test, f"└─▶ \033[31msubprocess hit {test_config['timeout']}s timeout\033[0m")
+        report_failure(test, f"└─▶ \033[31msubprocess hit {timeout}s timeout\033[0m")
         return False
     except subprocess.CalledProcessError as e:
         report_failure(test, f"└─▶ \033[31msubprocess error: {e}\033[0m")
@@ -626,7 +645,7 @@ def run_simple_test(
     finally:
         fixture_api.pop_context(context_token)
 
-    if test_config["error"] == good:
+    if expect_error == good:
         with stdout_lock:
             report_failure(
                 test,
@@ -656,7 +675,7 @@ def run_simple_test(
     return True
 
 
-def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> typing.Union[bool, str]:
+def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool | str:
     rel_path = test.relative_to(ROOT)
     print(f"{INFO} skipped {rel_path}: {reason}")
     ref_path = test.with_suffix(f".{output_ext}")
@@ -677,32 +696,40 @@ def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> typin
 
 RUNNERS = list(DEFAULT_RUNNERS)
 
-runners = dict(DEFAULT_RUNNERS_BY_PREFIX)
+runners: dict[str, Runner] = dict(DEFAULT_RUNNERS_BY_PREFIX)
 _refresh_registry()
 
 
 class Worker:
-    def __init__(self, queue, *, update: bool, coverage: bool = False):
+    def __init__(
+        self,
+        queue: list[RunnerQueueItem],
+        *,
+        update: bool,
+        coverage: bool = False,
+    ) -> None:
         self._queue = queue
-        self._result = None
-        self._exception = None
+        self._result: Summary | None = None
+        self._exception: BaseException | None = None
         self._update = update
         self._coverage = coverage
         self._thread = threading.Thread(target=self._work)
 
-    def start(self):
+    def start(self) -> None:
         self._thread.start()
 
     def join(self) -> Summary:
         self._thread.join()
         if self._exception:
             raise self._exception
-        assert self._result is not None
+        if self._result is None:
+            raise RuntimeError("worker finished without producing a result")
         return self._result
 
     def _work(self) -> Summary:
         try:
             self._result = Summary()
+            result = self._result
             while True:
                 try:
                     item = self._queue.pop()
@@ -710,31 +737,33 @@ class Worker:
                     break
 
                 runner, test_path = item
-                result = runner.run(test_path, self._update, self._coverage)
-                self._result.total += 1
-                if result == "skipped":
-                    self._result.skipped += 1
-                elif not result:
-                    self._result.failed += 1
+                outcome = runner.run(test_path, self._update, self._coverage)
+                result.total += 1
+                if outcome == "skipped":
+                    result.skipped += 1
+                elif not outcome:
+                    result.failed += 1
+            return result
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self._exception = exc
+            if self._result is None:
+                self._result = Summary()
             return self._result
-        except Exception as e:
-            self._exception = e
-            return self._result if self._result is not None else Summary()
 
 
-def get_runner_for_test(test_path):
+def get_runner_for_test(test_path: Path) -> Runner:
     """Determine the appropriate runner for a test based on its configuration."""
     return runners_get_runner(test_path)
 
 
-def collect_all_tests(dir: Path) -> Generator[Path, None, None]:
-    if dir.name == "fixtures":
+def collect_all_tests(directory: Path) -> Iterator[Path]:
+    if directory.name == "fixtures":
         return
     extensions = _allowed_extensions or {
-        getattr(runner, "_ext", None) for runner in RUNNERS if getattr(runner, "_ext", None)
+        ext for runner in RUNNERS if (ext := getattr(runner, "_ext", None)) is not None
     }
     for ext in extensions:
-        for candidate in dir.glob(f"**/*.{ext}"):
+        for candidate in directory.glob(f"**/*.{ext}"):
             if _is_inputs_path(candidate):
                 continue
             yield candidate

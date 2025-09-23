@@ -5,16 +5,24 @@ import os
 import subprocess
 import sys
 import typing
+from types import ModuleType
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 from tenzir_test import fixtures as fixture_api
 
 
-def _run_module():
+def _run_module() -> ModuleType:
     from tenzir_test import run as run_module
 
     return run_module
+
+
+def _resolve_module_dir(run_mod: ModuleType) -> str:
+    module_path = getattr(run_mod, "__file__", None)
+    if not isinstance(module_path, str):
+        raise RuntimeError("tenzir_test.run module path is not available")
+    return os.path.dirname(os.path.realpath(module_path))
 
 
 class Runner(ABC):
@@ -44,7 +52,7 @@ class Runner(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def run(self, test: Path, update: bool, coverage: bool = False) -> typing.Union[bool, str]:
+    def run(self, test: Path, update: bool, coverage: bool = False) -> bool | str:
         raise NotImplementedError
 
 
@@ -78,19 +86,27 @@ class LexerRunner(TqlRunner):
     def __init__(self) -> None:
         super().__init__(prefix="lexer")
 
-    def run(self, test: Path, update: bool, coverage: bool = False) -> typing.Union[bool, str]:
+    def run(self, test: Path, update: bool, coverage: bool = False) -> bool | str:
         run_mod = _run_module()
         test_config = run_mod.parse_test_config(test, coverage=coverage)
         if test_config.get("skip"):
-            return run_mod.handle_skip(
-                str(test_config["skip"]), test, update=update, output_ext=self.output_ext
+            return typing.cast(
+                bool | str,
+                run_mod.handle_skip(
+                    str(test_config["skip"]),
+                    test,
+                    update=update,
+                    output_ext=self.output_ext,
+                ),
             )
-        return run_mod.run_simple_test(
-            test,
-            update=update,
-            args=("--dump-tokens",),
-            output_ext=self.output_ext,
-            coverage=coverage,
+        return bool(
+            run_mod.run_simple_test(
+                test,
+                update=update,
+                args=("--dump-tokens",),
+                output_ext=self.output_ext,
+                coverage=coverage,
+            )
         )
 
 
@@ -98,19 +114,27 @@ class AstRunner(TqlRunner):
     def __init__(self) -> None:
         super().__init__(prefix="ast")
 
-    def run(self, test: Path, update: bool, coverage: bool = False) -> typing.Union[bool, str]:
+    def run(self, test: Path, update: bool, coverage: bool = False) -> bool | str:
         run_mod = _run_module()
         test_config = run_mod.parse_test_config(test, coverage=coverage)
         if test_config.get("skip"):
-            return run_mod.handle_skip(
-                str(test_config["skip"]), test, update=update, output_ext=self.output_ext
+            return typing.cast(
+                bool | str,
+                run_mod.handle_skip(
+                    str(test_config["skip"]),
+                    test,
+                    update=update,
+                    output_ext=self.output_ext,
+                ),
             )
-        return run_mod.run_simple_test(
-            test,
-            update=update,
-            args=("--dump-ast",),
-            output_ext=self.output_ext,
-            coverage=coverage,
+        return bool(
+            run_mod.run_simple_test(
+                test,
+                update=update,
+                args=("--dump-ast",),
+                output_ext=self.output_ext,
+                coverage=coverage,
+            )
         )
 
 
@@ -118,19 +142,27 @@ class OldIrRunner(TqlRunner):
     def __init__(self) -> None:
         super().__init__(prefix="oldir")
 
-    def run(self, test: Path, update: bool, coverage: bool = False) -> typing.Union[bool, str]:
+    def run(self, test: Path, update: bool, coverage: bool = False) -> bool | str:
         run_mod = _run_module()
         test_config = run_mod.parse_test_config(test, coverage=coverage)
         if test_config.get("skip"):
-            return run_mod.handle_skip(
-                str(test_config["skip"]), test, update=update, output_ext=self.output_ext
+            return typing.cast(
+                bool | str,
+                run_mod.handle_skip(
+                    str(test_config["skip"]),
+                    test,
+                    update=update,
+                    output_ext=self.output_ext,
+                ),
             )
-        return run_mod.run_simple_test(
-            test,
-            update=update,
-            args=("--dump-pipeline",),
-            output_ext=self.output_ext,
-            coverage=coverage,
+        return bool(
+            run_mod.run_simple_test(
+                test,
+                update=update,
+                args=("--dump-pipeline",),
+                output_ext=self.output_ext,
+                coverage=coverage,
+            )
         )
 
 
@@ -138,19 +170,27 @@ class IrRunner(TqlRunner):
     def __init__(self) -> None:
         super().__init__(prefix="ir")
 
-    def run(self, test: Path, update: bool, coverage: bool = False) -> typing.Union[bool, str]:
+    def run(self, test: Path, update: bool, coverage: bool = False) -> bool | str:
         run_mod = _run_module()
         test_config = run_mod.parse_test_config(test, coverage=coverage)
         if test_config.get("skip"):
-            return run_mod.handle_skip(
-                str(test_config["skip"]), test, update=update, output_ext=self.output_ext
+            return typing.cast(
+                bool | str,
+                run_mod.handle_skip(
+                    str(test_config["skip"]),
+                    test,
+                    update=update,
+                    output_ext=self.output_ext,
+                ),
             )
-        return run_mod.run_simple_test(
-            test,
-            update=update,
-            args=("--dump-ir",),
-            output_ext=self.output_ext,
-            coverage=coverage,
+        return bool(
+            run_mod.run_simple_test(
+                test,
+                update=update,
+                args=("--dump-ir",),
+                output_ext=self.output_ext,
+                coverage=coverage,
+            )
         )
 
 
@@ -158,19 +198,27 @@ class FinalizeRunner(TqlRunner):
     def __init__(self) -> None:
         super().__init__(prefix="finalize")
 
-    def run(self, test: Path, update: bool, coverage: bool = False) -> typing.Union[bool, str]:
+    def run(self, test: Path, update: bool, coverage: bool = False) -> bool | str:
         run_mod = _run_module()
         test_config = run_mod.parse_test_config(test, coverage=coverage)
         if test_config.get("skip"):
-            return run_mod.handle_skip(
-                str(test_config["skip"]), test, update=update, output_ext=self.output_ext
+            return typing.cast(
+                bool | str,
+                run_mod.handle_skip(
+                    str(test_config["skip"]),
+                    test,
+                    update=update,
+                    output_ext=self.output_ext,
+                ),
             )
-        return run_mod.run_simple_test(
-            test,
-            update=update,
-            args=("--dump-finalized",),
-            output_ext=self.output_ext,
-            coverage=coverage,
+        return bool(
+            run_mod.run_simple_test(
+                test,
+                update=update,
+                args=("--dump-finalized",),
+                output_ext=self.output_ext,
+                coverage=coverage,
+            )
         )
 
 
@@ -178,18 +226,26 @@ class ExecRunner(TqlRunner):
     def __init__(self) -> None:
         super().__init__(prefix="exec")
 
-    def run(self, test: Path, update: bool, coverage: bool = False) -> typing.Union[bool, str]:
+    def run(self, test: Path, update: bool, coverage: bool = False) -> bool | str:
         run_mod = _run_module()
         test_config = run_mod.parse_test_config(test, coverage=coverage)
         if test_config.get("skip"):
-            return run_mod.handle_skip(
-                str(test_config["skip"]), test, update=update, output_ext=self.output_ext
+            return typing.cast(
+                bool | str,
+                run_mod.handle_skip(
+                    str(test_config["skip"]),
+                    test,
+                    update=update,
+                    output_ext=self.output_ext,
+                ),
             )
-        return run_mod.run_simple_test(
-            test,
-            update=update,
-            output_ext=self.output_ext,
-            coverage=coverage,
+        return bool(
+            run_mod.run_simple_test(
+                test,
+                update=update,
+                output_ext=self.output_ext,
+                coverage=coverage,
+            )
         )
 
 
@@ -199,21 +255,29 @@ class DiffRunner(TqlRunner):
         self._a = a
         self._b = b
 
-    def run(self, test: Path, update: bool, coverage: bool = False) -> typing.Union[bool, str]:
+    def run(self, test: Path, update: bool, coverage: bool = False) -> bool | str:
         run_mod = _run_module()
         test_config = run_mod.parse_test_config(test, coverage=coverage)
-        if test_config.get("skip"):
-            return run_mod.handle_skip(
-                str(test_config["skip"]), test, update=update, output_ext=self.output_ext
+        skip_value = test_config.get("skip")
+        if isinstance(skip_value, str):
+            return typing.cast(
+                bool | str,
+                run_mod.handle_skip(
+                    skip_value,
+                    test,
+                    update=update,
+                    output_ext=self.output_ext,
+                ),
             )
 
         env, config_args = run_mod.get_test_env_and_config_args(test)
-        fixtures = test_config.get("fixtures", tuple())
+        fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
+        timeout = typing.cast(int, test_config["timeout"])
 
         context_token = fixture_api.push_context(
             fixture_api.FixtureContext(
                 test=test,
-                config=test_config,
+                config=typing.cast(dict[str, typing.Any], test_config),
                 coverage=coverage,
                 env=env,
                 config_args=tuple(config_args),
@@ -227,7 +291,7 @@ class DiffRunner(TqlRunner):
                 run_mod._apply_fixture_env(env, fixtures)
 
                 node_args: list[str] = []
-                if test_config.get("node", False):
+                if bool(test_config.get("node", False)):
                     endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
                     if not endpoint:
                         raise RuntimeError(
@@ -235,10 +299,10 @@ class DiffRunner(TqlRunner):
                         )
                     node_args.append(f"--endpoint={endpoint}")
 
-                base_cmd = [
-                    run_mod.TENZIR_BINARY,
-                    *[x for x in config_args if x is not None],
-                ]
+                binary = run_mod.TENZIR_BINARY
+                if not binary:
+                    raise RuntimeError("TENZIR_BINARY must be configured for diff runners")
+                base_cmd: list[str] = [binary, *config_args]
 
                 if coverage:
                     coverage_dir = env.get(
@@ -254,9 +318,10 @@ class DiffRunner(TqlRunner):
 
                 unoptimized = subprocess.run(
                     [*base_cmd, self._a, *node_args, "-f", str(test)],
-                    timeout=test_config["timeout"],
+                    timeout=timeout,
                     stdout=subprocess.PIPE,
                     env=env,
+                    check=False,
                 )
 
                 if coverage:
@@ -266,14 +331,15 @@ class DiffRunner(TqlRunner):
 
                 optimized = subprocess.run(
                     [*base_cmd, self._b, *node_args, "-f", str(test)],
-                    timeout=test_config["timeout"],
+                    timeout=timeout,
                     stdout=subprocess.PIPE,
                     env=env,
+                    check=False,
                 )
         finally:
             fixture_api.pop_context(context_token)
 
-        diff = list(
+        diff_chunks = list(
             difflib.diff_bytes(
                 difflib.unified_diff,
                 unoptimized.stdout.splitlines(keepends=True),
@@ -281,18 +347,20 @@ class DiffRunner(TqlRunner):
                 n=2**31 - 1,
             )
         )[3:]
-        if diff:
-            diff = b"".join(diff)
+        if diff_chunks:
+            diff_bytes = b"".join(diff_chunks)
         else:
-            diff = b"".join(map(lambda x: b" " + x, unoptimized.stdout.splitlines(keepends=True)))
+            diff_bytes = b"".join(
+                b" " + line for line in unoptimized.stdout.splitlines(keepends=True)
+            )
         ref_path = test.with_suffix(".diff")
         if update:
-            ref_path.write_bytes(diff)
+            ref_path.write_bytes(diff_bytes)
         else:
             expected = ref_path.read_bytes()
-            if diff != expected:
+            if diff_bytes != expected:
                 run_mod.report_failure(test, "")
-                run_mod.print_diff(expected, diff, ref_path)
+                run_mod.print_diff(expected, diff_bytes, ref_path)
                 return False
         run_mod.success(test)
         return True
@@ -317,11 +385,11 @@ class CustomFixture(ExtRunner):
         run_mod = _run_module()
         test_config = run_mod.parse_test_config(test)
         env = os.environ.copy()
-        fixtures = test_config.get("fixtures", tuple())
+        fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
         context_token = fixture_api.push_context(
             fixture_api.FixtureContext(
                 test=test,
-                config=test_config,
+                config=typing.cast(dict[str, typing.Any], test_config),
                 coverage=False,
                 env=env,
                 config_args=tuple(),
@@ -340,15 +408,16 @@ class CustomFixture(ExtRunner):
                     env["TENZIR_TESTER_CHECK_PATH"] = str(test)
                     try:
                         cmd = ["sh", "-eu", str(test)]
-                        subprocess.check_output(
-                            [x for x in cmd if x is not None], stderr=subprocess.PIPE, env=env
-                        )
+                        subprocess.check_output(cmd, stderr=subprocess.PIPE, env=env)
                     except subprocess.CalledProcessError as e:
                         with run_mod.stdout_lock:
                             run_mod.fail(test)
-                            sys.stdout.buffer.write(e.stdout)
-                            sys.stdout.buffer.write(e.output)
-                            sys.stdout.buffer.write(e.stderr)
+                            if e.stdout:
+                                sys.stdout.buffer.write(e.stdout)
+                            if e.output and e.output is not e.stdout:
+                                sys.stdout.buffer.write(e.output)
+                            if e.stderr:
+                                sys.stdout.buffer.write(e.stderr)
                         return False
         finally:
             fixture_api.pop_context(context_token)
@@ -369,11 +438,12 @@ class CustomPythonFixture(ExtRunner):
         try:
             cmd = [sys.executable, str(test)]
             env, _config_args = run_mod.get_test_env_and_config_args(test)
-            fixtures = test_config.get("fixtures", tuple())
+            fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
+            timeout = typing.cast(int, test_config["timeout"])
             context_token = fixture_api.push_context(
                 fixture_api.FixtureContext(
                     test=test,
-                    config=test_config,
+                    config=typing.cast(dict[str, typing.Any], test_config),
                     coverage=coverage,
                     env=env,
                     config_args=tuple(),
@@ -385,7 +455,7 @@ class CustomPythonFixture(ExtRunner):
                 with fixture_api.activate(fixtures) as fixture_env:
                     env.update(fixture_env)
                     run_mod._apply_fixture_env(env, fixtures)
-                    if test_config.get("node", False):
+                    if bool(test_config.get("node", False)):
                         endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
                         if not endpoint:
                             raise RuntimeError(
@@ -393,14 +463,14 @@ class CustomPythonFixture(ExtRunner):
                             )
                     env.update(
                         {
-                            "PYTHONPATH": os.path.dirname(os.path.realpath(run_mod.__file__)),
+                            "PYTHONPATH": _resolve_module_dir(run_mod),
                             "TENZIR_NODE_CLIENT_BINARY": binary,
-                            "TENZIR_NODE_CLIENT_TIMEOUT": str(test_config["timeout"]),
+                            "TENZIR_NODE_CLIENT_TIMEOUT": str(timeout),
                         }
                     )
                     completed = subprocess.run(
                         cmd,
-                        timeout=test_config["timeout"],
+                        timeout=timeout,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         check=True,
@@ -432,9 +502,12 @@ class CustomPythonFixture(ExtRunner):
         except subprocess.CalledProcessError as e:
             with run_mod.stdout_lock:
                 run_mod.fail(test)
-                sys.stdout.buffer.write(e.stdout)
-                sys.stdout.buffer.write(e.output)
-                sys.stdout.buffer.write(e.stderr)
+                if e.stdout:
+                    sys.stdout.buffer.write(e.stdout)
+                if e.output and e.output is not e.stdout:
+                    sys.stdout.buffer.write(e.output)
+                if e.stderr:
+                    sys.stdout.buffer.write(e.stderr)
             return False
         run_mod.success(test)
         return True
@@ -463,13 +536,21 @@ def runner_prefixes() -> set[str]:
 
 
 def allowed_extensions() -> set[str]:
-    return {getattr(runner, "_ext", None) for runner in RUNNERS if getattr(runner, "_ext", None)}
+    extensions: set[str] = set()
+    for runner in RUNNERS:
+        ext = getattr(runner, "_ext", None)
+        if isinstance(ext, str):
+            extensions.add(ext)
+    return extensions
 
 
-def get_runner_for_test(test_path: Path):
+def get_runner_for_test(test_path: Path) -> Runner:
     run_mod = _run_module()
     config = run_mod.parse_test_config(test_path)
-    runner_name = config["runner"]
+    runner_value = config.get("runner")
+    if not isinstance(runner_value, str):
+        raise ValueError("Runner 'runner' must be a string")
+    runner_name = runner_value
     if runner_name in RUNNERS_BY_PREFIX:
         return RUNNERS_BY_PREFIX[runner_name]
     raise ValueError(f"Runner '{runner_name}' not found - this is a bug")

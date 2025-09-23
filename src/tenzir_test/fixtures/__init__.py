@@ -36,13 +36,14 @@ logger = logging.getLogger(__name__)
 
 
 class Executor:
-    def __init__(self):
-        self.binary = os.environ["TENZIR_NODE_CLIENT_BINARY"]
-        self.endpoint = os.environ.get("TENZIR_NODE_CLIENT_ENDPOINT")
-        self.remaining_timeout = float(os.environ.get("TENZIR_NODE_CLIENT_TIMEOUT"))
+    def __init__(self) -> None:
+        self.binary: str = os.environ["TENZIR_NODE_CLIENT_BINARY"]
+        self.endpoint: str | None = os.environ.get("TENZIR_NODE_CLIENT_ENDPOINT")
+        timeout_raw = os.environ.get("TENZIR_NODE_CLIENT_TIMEOUT")
+        self.remaining_timeout: float = float(timeout_raw) if timeout_raw is not None else 0.0
 
     def run(
-        self, source: str, desired_timeout: float = None, mirror: bool = False
+        self, source: str, desired_timeout: float | None = None, mirror: bool = False
     ) -> subprocess.CompletedProcess[bytes]:
         cmd = [
             self.binary,
@@ -54,7 +55,10 @@ class Executor:
             cmd.append(f"--endpoint={self.endpoint}")
         cmd.append(source)
         start = time.process_time()
-        timeout = min(self.remaining_timeout, desired_timeout or self.remaining_timeout)
+        requested_timeout = (
+            desired_timeout if desired_timeout is not None else self.remaining_timeout
+        )
+        timeout = min(self.remaining_timeout, requested_timeout)
         res = subprocess.run(cmd, timeout=timeout, capture_output=True)
         end = time.process_time()
         used_time = end - start
@@ -178,24 +182,25 @@ def _normalize_factory(factory: _FactoryCallable) -> FixtureFactory:
         if isinstance(result, AbstractContextManager):
             return result
         if isinstance(result, FixtureHandle):
-            env = result.env or {}
+            env_dict: dict[str, str] = result.env or {}
 
             @contextmanager
             def _ctx() -> Iterator[dict[str, str] | None]:
                 try:
-                    yield env
+                    yield env_dict
                 finally:
                     if result.teardown:
                         result.teardown()
 
             return _ctx()
         if isinstance(result, tuple) and len(result) == 2:
-            env, teardown = result
+            raw_env, teardown = result
+            env_dict = raw_env or {}
 
             @contextmanager
             def _ctx() -> Iterator[dict[str, str] | None]:
                 try:
-                    yield env or {}
+                    yield env_dict
                 finally:
                     if callable(teardown):
                         teardown()
@@ -223,14 +228,17 @@ def _normalize_factory(factory: _FactoryCallable) -> FixtureFactory:
     return _as_context_manager
 
 
-def _infer_name(func: _FactoryCallable, explicit: str | None) -> str:
+def _infer_name(func: Callable[..., object], explicit: str | None) -> str:
     if explicit:
         return explicit
-    filename = getattr(func, "__code__", None)
-    if filename is not None:
-        file = Path(func.__code__.co_filename)
+    code_obj = getattr(func, "__code__", None)
+    if code_obj is not None and hasattr(code_obj, "co_filename"):
+        file = Path(code_obj.co_filename)
         return file.stem
-    return func.__name__  # pragma: no cover - fallback
+    name_attr = getattr(func, "__name__", None)
+    if isinstance(name_attr, str):
+        return name_attr
+    raise ValueError("Unable to infer fixture name; please provide one explicitly")
 
 
 def register(name: str | None, factory: _FactoryCallable, *, replace: bool = False) -> None:
@@ -273,7 +281,7 @@ def startup(
     - ``None`` (interpreted as an empty environment)
     """
 
-    def _decorator(func: _FactoryCallable):
+    def _decorator(func: _FactoryCallable) -> _FactoryCallable:
         register(name, func, replace=replace)
         return func
 
@@ -328,7 +336,7 @@ def activate(names: Iterable[str]) -> Iterator[dict[str, str]]:
                 finally:
                     if should_log_teardown:
                         logger.info("tearing down fixture '%s'", name)
-                    env_dict = dict(env or {})
+                    env_dict: dict[str, str] = dict(env or {})
                     for hook in _TEARDOWNS.get(name, ()):
                         try:
                             hook(env_dict)
@@ -344,7 +352,7 @@ def activate(names: Iterable[str]) -> Iterator[dict[str, str]]:
                 logger.debug("requested fixture '%s' has no registered factory", name)
                 continue
             force_teardown_log = bool(getattr(factory, "tenzir_log_teardown", False))
-            env = stack.enter_context(
+            env: dict[str, str] | None = stack.enter_context(
                 _wrap_factory(factory, name=name, force_teardown_log=force_teardown_log)
             )
             if env:

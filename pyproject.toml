@@ -86,6 +86,7 @@ python_files = ["test_*.py", "*_test.py"]
 pythonpath = ["src"]
 
 [tool.mypy]
+files = ["src"]
 python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
@@ -120,4 +121,5 @@ dev = [
   "mypy>=1.11.0",
   "ruff>=0.7.0",
   "coverage[toml]>=7.6.0",
+  "types-pyyaml>=6.0.12.20250915",
 ]

@@ -32,17 +32,14 @@ __all__ = [
     "run",
 ]
 
-try:
-    from importlib.metadata import version
-except ImportError:  # pragma: no cover - fallback for alternative environments
-    from importlib_metadata import version  # type: ignore[assignment]
+from importlib.metadata import PackageNotFoundError, version
 
 
 def _get_version() -> str:
     """Return the installed package version or a development placeholder."""
     try:
         return version("tenzir-test")
-    except Exception:  # pragma: no cover - missing metadata during dev
+    except PackageNotFoundError:  # pragma: no cover - missing metadata during dev
         return "0.0.1.dev0"
 
 
