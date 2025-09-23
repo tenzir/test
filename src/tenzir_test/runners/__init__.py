@@ -272,6 +272,7 @@ class DiffRunner(TqlRunner):
 
         env, config_args = run_mod.get_test_env_and_config_args(test)
         fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
+        node_requested = "node" in fixtures
         timeout = typing.cast(int, test_config["timeout"])
 
         context_token = fixture_api.push_context(
@@ -291,7 +292,7 @@ class DiffRunner(TqlRunner):
                 run_mod._apply_fixture_env(env, fixtures)
 
                 node_args: list[str] = []
-                if bool(test_config.get("node", False)):
+                if node_requested:
                     endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
                     if not endpoint:
                         raise RuntimeError(
@@ -439,6 +440,7 @@ class CustomPythonFixture(ExtRunner):
             cmd = [sys.executable, str(test)]
             env, _config_args = run_mod.get_test_env_and_config_args(test)
             fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
+            node_requested = "node" in fixtures
             timeout = typing.cast(int, test_config["timeout"])
             context_token = fixture_api.push_context(
                 fixture_api.FixtureContext(
@@ -455,7 +457,7 @@ class CustomPythonFixture(ExtRunner):
                 with fixture_api.activate(fixtures) as fixture_env:
                     env.update(fixture_env)
                     run_mod._apply_fixture_env(env, fixtures)
-                    if bool(test_config.get("node", False)):
+                    if node_requested:
                         endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
                         if not endpoint:
                             raise RuntimeError(

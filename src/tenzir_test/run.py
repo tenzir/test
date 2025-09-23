@@ -59,8 +59,6 @@ _log_comparisons = bool(os.environ.get("TENZIR_TEST_LOG_COMPARISONS"))
 
 _runner_prefixes: set[str] = set()
 _allowed_extensions: set[str] = set()
-_deprecated_inputs_warned: set[Path] = set()
-
 _DEFAULT_RUNNER_BY_SUFFIX: dict[str, str] = {
     ".tql": "tenzir",
     ".py": "python",
@@ -159,30 +157,12 @@ def _load_project_fixtures(root: Path) -> None:
     _PROJECT_FIXTURES_IMPORTED = True
 
 
-def _maybe_warn_inputs_legacy(test_file: Path, content: str) -> None:
-    patterns = ('env("INPUTS")', "env('INPUTS')", "#{$INPUTS}")
-    if not any(pattern in content for pattern in patterns):
-        return
-    resolved = test_file.resolve()
-    if resolved in _deprecated_inputs_warned:
-        return
-    try:
-        relative = test_file.relative_to(ROOT)
-    except ValueError:
-        relative = test_file
-    print(
-        f"{INFO} the INPUTS environment variable is deprecated for {relative}; use TENZIR_INPUTS instead"
-    )
-    _deprecated_inputs_warned.add(resolved)
-
-
 def get_test_env_and_config_args(test: Path) -> tuple[dict[str, str], list[str]]:
     config_file = test.parent / "tenzir.yaml"
     config_args = [f"--config={config_file}"] if config_file.exists() else []
     env = os.environ.copy()
     inputs_path = str(_resolve_inputs_dir(ROOT))
     env["TENZIR_INPUTS"] = inputs_path
-    env["INPUTS"] = inputs_path
     if TENZIR_BINARY:
         env["TENZIR_BINARY"] = TENZIR_BINARY
     if TENZIR_NODE_BINARY:
@@ -232,12 +212,11 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
         "error": False,
         "timeout": 30,
         "runner": None,
-        "node": False,
         "skip": None,
         "fixtures": tuple(),
     }
 
-    valid_keys: set[str] = set(config.keys()) | {"test", "fixture"}
+    valid_keys: set[str] = set(config.keys()) | {"fixture"}
     is_tql = test_file.suffix == ".tql"
     is_py = test_file.suffix == ".py"
 
@@ -293,7 +272,7 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
                 _raise("'skip' value must be a non-empty string", line_number)
             config[key] = value
             return
-        if key in {"error", "node"}:
+        if key == "error":
             if isinstance(value, bool):
                 config[key] = value
                 return
@@ -328,8 +307,6 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
         if key in {"fixture", "fixtures"}:
             config["fixtures"] = _normalize_fixtures(value, line_number)
             return
-        if key == "test":
-            key = "runner"
         if key == "runner":
             if not isinstance(value, str):
                 _raise(
@@ -402,16 +379,11 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
             value = parts[1].strip()
             _assign(key, value, line_number)
 
-    _maybe_warn_inputs_legacy(test_file, full_text)
-
     if coverage:
         timeout_value = cast(int, config["timeout"])
         config["timeout"] = timeout_value * 5
 
     fixtures = cast(tuple[str, ...], config.get("fixtures", tuple()))
-    if fixtures and not bool(config.get("node")) and "node" in fixtures:
-        config["node"] = True
-
     runner_value = config.get("runner")
     if not isinstance(runner_value, str) or not runner_value:
         suffix = test_file.suffix.lower()
@@ -605,7 +577,8 @@ def run_simple_test(
                 env["COVERAGE_SOURCE_DIR"] = source_dir
 
             node_args: list[str] = []
-            if bool(test_config.get("node", False)):
+            node_requested = "node" in fixtures
+            if node_requested:
                 endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
                 if not endpoint:
                     raise RuntimeError("node fixture did not provide TENZIR_NODE_CLIENT_ENDPOINT")

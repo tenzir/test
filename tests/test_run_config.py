@@ -34,7 +34,7 @@ def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> No
     assert config["error"] is False
     assert config["timeout"] == 30
     assert config["runner"] == "tenzir"
-    assert config["node"] is False
+    assert "node" not in config
     assert config["skip"] is None
     assert config["fixtures"] == tuple()
 
@@ -42,7 +42,7 @@ def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> No
 def test_parse_test_config_override(tmp_path: Path, configured_root: Path) -> None:
     test_file = tmp_path / "custom.tql"
     test_file.write_text(
-        "// timeout: 90\n// error: true\n// node: true\n// runner: exec\n// skip: reason\n",
+        "// timeout: 90\n// error: true\n// runner: exec\n// skip: reason\n",
         encoding="utf-8",
     )
 
@@ -52,7 +52,6 @@ def test_parse_test_config_override(tmp_path: Path, configured_root: Path) -> No
         "error": True,
         "timeout": 90,
         "runner": "exec",
-        "node": True,
         "skip": "reason",
         "fixtures": tuple(),
     }
@@ -64,7 +63,6 @@ def test_parse_test_config_yaml_frontmatter(tmp_path: Path, configured_root: Pat
         """---
 timeout: 75
 runner: exec
-node: true
 error: true
 skip: maintenance
 ---
@@ -81,7 +79,6 @@ write json
         "error": True,
         "timeout": 75,
         "runner": "exec",
-        "node": True,
         "skip": "maintenance",
         "fixtures": tuple(),
     }
@@ -99,7 +96,6 @@ def test_get_test_env_and_config_args(configured_root: Path) -> None:
 
     expected_inputs = str(configured_root / "inputs")
     assert env["TENZIR_INPUTS"] == expected_inputs
-    assert env["INPUTS"] == expected_inputs
     assert env["TENZIR_TEST_ROOT"] == str(run.ROOT)
     if run.TENZIR_BINARY:
         assert env["TENZIR_BINARY"] == run.TENZIR_BINARY
@@ -114,7 +110,6 @@ def test_parse_python_comment_frontmatter(tmp_path: Path, configured_root: Path)
         """#!/usr/bin/env python3
 # timeout: 45
 # runner: python
-# node: false
 # error: false
 
 print("ok")
@@ -128,7 +123,6 @@ print("ok")
         "error": False,
         "timeout": 45,
         "runner": "python",
-        "node": False,
         "skip": None,
         "fixtures": tuple(),
     }
@@ -174,4 +168,4 @@ def test_parse_fixtures_list(tmp_path: Path, configured_root: Path) -> None:
     config = run.parse_test_config(test_file)
 
     assert config["fixtures"] == ("node", "sink")
-    assert config["node"] is True
+    assert "node" not in config

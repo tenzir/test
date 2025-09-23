@@ -35,7 +35,6 @@ def _fixture_script(path: Path) -> None:
 # runner: python
 # timeout: 30
 # fixtures: sink
-# node: false
 from __future__ import annotations
 
 print("ok")

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # runner: python
 # timeout: 30
-# node: false
 from __future__ import annotations
 
 import sys

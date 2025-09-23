@@ -23,7 +23,6 @@ def reset_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     operations.update_registry_metadata(["exec"], ["tql"])
-    monkeypatch.setattr(run, "_deprecated_inputs_warned", set())
 
     yield
 
@@ -32,7 +31,7 @@ def reset_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     operations.update_registry_metadata(original_prefixes, original_extensions)
 
 
-def test_get_test_env_sets_new_and_legacy_keys(
+def test_get_test_env_sets_inputs_key(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     inputs_dir = tmp_path / "inputs"
@@ -53,31 +52,4 @@ def test_get_test_env_sets_new_and_legacy_keys(
 
     expected = str(inputs_dir)
     assert env["TENZIR_INPUTS"] == expected
-    assert env["INPUTS"] == expected
     assert args == []
-
-
-def test_parse_test_config_warns_once_for_legacy_inputs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(state, "ROOT", tmp_path)
-    monkeypatch.setattr(state, "INPUTS_DIR", tmp_path / "inputs")
-
-    test_file = tmp_path / "exec" / "legacy.tql"
-    test_file.parent.mkdir(parents=True)
-    test_file.write_text(
-        """---\nrunner: exec\n---\nfrom f\"#{env(\"INPUTS\")}/events.json\"\nwrite json\n""",
-        encoding="utf-8",
-    )
-
-    config = operations.parse_test_config(test_file)
-
-    assert config["runner"] == "exec"
-
-    captured = capsys.readouterr()
-    assert "USE TENZIR_INPUTS".lower() in captured.out.lower()
-
-    # Second invocation should not repeat the warning.
-    operations.parse_test_config(test_file)
-    captured = capsys.readouterr()
-    assert captured.out == ""
