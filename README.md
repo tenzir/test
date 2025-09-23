@@ -1,10 +1,13 @@
 # 🧪 tenzir-test
 
-Welcome to the testing harness for the Tenzir ecosystem: it discovers `.tql` scenarios and Python fixtures, prepares the execution environment, and reports results tailored to pipeline authoring workflows.
+Welcome to the testing harness for the Tenzir ecosystem: it discovers `.tql`
+scenarios and Python fixtures, prepares the execution environment, and reports
+results tailored to pipeline authoring workflows.
 
 ## 🚧 Status
 
-Work in progress as we prepare the framework for its first PyPI release. Expect rapid iteration until v1.0 ships.
+Work in progress as we prepare the framework for its first PyPI release. Expect
+rapid iteration until v1.0 ships.
 
 ## 🏃 TL;DR
 
@@ -17,7 +20,8 @@ Work in progress as we prepare the framework for its first PyPI release. Expect 
    ```sh
    tenzir-test
    ```
-See [the documentation](DOCUMENTATION.md) for detailed usage instructions and [`DEVELOPMENT.md`](DEVELOPMENT.md) for contributor workflows.
+See [the documentation](DOCUMENTATION.md) for detailed usage instructions and
+[`DEVELOPMENT.md`](DEVELOPMENT.md) for contributor workflows.
 
 ## 📜 License
 

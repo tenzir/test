@@ -96,15 +96,15 @@ Runners describe how the harness executes a test file. Each runner registers a
 built-in Tenzir runners all drive the same executable; they simply tweak the
 flags passed to `tenzir`:
 
-| Runner | Command | Input Extension | Artifact | Purpose |
-| ------ | ------- | ---------------- | -------- | ------- |
-| `tenzir` | `tenzir -f <test>` | `.tql` (default) | `.txt` | Evaluate the pipeline and capture stdout. |
-| `lexer` | `tenzir --dump-tokens -f <test>` | `.tql` | `.txt` | Inspect the token stream. |
-| `ast` | `tenzir --dump-ast -f <test>` | `.tql` | `.txt` | Review the parsed abstract syntax tree. |
-| `ir` | `tenzir --dump-ir -f <test>` | `.tql` | `.txt` | Record the intermediate representation. |
-| `finalize` | `tenzir --dump-finalized -f <test>` | `.tql` | `.txt` | Show the finalized pipeline. |
-| `instantiation` | `tenzir --dump-ir` ⇄ `tenzir --dump-inst-ir` | `.tql` | `.diff` | Diff instantiation rewrites. |
-| `opt` | `tenzir --dump-inst-ir` ⇄ `tenzir --dump-opt-ir` | `.tql` | `.diff` | Diff post-optimization rewrites. |
+| Runner          | Command                                          | Input Extension  | Artifact | Purpose                                   |
+| --------------- | ------------------------------------------------ | ---------------- | -------- | ----------------------------------------- |
+| `tenzir`        | `tenzir -f <test>`                               | `.tql` (default) | `.txt`   | Evaluate the pipeline and capture stdout. |
+| `lexer`         | `tenzir --dump-tokens -f <test>`                 | `.tql`           | `.txt`   | Inspect the token stream.                 |
+| `ast`           | `tenzir --dump-ast -f <test>`                    | `.tql`           | `.txt`   | Review the parsed abstract syntax tree.   |
+| `ir`            | `tenzir --dump-ir -f <test>`                     | `.tql`           | `.txt`   | Record the intermediate representation.   |
+| `finalize`      | `tenzir --dump-finalized -f <test>`              | `.tql`           | `.txt`   | Show the finalized pipeline.              |
+| `instantiation` | `tenzir --dump-ir` ⇄ `tenzir --dump-inst-ir`     | `.tql`           | `.diff`  | Diff instantiation rewrites.              |
+| `opt`           | `tenzir --dump-inst-ir` ⇄ `tenzir --dump-opt-ir` | `.tql`           | `.diff`  | Diff post-optimization rewrites.          |
 
 Other bundled runners cover fixtures and scripting workflows:
 
@@ -257,7 +257,7 @@ debug reference mismatches. The flag also respects the
 
 Python-based fixtures live under `fixtures/`. When the CLI starts it imports
 `fixtures/__init__.py` (or any loose `fixtures/*.py` modules) so projects can
-register helpers—typically via the ``@tenzir_test.startup`` decorator, or by
+register helpers—typically via the `@tenzir_test.startup` decorator, or by
 calling `tenzir_test.fixtures.register` directly. The same helpers support
 Python tests that you execute via the `runner: python` frontmatter, and the
 harness injects convenient environment variables:
@@ -391,8 +391,8 @@ esac
 Share helper functions or shell snippets so multiple tests can reuse the same
 setup logic.
 
-For reusable infrastructure, use the ``@tenzir_test.startup`` decorator. Pair it
-with ``@tenzir_test.teardown`` for a symmetric setup/cleanup flow:
+For reusable infrastructure, use the `@tenzir_test.startup` decorator. Pair it
+with `@tenzir_test.teardown` for a symmetric setup/cleanup flow:
 
 ```python
 from tenzir_test import startup, teardown
@@ -459,4 +459,3 @@ and commit the changes.
   temporarily disable a scenario; keep reference files empty.
 
 If issues persist, run with `--jobs 1` to simplify output ordering and inspect
-the generated reference files for diffs.
