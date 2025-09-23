@@ -152,19 +152,7 @@ def make_xxd_runner() -> runners.Runner:
 
 ### Test Frontmatter
 
-Every scenario starts with a frontmatter block that configures execution. The most compatible format uses comment-prefixed `key: value` lines:
-
-```tql
-// timeout: 60
-// runner: tenzir
-// fixtures: [node, sink]
-// error: false
-
-from_file f"{env("TENZIR_INPUTS")}/events.ndjson"
-where severity >= 5
-```
-
-`.tql` files also accept YAML frontmatter bounded by `---`, and Python tests use `# key: value` comments:
+Every scenario starts with a frontmatter block that configures execution. `.tql` files require YAML frontmatter bounded by `---`:
 
 ```tql
 ---
@@ -177,6 +165,8 @@ error: false
 from_file f"{env("TENZIR_INPUTS")}/events.ndjson"
 where severity >= 5
 ```
+
+Python tests use `# key: value` comments:
 
 ```python
 # timeout: 10
@@ -252,8 +242,10 @@ Fixtures must emit deterministic output and write results to a neighbouring `.tx
 The harness propagates fixture selections from frontmatter to the executing process via `TENZIR_TEST_FIXTURES`. Declare one or more fixtures with either the `fixtures` list or the single-value `fixture` key:
 
 ```tql
-// runner: tenzir
-// fixtures: [node, sink]
+---
+runner: tenzir
+fixtures: [node, sink]
+---
 ```
 
 ### Built-in `node` fixture
@@ -274,8 +266,10 @@ core harness—covering coverage configuration, cleanup, and leak detection—is
 fixture ships as part of the `tenzir_test` package rather than living in the example project.
 
 ```tql
-// runner: tenzir
-// fixtures: [node]
+---
+runner: tenzir
+fixtures: [node]
+---
 
 pipeline::detach {
   every 10ms {
@@ -385,7 +379,7 @@ This regenerates `.txt` files so they match the new output. Remember to review a
 ## Troubleshooting
 
 - **Missing binaries:** ensure `tenzir` and `tenzir-node` are on `PATH` or specify them via CLI/env vars.
-- **Unexpected exits:** set `// error: true` in the frontmatter when you expect the pipeline to fail.
-- **Skipped tests:** add `// skip: reason` to document why you temporarily disable a scenario; keep reference files empty.
+- **Unexpected exits:** set `error: true` in the YAML frontmatter when you expect the pipeline to fail.
+- **Skipped tests:** add `skip: reason` to the frontmatter to document why you temporarily disable a scenario; keep reference files empty.
 
 If issues persist, run with `--jobs 1` to simplify output ordering and inspect the generated reference files for diffs.

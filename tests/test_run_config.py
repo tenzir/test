@@ -42,7 +42,16 @@ def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> No
 def test_parse_test_config_override(tmp_path: Path, configured_root: Path) -> None:
     test_file = tmp_path / "custom.tql"
     test_file.write_text(
-        "// timeout: 90\n// error: true\n// runner: ir\n// skip: reason\n",
+        """---
+timeout: 90
+error: true
+runner: ir
+skip: reason
+---
+
+from file
+| write json
+""",
         encoding="utf-8",
     )
 
@@ -55,6 +64,19 @@ def test_parse_test_config_override(tmp_path: Path, configured_root: Path) -> No
         "skip": "reason",
         "fixtures": tuple(),
     }
+
+
+def test_parse_test_config_ignores_tql_comments(tmp_path: Path, configured_root: Path) -> None:
+    test_file = tmp_path / "legacy.tql"
+    test_file.write_text(
+        "// timeout: 90\n// runner: ir\nfrom file\n| write json\n",
+        encoding="utf-8",
+    )
+
+    config = run.parse_test_config(test_file)
+
+    assert config["timeout"] == 30
+    assert config["runner"] == "tenzir"
 
 
 def test_parse_test_config_yaml_frontmatter(tmp_path: Path, configured_root: Path) -> None:
@@ -154,7 +176,16 @@ def test_collect_all_tests_skips_inputs(configured_root: Path) -> None:
 
 def test_parse_fixture_string(tmp_path: Path, configured_root: Path) -> None:
     test_file = tmp_path / "fixture.tql"
-    test_file.write_text("// fixture: sink\n", encoding="utf-8")
+    test_file.write_text(
+        """---
+fixture: sink
+---
+
+from file
+| write json
+""",
+        encoding="utf-8",
+    )
 
     config = run.parse_test_config(test_file)
 
@@ -163,7 +194,16 @@ def test_parse_fixture_string(tmp_path: Path, configured_root: Path) -> None:
 
 def test_parse_fixtures_list(tmp_path: Path, configured_root: Path) -> None:
     test_file = tmp_path / "fixture.tql"
-    test_file.write_text("// fixtures: [node, sink]\n", encoding="utf-8")
+    test_file.write_text(
+        """---
+fixtures: [node, sink]
+---
+
+from file
+| write json
+""",
+        encoding="utf-8",
+    )
 
     config = run.parse_test_config(test_file)
 

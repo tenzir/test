@@ -382,24 +382,17 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
             for key, value in yaml_data.items():
                 _assign(str(key), value)
 
-    if not consumed_frontmatter:
+    if not consumed_frontmatter and is_py:
         line_number = 0
         for raw_line in lines:
             line_number += 1
             stripped = raw_line.strip()
-            if is_py and line_number == 1 and stripped.startswith("#!"):
+            if line_number == 1 and stripped.startswith("#!"):
                 # Skip shebangs so subsequent frontmatter comments still apply.
                 continue
-            if is_tql:
-                if not stripped.startswith("//"):
-                    break
-                content = stripped[2:].strip()
-            elif is_py:
-                if not stripped.startswith("#"):
-                    break
-                content = stripped[1:].strip()
-            else:
+            if not stripped.startswith("#"):
                 break
+            content = stripped[1:].strip()
             parts = content.split(":", 1)
             if len(parts) != 2:
                 if line_number == 1:

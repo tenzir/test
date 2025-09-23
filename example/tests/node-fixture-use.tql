@@ -1,6 +1,8 @@
-// timeout: 60
-// fixtures: [node]
-// error: false
+---
+timeout: 60
+fixtures: [node]
+error: false
+---
 
 pipeline::detach {
   every 10ms {

@@ -31,7 +31,7 @@ example/
             └── high_severity_count.txt
 ```
 
-- The `.tql` scenarios use comment-based frontmatter (including `fixtures` when needed) and the `env("TENZIR_INPUTS")` helper to read test data from the project-level `inputs/` directory. `tests/node-fixture-use.tql` marks itself with `fixtures: [node]`, so the harness spawns a `tenzir-node` automatically.
+- The `.tql` scenarios use YAML frontmatter blocks bounded by `---` (including `fixtures` when needed) and the `env("TENZIR_INPUTS")` helper to read test data from the project-level `inputs/` directory. `tests/node-fixture-use.tql` marks itself with `fixtures: [node]`, so the harness spawns a `tenzir-node` automatically.
 - The Python scenario under `fixtures/` uses `#` frontmatter with `runner: python` so the harness executes it with the active interpreter.
 - The `hex/` directory showcases a custom `xxd` runner: we register it in `runners/__init__.py`, bind it to the `.xxd` extension, and compare the hex dump against `hello.txt`.
 - The accompanying `.txt` file captures the expected output when the scenario succeeds.
