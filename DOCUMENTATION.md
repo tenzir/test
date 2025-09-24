@@ -76,14 +76,16 @@ Key conventions:
 - The harness infers runner selection from the file suffix unless you override
   it with `runner:` in frontmatter.
 
-### Library Packages
+### Tenzir Library Packages
 
-`tenzir-test` recognises library packages by the presence of `package.yaml`.
-When you run the CLI from a package directory—or from a repository that hosts
-multiple packages—the harness treats `<package>/tests/` as the package-local
-project root and ignores operator or pipeline source trees. Every `tenzir`
-invocation receives `--package-dirs=<package>` so user-defined operators in
-`<package>/operators/` resolve automatically.
+`tenzir-test` recognises Tenzir library packages by the presence of
+`package.yaml`. When you run the CLI from a package directory—or from a
+repository that hosts multiple packages—the harness treats `<package>/tests/` as
+the package-local project root and ignores `operator/` or `pipeline/` source
+trees.
+
+Every `tenzir` invocation receives `--package-dirs=<package>` so user-defined
+operators in `<package>/operators/` resolve automatically.
 
 The environment exposes `TENZIR_PACKAGE_ROOT` so fixtures can resolve paths
 relative to the package root, while `TENZIR_INPUTS` points to
