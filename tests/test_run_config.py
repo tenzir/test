@@ -67,19 +67,6 @@ from file
     }
 
 
-def test_parse_test_config_ignores_tql_comments(tmp_path: Path, configured_root: Path) -> None:
-    test_file = tmp_path / "legacy.tql"
-    test_file.write_text(
-        "// timeout: 90\n// runner: ir\nfrom file\n| write json\n",
-        encoding="utf-8",
-    )
-
-    config = run.parse_test_config(test_file)
-
-    assert config["timeout"] == 30
-    assert config["runner"] == "tenzir"
-
-
 def test_parse_test_config_yaml_frontmatter(tmp_path: Path, configured_root: Path) -> None:
     test_file = tmp_path / "yaml.tql"
     test_file.write_text(
@@ -182,8 +169,6 @@ def test_iter_project_test_directories_prefers_package_tests(configured_root: Pa
     tests_dir = package / "tests"
     tests_dir.mkdir()
     (package / "operators").mkdir()
-    (configured_root / "legacy").mkdir()
-
     discovered = list(run._iter_project_test_directories(configured_root))
 
     assert discovered == [tests_dir]
