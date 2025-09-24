@@ -12,6 +12,11 @@ Python 3.12+ project.
 
 - **Project** – The directory you pass via `--root`; it hosts `fixtures/`,
   `inputs/`, `runners/`, and `tests/`.
+- **Mode** – `tenzir-test` auto-detects whether you are running in *project* or
+  *package* mode. A `package.yaml` manifest in the current directory triggers
+  package mode, as does invoking the CLI from a directory named `tests` whose
+  parent contains a manifest; otherwise the harness assumes a project root
+  layout.
 - **Test** – A single file discovered under `tests/`; its frontmatter controls
   execution.
 - **Runner** – A named strategy that executes a test (for example `tenzir`,
@@ -79,10 +84,14 @@ Key conventions:
 ### Tenzir Library Packages
 
 `tenzir-test` recognises Tenzir library packages by the presence of
-`package.yaml`. When you run the CLI from a package directory—or from a
-repository that hosts multiple packages—the harness treats `<package>/tests/` as
-the package-local project root and ignores `operator/` or `pipeline/` source
-trees.
+`package.yaml`. Mode detection first checks the current working directory; if a
+manifest is present we switch to *package mode*. The other entry point is the
+canonical `<package>/tests` tree: when you invoke the CLI from a directory named
+`tests` whose parent contains `package.yaml`, the harness resolves tests
+relative to that package. When the root does not sit inside a package, the CLI
+stays in *project mode* but still inspects immediate
+subdirectories—any of them that contains `package.yaml` contributes its
+`<package>/tests/` directory to the run.
 
 Every `tenzir` invocation receives `--package-dirs=<package>` so user-defined
 operators in `<package>/operators/` resolve automatically.
@@ -90,6 +99,10 @@ operators in `<package>/operators/` resolve automatically.
 The environment exposes `TENZIR_PACKAGE_ROOT` so fixtures can resolve paths
 relative to the package root, while `TENZIR_INPUTS` points to
 `<package>/tests/inputs/`.
+
+When no manifest is discovered the harness keeps the standard project layout:
+`tests/` is the primary discovery root and global fixtures, runners, and inputs
+apply as usual.
 
 ### Runners
 

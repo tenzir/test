@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
+
 from __future__ import annotations
 
 import argparse
 import builtins
 import dataclasses
 import difflib
+import enum
 import importlib.util
 import logging
 import os
@@ -44,11 +46,33 @@ TestConfig = dict[str, object]
 RunnerQueueItem = tuple[Runner, Path]
 T = TypeVar("T")
 
+
+class ExecutionMode(enum.Enum):
+    """Supported discovery modes."""
+
+    PROJECT = "project"
+    PACKAGE = "package"
+
+
+def detect_execution_mode(root: Path) -> tuple[ExecutionMode, Path | None]:
+    """Return the execution mode and detected package root for `root`."""
+
+    if packages.is_package_dir(root):
+        return ExecutionMode.PACKAGE, root
+
+    parent = root.parent if root.name == "tests" else None
+    if parent is not None and packages.is_package_dir(parent):
+        return ExecutionMode.PACKAGE, parent
+
+    return ExecutionMode.PROJECT, None
+
+
 _settings = discover_settings()
 TENZIR_BINARY = _settings.tenzir_binary
 TENZIR_NODE_BINARY = _settings.tenzir_node_binary
 ROOT = _settings.root
 INPUTS_DIR = _settings.inputs_dir
+EXECUTION_MODE, _DETECTED_PACKAGE_ROOT = detect_execution_mode(ROOT)
 CHECKMARK = "\033[92;1m✓\033[0m"
 CROSS = "\033[31m✘\033[0m"
 INFO = "\033[94;1mi\033[0m"
@@ -68,10 +92,18 @@ _DEFAULT_RUNNER_BY_SUFFIX: dict[str, str] = {
 def _iter_project_test_directories(root: Path) -> Iterator[Path]:
     """Yield directories that contain tests for the current project."""
 
-    if packages.is_package_dir(root):
-        tests_dir = root / "tests"
-        if tests_dir.is_dir():
-            yield tests_dir
+    if EXECUTION_MODE is ExecutionMode.PACKAGE:
+        if root.name == "tests" and root.is_dir():
+            yield root
+            return
+        package_root = _DETECTED_PACKAGE_ROOT
+        if package_root is not None:
+            tests_dir = package_root / "tests"
+            if tests_dir.is_dir():
+                yield tests_dir
+                return
+        if root.is_dir():
+            yield root
         return
 
     package_dirs = list(packages.iter_package_dirs(root))
@@ -142,13 +174,15 @@ def _resolve_inputs_dir(root: Path) -> Path:
 
 
 def apply_settings(settings: Settings) -> None:
-    global TENZIR_BINARY, TENZIR_NODE_BINARY, ROOT, INPUTS_DIR
+    global TENZIR_BINARY, TENZIR_NODE_BINARY, ROOT, INPUTS_DIR, EXECUTION_MODE
+    global _DETECTED_PACKAGE_ROOT
     global _settings
     _settings = settings
     TENZIR_BINARY = settings.tenzir_binary
     TENZIR_NODE_BINARY = settings.tenzir_node_binary
     ROOT = settings.root
     INPUTS_DIR = _resolve_inputs_dir(settings.root)
+    EXECUTION_MODE, _DETECTED_PACKAGE_ROOT = detect_execution_mode(ROOT)
 
 
 def _import_module_from_path(module_name: str, path: Path, *, package: bool = False) -> ModuleType:

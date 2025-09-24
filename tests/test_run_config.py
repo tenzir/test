@@ -6,6 +6,7 @@ import sys
 import pytest
 
 from tenzir_test import config, run
+from tenzir_test.run import ExecutionMode
 
 
 @pytest.fixture()
@@ -172,6 +173,52 @@ def test_iter_project_test_directories_prefers_package_tests(configured_root: Pa
     discovered = list(run._iter_project_test_directories(configured_root))
 
     assert discovered == [tests_dir]
+
+
+def test_detect_execution_mode_for_package_root(tmp_path: Path) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "package.yaml").write_text("name: pkg\n", encoding="utf-8")
+
+    mode, detected_root = run.detect_execution_mode(package_root)
+
+    assert mode is ExecutionMode.PACKAGE
+    assert detected_root == package_root
+
+
+def test_detect_execution_mode_from_tests_directory(tmp_path: Path) -> None:
+    package_root = tmp_path / "pkg"
+    tests_dir = package_root / "tests"
+    tests_dir.mkdir(parents=True)
+    (package_root / "package.yaml").write_text("name: pkg\n", encoding="utf-8")
+
+    mode, detected_root = run.detect_execution_mode(tests_dir)
+
+    assert mode is ExecutionMode.PACKAGE
+    assert detected_root == package_root
+
+
+def test_detect_execution_mode_defaults_to_project(tmp_path: Path) -> None:
+    project_root = tmp_path / "workspace"
+    project_root.mkdir()
+    (project_root / "pkg").mkdir()
+
+    mode, detected_root = run.detect_execution_mode(project_root)
+
+    assert mode is ExecutionMode.PROJECT
+    assert detected_root is None
+
+
+def test_detect_execution_mode_for_nested_paths(tmp_path: Path) -> None:
+    package_root = tmp_path / "pkg"
+    nested_dir = package_root / "tests" / "suite"
+    nested_dir.mkdir(parents=True)
+    (package_root / "package.yaml").write_text("name: pkg\n", encoding="utf-8")
+
+    mode, detected_root = run.detect_execution_mode(nested_dir)
+
+    assert mode is ExecutionMode.PROJECT
+    assert detected_root is None
 
 
 def test_run_simple_test_injects_package_dirs(
