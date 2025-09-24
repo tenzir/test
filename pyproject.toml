@@ -45,7 +45,7 @@ packages = ["src/tenzir_test"]
 include = [
   "/src/**/*",
   "/tests",
-  "/example",
+  "/example-project",
   "/scripts",
   "/README.md",
   "/CONTRIBUTING.md",

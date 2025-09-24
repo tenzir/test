@@ -10,7 +10,7 @@ This example demonstrates the directory layout that `tenzir-test` expects and sh
 ## Directory Structure
 
 ```
-example/
+example-project/
 ├── fixtures/
 │   └── http.py
 ├── inputs/
@@ -44,7 +44,7 @@ From the repository root:
 
 ```sh
 TENZIR_BINARY=/path/to/tenzir \
-  uv run tenzir-test --root example
+  uv run tenzir-test --root example-project
 ```
 
 Use `--update` to regenerate reference outputs after modifying the tests, and `--purge` to drop any stale artefacts.
