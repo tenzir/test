@@ -29,8 +29,8 @@ Python 3.12+ project.
   `.txt` or `.diff`).
 - **Reference/Baseline** – The expected artifact stored next to a test;
   `--update` rewrites it.
-- **Configuration** – Settings resolved from frontmatter plus `tenzir.yaml`
-  files adjacent to tests.
+- **Configuration** – Settings resolved from `test.yaml` files plus
+  per-test frontmatter; `tenzir.yaml` files still configure the Tenzir binary.
 
 ```sh
 uv add tenzir-test
@@ -72,6 +72,8 @@ Key conventions:
 - `runners/` collects runner registrations; the CLI imports
   `runners/__init__.py` automatically and ignores the directory during test
   discovery.
+- `test.yaml` defines default frontmatter values for a directory and all child
+  directories; child files can still override settings locally.
 - Any `tenzir.yaml` placed in a test directory applies to every test in that
   directory; the harness passes `--config=<file>` automatically.
 - Everything under `tests/` is organisational. The harness recurses through the
@@ -108,25 +110,19 @@ apply as usual.
 
 Runners describe how the harness executes a test file. Each runner registers a
 **name**—the value you reference in frontmatter via `runner: <name>`. The
-built-in Tenzir runners all drive the same executable; they simply tweak the
-flags passed to `tenzir`:
+generic harness ships with a `tenzir` runner for `.tql` pipelines, while the
+[Tenzir repository](https://github.com/tenzir/tenzir) registers additional
+diagnostic runners under `test/runners/`; they tweak the flags passed to
+`tenzir`:
 
-| Runner          | Command                                          | Input Extension  | Artifact | Purpose                                   |
-| --------------- | ------------------------------------------------ | ---------------- | -------- | ----------------------------------------- |
-| `tenzir`        | `tenzir -f <test>`                               | `.tql` (default) | `.txt`   | Evaluate the pipeline and capture stdout. |
-| `lexer`         | `tenzir --dump-tokens -f <test>`                 | `.tql`           | `.txt`   | Inspect the token stream.                 |
-| `ast`           | `tenzir --dump-ast -f <test>`                    | `.tql`           | `.txt`   | Review the parsed abstract syntax tree.   |
-| `ir`            | `tenzir --dump-ir -f <test>`                     | `.tql`           | `.txt`   | Record the intermediate representation.   |
-| `finalize`      | `tenzir --dump-finalized -f <test>`              | `.tql`           | `.txt`   | Show the finalized pipeline.              |
-| `instantiation` | `tenzir --dump-ir` ⇄ `tenzir --dump-inst-ir`     | `.tql`           | `.diff`  | Diff instantiation rewrites.              |
-| `opt`           | `tenzir --dump-inst-ir` ⇄ `tenzir --dump-opt-ir` | `.tql`           | `.diff`  | Diff post-optimization rewrites.          |
+| Runner   | Command/Behaviour                                 | Input Extension | Artifact | Purpose                                        |
+| -------- | ------------------------------------------------- | --------------- | -------- | ---------------------------------------------- |
+| `tenzir` | `tenzir -f <test>`                                | `.tql` (default)| `.txt`   | Evaluate pipelines and capture stdout.         |
+| `python` | Execute the script with the active Python runtime | `.py`           | `.txt`   | Run Python-based fixtures/tests with baselines.|
+| `custom` | `sh -eu <test>` via the harness check helper      | `.sh`           | varies   | Drive shell scenarios with fixture support.    |
 
-Other bundled runners cover fixtures and scripting workflows:
-
-- `python` executes Python tests/fixtures (`*.py`) and compares combined
-  stdout/stderr with a `.txt` baseline.
-- `custom` runs shell fixtures (`*.sh`) under `bash -eu`, wiring in the harness
-  environment.
+Register your own by importing `tenzir_test.runners` and calling `register()` or
+the `@startup()` decorator.
 
 Runner selection happens in two steps:
 
@@ -139,12 +135,30 @@ default when you need a different refinement of the `tenzir` command.
 
 ### Directory-scoped Configuration
 
-When a test runs, `tenzir-test` looks for `tenzir.yaml` in the same directory as
-the test file. If it exists, the runner adds `--config=<that file>` to the
-Tenzir command line; otherwise no configuration flag is passed. This means you
-can extra a config per suite (one file alongside a set of tests) or per test
-(each test in its own folder with its own `tenzir.yaml`). The harness does not
-search parent directories—only the test’s immediate directory matters.
+`tenzir-test` merges filesystem-level configuration before it evaluates
+frontmatter:
+
+- A `test.yaml` placed in any test directory contributes default frontmatter
+  values for that directory and all descendants. Child directories inherit the
+  mapping and can override individual keys; when a child changes an inherited
+  value, the harness emits an informational log so you can double-check the
+  intent.
+- A `tenzir.yaml` sitting next to a test instructs the harness to append
+  `--config=<file>` when invoking `tenzir`, which keeps runtime settings close
+  to the scenarios that rely on them. The harness does not climb the directory
+  tree—only the file that lives alongside the test is considered.
+
+Because `test.yaml` understands the same keys as frontmatter, you can promote
+common settings—such as runner selection or fixture names—into a single file:
+
+```yaml
+runner: my-runner
+fixtures: [http]
+timeout: 60
+```
+
+Individual tests still apply their own frontmatter on top and may override any
+value.
 
 Project-specific runners live next to your tests. Drop a `runners/` package into
 the project root and `tenzir-test` will import it automatically—just like
@@ -197,7 +211,9 @@ def make_xxd_runner() -> runners.Runner:
 ### Test Frontmatter
 
 Every scenario starts with a frontmatter block that configures execution. `.tql`
-files require YAML frontmatter bounded by `---`:
+files require YAML frontmatter bounded by `---`. The harness applies
+frontmatter on top of any defaults inherited from surrounding `test.yaml`
+files:
 
 ```tql
 ---
@@ -227,7 +243,7 @@ surfaces requested fixtures through `TENZIR_TEST_FIXTURES` plus the helper API.
 Recognised frontmatter keys:
 
 - `timeout` – number of seconds before the command times out (default: 30).
-- `runner` – runner name (for example `tenzir`, `ir`, `lexer`).
+- `runner` – runner name (for example `tenzir`, `python`, or any custom registration).
 - `fixtures` – list of fixture names (use `fixture` for a single helper); the
   harness exposes them via `TENZIR_TEST_FIXTURES`.
 - `error` – set to `true` when you expect a non-zero exit code.
@@ -236,6 +252,7 @@ Recognised frontmatter keys:
 When you omit `runner`, the harness maps `.tql` files to `tenzir`, `.py` files
 to `python`, and other suffixes to `tenzir`. Enabling `--coverage` stretches
 timeouts by a factor of five to account for slower instrumented binaries.
+The same keys are valid in `test.yaml`, where they become directory defaults.
 
 ## Running Tests
 
@@ -311,7 +328,7 @@ process via `TENZIR_TEST_FIXTURES`. Declare one or more fixtures with either the
 ```tql
 ---
 runner: tenzir
-fixtures: [node, sink]
+fixtures: [node, my-fixture]
 ---
 ```
 

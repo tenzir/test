@@ -8,14 +8,8 @@ from .runner import Runner
 from .ext_runner import ExtRunner
 from .tql_runner import TqlRunner
 from .diff_runner import DiffRunner
-from .ast_runner import AstRunner
 from .custom_fixture_runner import CustomFixture
 from .custom_python_fixture_runner import CustomPythonFixture
-from .finalize_runner import FinalizeRunner
-from .instantiation_runner import InstantiationRunner
-from .ir_runner import IrRunner
-from .lexer_runner import LexerRunner
-from .opt_runner import OptRunner
 from .tenzir_runner import TenzirRunner
 
 _REGISTERED: dict[str, Runner] = {}
@@ -134,15 +128,9 @@ def get_runner_for_test(test_path: Path) -> Runner:
     raise ValueError(f"Runner '{runner_name}' not found - this is a bug")
 
 
-register(AstRunner())
 register(CustomFixture())
 register(CustomPythonFixture())
 register(TenzirRunner())
-register(FinalizeRunner())
-register(InstantiationRunner())
-register(IrRunner())
-register(LexerRunner())
-register(OptRunner())
 
 _refresh_exports()
 
@@ -150,15 +138,9 @@ __all__ = [
     "Runner",
     "ExtRunner",
     "TqlRunner",
-    "AstRunner",
     "CustomFixture",
     "CustomPythonFixture",
     "TenzirRunner",
-    "FinalizeRunner",
-    "InstantiationRunner",
-    "IrRunner",
-    "LexerRunner",
-    "OptRunner",
     "DiffRunner",
     "RUNNERS",
     "RUNNERS_BY_NAME",

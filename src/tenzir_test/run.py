@@ -88,6 +88,259 @@ _DEFAULT_RUNNER_BY_SUFFIX: dict[str, str] = {
     ".py": "python",
 }
 
+_CONFIG_FILE_NAME = "test.yaml"
+_CONFIG_LOGGER = logging.getLogger("tenzir_test.config")
+_CONFIG_LOGGER.setLevel(logging.INFO)
+if not _CONFIG_LOGGER.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    _CONFIG_LOGGER.addHandler(handler)
+    _CONFIG_LOGGER.propagate = False
+_DIRECTORY_CONFIG_CACHE: dict[Path, "_DirectoryConfig"] = {}
+_MISSING = object()
+
+
+@dataclasses.dataclass(slots=True)
+class _DirectoryConfig:
+    values: TestConfig
+    sources: dict[str, Path]
+
+
+def _default_test_config() -> TestConfig:
+    return {
+        "error": False,
+        "timeout": 30,
+        "runner": None,
+        "skip": None,
+        "fixtures": tuple(),
+    }
+
+
+def _canonical_config_key(key: str) -> str:
+    if key == "fixture":
+        return "fixtures"
+    return key
+
+
+def _raise_config_error(
+    location: Path | str, message: str, line_number: int | None = None
+) -> None:
+    base = str(location)
+    if line_number is not None:
+        base = f"{base}:{line_number}"
+    raise ValueError(f"Error in {base}: {message}")
+
+
+def _normalize_fixtures_value(
+    value: typing.Any,
+    *,
+    location: Path | str,
+    line_number: int | None = None,
+) -> tuple[str, ...]:
+    raw: typing.Any
+    if isinstance(value, list):
+        raw = value
+    elif isinstance(value, str):
+        try:
+            parsed = yaml.safe_load(value)
+        except yaml.YAMLError:
+            parsed = None
+        if isinstance(parsed, list):
+            raw = parsed
+        else:
+            raw = [value]
+    else:
+        _raise_config_error(
+            location,
+            f"Invalid value for 'fixtures', expected string or list, got '{value}'",
+            line_number,
+        )
+        return tuple()
+
+    fixtures: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            _raise_config_error(
+                location,
+                f"Invalid fixture entry '{entry}', expected string",
+                line_number,
+            )
+        name = entry.strip()
+        if not name:
+            _raise_config_error(
+                location,
+                "Fixture names must be non-empty strings",
+                line_number,
+            )
+        fixtures.append(name)
+    return tuple(fixtures)
+
+
+def _assign_config_option(
+    config: TestConfig,
+    key: str,
+    value: typing.Any,
+    *,
+    location: Path | str,
+    line_number: int | None = None,
+) -> None:
+    canonical = _canonical_config_key(key)
+    valid_keys: set[str] = {"error", "timeout", "runner", "skip", "fixtures"}
+    if canonical not in valid_keys:
+        _raise_config_error(location, f"Unknown configuration key '{key}'", line_number)
+
+    if canonical == "skip":
+        if not isinstance(value, str) or not value.strip():
+            _raise_config_error(
+                location,
+                "'skip' value must be a non-empty string",
+                line_number,
+            )
+        config[canonical] = value
+        return
+
+    if canonical == "error":
+        if isinstance(value, bool):
+            config[canonical] = value
+            return
+        if isinstance(value, str):
+            lowered = value.lower()
+            if lowered in {"true", "false"}:
+                config[canonical] = lowered == "true"
+                return
+        _raise_config_error(
+            location,
+            f"Invalid value for '{canonical}', expected 'true' or 'false', got '{value}'",
+            line_number,
+        )
+        return
+
+    if canonical == "timeout":
+        if isinstance(value, int):
+            timeout_value = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            timeout_value = int(value)
+        else:
+            _raise_config_error(
+                location,
+                f"Invalid value for 'timeout', expected integer, got '{value}'",
+                line_number,
+            )
+            return
+        if timeout_value <= 0:
+            _raise_config_error(
+                location,
+                f"Invalid value for 'timeout', expected positive integer, got '{value}'",
+                line_number,
+            )
+        config[canonical] = timeout_value
+        return
+
+    if canonical == "fixtures":
+        config[canonical] = _normalize_fixtures_value(
+            value, location=location, line_number=line_number
+        )
+        return
+
+    if canonical == "runner":
+        if not isinstance(value, str):
+            _raise_config_error(
+                location,
+                f"Invalid value for 'runner', expected string, got '{value}'",
+                line_number,
+            )
+        runner_names = _runner_names or {runner.name for runner in runners_iter_runners()}
+        if value not in runner_names:
+            _raise_config_error(
+                location,
+                f"Invalid value for 'runner', expected one of {runner_names}, got '{value}'",
+                line_number,
+            )
+        config[canonical] = value
+        return
+
+    config[canonical] = value
+
+
+def _log_directory_override(
+    *,
+    path: Path,
+    key: str,
+    previous: object,
+    new: object,
+    previous_source: Path,
+) -> None:
+    message = (
+        f"{path} overrides '{key}' from {previous!r} (defined in {previous_source}) to {new!r}"
+    )
+    _CONFIG_LOGGER.info(message)
+
+
+def _load_directory_config(directory: Path) -> _DirectoryConfig:
+    resolved = directory.resolve()
+    cached = _DIRECTORY_CONFIG_CACHE.get(resolved)
+    if cached is not None:
+        return cached
+
+    try:
+        resolved.relative_to(ROOT)
+        inside_root = True
+    except ValueError:
+        inside_root = False
+
+    if inside_root and resolved != ROOT:
+        parent_config = _load_directory_config(resolved.parent)
+        values = dict(parent_config.values)
+        sources = dict(parent_config.sources)
+    else:
+        values = _default_test_config()
+        sources: dict[str, Path] = {}
+
+    config_path = resolved / _CONFIG_FILE_NAME
+    if config_path.is_file():
+        with open(config_path, "r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        if not isinstance(data, dict):
+            raise ValueError(f"Error in {config_path}: configuration must define a mapping")
+        for raw_key, raw_value in data.items():
+            key = _canonical_config_key(str(raw_key))
+            previous_value = values.get(key, _MISSING)
+            previous_source = sources.get(key)
+            _assign_config_option(
+                values,
+                key,
+                raw_value,
+                location=config_path,
+            )
+            new_value = values.get(key)
+            if (
+                previous_source is not None
+                and previous_value is not _MISSING
+                and new_value != previous_value
+            ):
+                _log_directory_override(
+                    path=config_path,
+                    key=key,
+                    previous=previous_value,
+                    new=new_value,
+                    previous_source=previous_source,
+                )
+            sources[key] = config_path
+
+    directory_config = _DirectoryConfig(values=values, sources=sources)
+    _DIRECTORY_CONFIG_CACHE[resolved] = directory_config
+    return directory_config
+
+
+def _get_directory_defaults(directory: Path) -> TestConfig:
+    config = _load_directory_config(directory).values
+    return dict(config)
+
+
+def _clear_directory_config_cache() -> None:
+    _DIRECTORY_CONFIG_CACHE.clear()
+
 
 def _iter_project_test_directories(root: Path) -> Iterator[Path]:
     """Yield directories that contain tests for the current project."""
@@ -183,6 +436,7 @@ def apply_settings(settings: Settings) -> None:
     ROOT = settings.root
     INPUTS_DIR = _resolve_inputs_dir(settings.root)
     EXECUTION_MODE, _DETECTED_PACKAGE_ROOT = detect_execution_mode(ROOT)
+    _clear_directory_config_cache()
 
 
 def _import_module_from_path(module_name: str, path: Path, *, package: bool = False) -> ModuleType:
@@ -319,120 +573,18 @@ def report_failure(test: Path, message: str) -> None:
 
 def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
     """Parse test configuration from frontmatter at the beginning of the file."""
-    config: TestConfig = {
-        "error": False,
-        "timeout": 30,
-        "runner": None,
-        "skip": None,
-        "fixtures": tuple(),
-    }
+    config = _default_test_config()
 
-    valid_keys: set[str] = set(config.keys()) | {"fixture"}
+    defaults = _get_directory_defaults(test_file.parent)
+    for key, value in defaults.items():
+        config[key] = value
+
     is_tql = test_file.suffix == ".tql"
     is_py = test_file.suffix == ".py"
 
-    def _raise(message: str, line_number: int | None = None) -> None:
+    def _error(message: str, line_number: int | None = None) -> None:
         location = f"{test_file}:{line_number}" if line_number is not None else f"{test_file}"
         raise ValueError(f"Error in {location}: {message}")
-
-    def _normalize_fixtures(value: typing.Any, line_number: int | None = None) -> tuple[str, ...]:
-        items: list[str] = []
-        raw: typing.Any
-        if isinstance(value, list):
-            raw = value
-        elif isinstance(value, str):
-            try:
-                parsed = yaml.safe_load(value)
-            except yaml.YAMLError:
-                parsed = None
-            if isinstance(parsed, list):
-                raw = parsed
-            else:
-                raw = [value]
-        else:
-            _raise(
-                f"Invalid value for 'fixtures', expected string or list, got '{value}'",
-                line_number,
-            )
-            return tuple()
-
-        if isinstance(raw, list):
-            for entry in raw:
-                if isinstance(entry, str):
-                    name = entry.strip()
-                    if not name:
-                        _raise("Fixture names must be non-empty strings", line_number)
-                    items.append(name)
-                else:
-                    _raise(
-                        f"Invalid fixture entry '{entry}', expected string",
-                        line_number,
-                    )
-        else:
-            _raise(
-                f"Invalid value for 'fixtures', expected list, got '{raw}'",
-                line_number,
-            )
-        return tuple(items)
-
-    def _assign(key: str, value: typing.Any, line_number: int | None = None) -> None:
-        if key not in valid_keys:
-            _raise(f"Unknown configuration key '{key}'", line_number)
-        if key == "skip":
-            if not isinstance(value, str) or not value.strip():
-                _raise("'skip' value must be a non-empty string", line_number)
-            config[key] = value
-            return
-        if key == "error":
-            if isinstance(value, bool):
-                config[key] = value
-                return
-            if isinstance(value, str):
-                lowered = value.lower()
-                if lowered in {"true", "false"}:
-                    config[key] = lowered == "true"
-                    return
-            _raise(
-                f"Invalid value for '{key}', expected 'true' or 'false', got '{value}'",
-                line_number,
-            )
-            return
-        if key == "timeout":
-            if isinstance(value, int):
-                timeout_value = value
-            elif isinstance(value, str) and value.strip().isdigit():
-                timeout_value = int(value)
-            else:
-                _raise(
-                    f"Invalid value for 'timeout', expected integer, got '{value}'",
-                    line_number,
-                )
-                return
-            if timeout_value <= 0:
-                _raise(
-                    f"Invalid value for 'timeout', expected positive integer, got '{value}'",
-                    line_number,
-                )
-            config[key] = timeout_value
-            return
-        if key in {"fixture", "fixtures"}:
-            config["fixtures"] = _normalize_fixtures(value, line_number)
-            return
-        if key == "runner":
-            if not isinstance(value, str):
-                _raise(
-                    f"Invalid value for 'runner', expected string, got '{value}'",
-                    line_number,
-                )
-            names = _runner_names or {runner.name for runner in runners_iter_runners()}
-            if value not in names:
-                _raise(
-                    f"Invalid value for 'runner', expected one of {names}, got '{value}'",
-                    line_number,
-                )
-            config[key] = value
-            return
-        config[key] = value
 
     with open(test_file, "r", encoding="utf-8", errors="ignore") as handle:
         lines = handle.readlines()
@@ -454,12 +606,12 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
                 yaml_lines.append(line)
                 idx += 1
             if not consumed_frontmatter:
-                _raise("YAML frontmatter must be terminated with '---'")
+                _error("YAML frontmatter must be terminated with '---'")
             yaml_data = yaml.safe_load("".join(yaml_lines)) or {}
             if not isinstance(yaml_data, dict):
-                _raise("YAML frontmatter must define a mapping")
+                _error("YAML frontmatter must define a mapping")
             for key, value in yaml_data.items():
-                _assign(str(key), value)
+                _assign_config_option(config, str(key), value, location=test_file)
 
     if not consumed_frontmatter and is_py:
         line_number = 0
@@ -476,10 +628,16 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
             if len(parts) != 2:
                 if line_number == 1:
                     break
-                _raise("Invalid frontmatter, expected 'key: value'", line_number)
+                _error("Invalid frontmatter, expected 'key: value'", line_number)
             key = parts[0].strip()
             value = parts[1].strip()
-            _assign(key, value, line_number)
+            _assign_config_option(
+                config,
+                key,
+                value,
+                location=test_file,
+                line_number=line_number,
+            )
 
     if coverage:
         timeout_value = cast(int, config["timeout"])

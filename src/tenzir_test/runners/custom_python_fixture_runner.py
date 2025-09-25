@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import typing
@@ -38,6 +39,24 @@ class CustomPythonFixture(ExtRunner):
                     tenzir_node_binary=run_mod.TENZIR_NODE_BINARY,
                 )
             )
+            pythonpath_entries: list[str] = []
+            project_root = getattr(run_mod, "ROOT", None)
+            project_root_path: Path | None = None
+            if isinstance(project_root, Path):
+                project_root_path = project_root
+            elif isinstance(project_root, str):
+                project_root_path = Path(project_root)
+
+            if project_root_path is not None:
+                pythonpath_entries.append(str(project_root_path))
+                tests_dir = project_root_path / "tests"
+                if tests_dir.is_dir():
+                    pythonpath_entries.append(str(tests_dir))
+            pythonpath_entries.append(resolve_run_module_dir(run_mod))
+            existing_pythonpath = env.get("PYTHONPATH")
+            if existing_pythonpath:
+                pythonpath_entries.append(existing_pythonpath)
+
             try:
                 with fixture_api.activate(fixtures) as fixture_env:
                     env.update(fixture_env)
@@ -48,13 +67,14 @@ class CustomPythonFixture(ExtRunner):
                             raise RuntimeError(
                                 "node fixture did not provide TENZIR_NODE_CLIENT_ENDPOINT"
                             )
-                    env.update(
-                        {
-                            "PYTHONPATH": resolve_run_module_dir(run_mod),
-                            "TENZIR_NODE_CLIENT_BINARY": binary,
-                            "TENZIR_NODE_CLIENT_TIMEOUT": str(timeout),
-                        }
-                    )
+                    new_pythonpath = os.pathsep.join(pythonpath_entries)
+                    env["PYTHONPATH"] = new_pythonpath
+                    env["TENZIR_NODE_CLIENT_BINARY"] = binary
+                    env["TENZIR_NODE_CLIENT_TIMEOUT"] = str(timeout)
+                    env.setdefault("TENZIR_PYTHON_FIXTURE_BINARY", binary)
+                    env["TENZIR_PYTHON_FIXTURE_TIMEOUT"] = str(timeout)
+                    if node_requested:
+                        env["TENZIR_PYTHON_FIXTURE_ENDPOINT"] = endpoint
                     completed = subprocess.run(
                         cmd,
                         timeout=timeout,
