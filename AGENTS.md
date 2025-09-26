@@ -7,6 +7,7 @@
 - `example-project/` delivers an end-to-end walkthrough; whenever behaviour shifts, mirror updates in `DOCUMENTATION.md` to keep users aligned.
 - Tests live in `tests/`, mirroring package modules so reviewers can locate coverage quickly.
 - Ship new public APIs with type hints and update `py.typed` exports if you add subpackages.
+- Keep `README.md` focused on user onboarding, `DOCUMENTATION.md` as the primary user guide, and `DEVELOPMENT.md` for contributor workflows; update all three when behaviour or processes change.
 
 ## Build, Test, and Development Commands
 

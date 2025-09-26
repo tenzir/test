@@ -1,8 +1,8 @@
 # Development Guide
 
-We are actively constructing this repository while we extract the Tenzir test
-harness into a standalone package. The commands below assume you have Python
-3.12+ and [uv](https://docs.astral.sh/uv/) available.
+This document collects day-to-day workflows for contributors to `tenzir-test`.
+The commands below assume you have Python 3.12+ and
+[uv](https://docs.astral.sh/uv/) available.
 
 ## Development Environment
 
@@ -48,6 +48,21 @@ expects.
   uv build
   ```
 
+## Quality Gates
+
+Before you open a pull request, make sure the full toolchain passes:
+
+```sh
+uv run ruff check
+uv run ruff format --check
+uv run mypy
+uv run pytest
+uv build
+```
+
+`uv build` mirrors the distribution checks enforced by CI, so running it
+locally helps catch packaging issues early.
+
 ## Extending Fixtures and Runners
 
 - Built-in fixtures live in `src/tenzir_test/fixtures/`; each module registers
@@ -59,12 +74,27 @@ expects.
 
 ## Releasing
 
-1. Update `CHANGELOG.md` with noteworthy changes.
-2. Bump the version via `uv version patch|minor|major` (placeholder until we
-   finalize the release flow).
-3. Build artifacts with `uv build`.
-4. Publish using `uv publish` (requires the `UV_PUBLISH_TOKEN` environment
-   variable that has access to PyPI).
+Releases use GitHub Actions with trusted publishing. When you are ready to cut
+a new version:
 
-The release process will evolve alongside the extraction effort; treat this
-document as a living guide.
+1. Bump the version via `uv version <part>` (for example `uv version minor`).
+2. Commit the changes and create an annotated tag `git tag vX.Y.Z`.
+3. Push the branch and tag to GitHub.
+4. Draft and publish a GitHub release for the tag.
+
+Publishing the release triggers the **Publish to PyPI** workflow. It builds the
+artifacts, validates metadata, uploads the distributions to PyPI with trusted
+publishing, and runs a post-publish install smoke test.
+
+## Pull Requests
+
+- Keep changes focused and reference related issues when applicable.
+- Update `DOCUMENTATION.md` and `example-project/` and `example-package/` when
+  behaviour shifts.
+- Ensure CI is green before requesting a review.
+
+## Code of Conduct
+
+We follow the [Tenzir community guidelines](https://github.com/tenzir/community).
+Contact the maintainers if you encounter behaviour that violates the code of
+conduct.
