@@ -63,10 +63,11 @@ Contributor workflows, quality gates, and release procedures live in
 [`DEVELOPMENT.md`](DEVELOPMENT.md). Follow that guide when you work on the
 project locally.
 
-## 🗞️ Changelog & Releases
+## 🗞️ Releases
 
-We document notable changes in [`CHANGELOG.md`](CHANGELOG.md). New versions are
-published to PyPI through trusted publishing when a GitHub release is created.
+New versions are published to PyPI through trusted publishing when a GitHub
+release is created. Review the latest release notes on GitHub for details about
+what's new.
 
 ## 📜 License
 
