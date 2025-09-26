@@ -528,6 +528,8 @@ def get_test_env_and_config_args(test: Path) -> tuple[dict[str, str], list[str]]
     env = os.environ.copy()
     inputs_path = str(_resolve_inputs_dir(ROOT))
     env["TENZIR_INPUTS"] = inputs_path
+    if config_file.exists():
+        env.setdefault("TENZIR_CONFIG", str(config_file))
     if TENZIR_BINARY:
         env["TENZIR_BINARY"] = TENZIR_BINARY
     if TENZIR_NODE_BINARY:
