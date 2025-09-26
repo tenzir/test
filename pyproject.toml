@@ -9,14 +9,16 @@ maintainers = [{ name = "Tenzir Engineering", email = "engineering@tenzir.com" }
 license = { text = "Apache-2.0" }
 keywords = ["tenzir", "testing", "pytest", "automation"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Testing",
   "Topic :: Software Development :: Quality Assurance",
+  "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
 dependencies = [
@@ -27,6 +29,7 @@ dependencies = [
 Homepage = "https://github.com/tenzir/test"
 Repository = "https://github.com/tenzir/test"
 "Bug Tracker" = "https://github.com/tenzir/test/issues"
+Documentation = "https://docs.tenzir.com"
 
 [project.scripts]
 tenzir-test = "tenzir_test.cli:main"
@@ -48,7 +51,6 @@ include = [
   "/example-project",
   "/scripts",
   "/README.md",
-  "/CONTRIBUTING.md",
   "/CHANGELOG.md",
   "/LICENSE",
   "/pyproject.toml",
