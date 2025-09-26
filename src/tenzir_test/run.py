@@ -123,9 +123,7 @@ def _canonical_config_key(key: str) -> str:
     return key
 
 
-def _raise_config_error(
-    location: Path | str, message: str, line_number: int | None = None
-) -> None:
+def _raise_config_error(location: Path | str, message: str, line_number: int | None = None) -> None:
     base = str(location)
     if line_number is not None:
         base = f"{base}:{line_number}"
@@ -251,11 +249,10 @@ def _assign_config_option(
                 line_number,
             )
         runner_names = _runner_names or {runner.name for runner in runners_iter_runners()}
-        if value not in runner_names:
-            _raise_config_error(
-                location,
-                f"Invalid value for 'runner', expected one of {runner_names}, got '{value}'",
-                line_number,
+        if runner_names and value not in runner_names:
+            _CONFIG_LOGGER.info(
+                "Runner '%s' is not registered; proceeding with explicit selection.",
+                value,
             )
         config[canonical] = value
         return
@@ -289,13 +286,15 @@ def _load_directory_config(directory: Path) -> _DirectoryConfig:
     except ValueError:
         inside_root = False
 
+    sources: dict[str, Path]
+
     if inside_root and resolved != ROOT:
         parent_config = _load_directory_config(resolved.parent)
         values = dict(parent_config.values)
         sources = dict(parent_config.sources)
     else:
         values = _default_test_config()
-        sources: dict[str, Path] = {}
+        sources = {}
 
     config_path = resolved / _CONFIG_FILE_NAME
     if config_path.is_file():
