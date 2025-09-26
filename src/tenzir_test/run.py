@@ -425,6 +425,21 @@ def _resolve_inputs_dir(root: Path) -> Path:
     return direct
 
 
+def _looks_like_project_root(path: Path) -> bool:
+    """Return True when the path or one of its parents resembles a project root."""
+
+    candidates = [path, *path.parents]
+    for candidate in candidates:
+        if packages.is_package_dir(candidate):
+            return True
+        if candidate.name == "tests" and candidate.is_dir():
+            return True
+        tests_dir = candidate / "tests"
+        if tests_dir.is_dir():
+            return True
+    return False
+
+
 def apply_settings(settings: Settings) -> None:
     global TENZIR_BINARY, TENZIR_NODE_BINARY, ROOT, INPUTS_DIR, EXECUTION_MODE
     global _DETECTED_PACKAGE_ROOT
@@ -1068,6 +1083,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         tenzir_node_binary=args.tenzir_node_binary,
     )
     apply_settings(settings)
+    if not args.tests and not _looks_like_project_root(ROOT):
+        print(
+            f"{INFO} no tenzir-test project detected at {ROOT}.\n"
+            f"{INFO} Run from your project root or provide --root."
+        )
+        sys.exit(1)
     _load_project_runners(settings.root)
     _load_project_fixtures(settings.root)
     refresh_runner_metadata()
