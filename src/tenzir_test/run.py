@@ -785,9 +785,7 @@ def _format_summary(summary: Summary) -> str:
     if total <= 0:
         return "Test summary: No tests were discovered."
 
-    passed_segment = (
-        f"{CHECKMARK} Passed {passed}/{total} ({_format_percentage(passed, total)})"
-    )
+    passed_segment = f"{CHECKMARK} Passed {passed}/{total} ({_format_percentage(passed, total)})"
     failed_segment = (
         f"{CROSS} Failed {summary.failed} ({_format_percentage(summary.failed, total)})"
     )
@@ -1016,9 +1014,7 @@ def _render_summary_box(summary: Summary) -> list[str]:
     return [top, header, separator, *body, bottom]
 
 
-def _print_ascii_summary(
-    summary: Summary, *, include_runner: bool, include_fixture: bool
-) -> None:
+def _print_ascii_summary(summary: Summary, *, include_runner: bool, include_fixture: bool) -> None:
     runner_lines = _render_runner_box(summary) if include_runner else []
     fixture_lines = _render_fixture_box(summary) if include_fixture else []
     outcome_lines = _render_summary_box(summary)

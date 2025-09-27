@@ -29,9 +29,7 @@ def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
 def test_format_summary_reports_counts_and_percentages() -> None:
     summary = run.Summary(failed=1, total=357, skipped=3)
     message = run._format_summary(summary)
-    assert message.startswith(
-        f"Test summary: {run.CHECKMARK} Passed 353/357 (98.9%)"
-    )
+    assert message.startswith(f"Test summary: {run.CHECKMARK} Passed 353/357 (98.9%)")
     assert f"{run.CROSS} Failed 1 (0.3%)" in message
     assert f"{run.SKIP} Skipped 3 (0.8%)" in message
 
