@@ -76,6 +76,7 @@ EXECUTION_MODE, _DETECTED_PACKAGE_ROOT = detect_execution_mode(ROOT)
 CHECKMARK = "\033[92;1m✓\033[0m"
 CROSS = "\033[31m✘\033[0m"
 INFO = "\033[94;1mi\033[0m"
+SKIP = "\033[33;1m➜\033[0m"
 
 stdout_lock = threading.RLock()
 
@@ -696,6 +697,31 @@ class Summary:
         )
 
 
+def _format_percentage(count: int, total: int) -> str:
+    if total <= 0:
+        return "0.0%"
+    return f"{(count / total) * 100:.1f}%"
+
+
+def _format_summary(summary: Summary) -> str:
+    total = summary.total
+    passed = max(0, total - summary.failed - summary.skipped)
+    if total <= 0:
+        return "Test summary: No tests were discovered."
+
+    passed_segment = (
+        f"{CHECKMARK} Passed {passed}/{total} ({_format_percentage(passed, total)})"
+    )
+    failed_segment = (
+        f"{CROSS} Failed {summary.failed} ({_format_percentage(summary.failed, total)})"
+    )
+    skipped_segment = (
+        f"{SKIP} Skipped {summary.skipped} ({_format_percentage(summary.skipped, total)})"
+    )
+
+    return f"Test summary: {passed_segment} • {failed_segment} • {skipped_segment}"
+
+
 def get_version() -> str:
     if not TENZIR_BINARY:
         raise FileNotFoundError("TENZIR_BINARY is not configured")
@@ -1177,9 +1203,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         worker.start()
     for worker in workers:
         summary += worker.join()
-    print(
-        f"{INFO} {summary.total - summary.failed - summary.skipped}/{summary.total} tests passed ({summary.skipped} skipped)"
-    )
+    print(f"{INFO} {_format_summary(summary)}")
     if args.coverage:
         coverage_dir = os.environ.get(
             "CMAKE_COVERAGE_OUTPUT_DIRECTORY", os.path.join(os.getcwd(), "coverage")
