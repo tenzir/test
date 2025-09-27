@@ -11,6 +11,7 @@ import enum
 import importlib.util
 import logging
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -77,6 +78,7 @@ CHECKMARK = "\033[92;1m✓\033[0m"
 CROSS = "\033[31m✘\033[0m"
 INFO = "\033[94;1mi\033[0m"
 SKIP = "\033[33;1m➜\033[0m"
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 stdout_lock = threading.RLock()
 
@@ -683,18 +685,92 @@ def print(*args: object, **kwargs: Any) -> None:
 
 
 @dataclasses.dataclass
+class RunnerStats:
+    total: int = 0
+    failed: int = 0
+    skipped: int = 0
+
+
+@dataclasses.dataclass
+class FixtureStats:
+    total: int = 0
+    failed: int = 0
+    skipped: int = 0
+
+
+def _merge_runner_stats(
+    left: dict[str, RunnerStats], right: dict[str, RunnerStats]
+) -> dict[str, RunnerStats]:
+    merged: dict[str, RunnerStats] = {}
+    for name in {**left, **right}:
+        stats = RunnerStats()
+        if (lhs := left.get(name)) is not None:
+            stats.total += lhs.total
+            stats.failed += lhs.failed
+            stats.skipped += lhs.skipped
+        if (rhs := right.get(name)) is not None:
+            stats.total += rhs.total
+            stats.failed += rhs.failed
+            stats.skipped += rhs.skipped
+        merged[name] = stats
+    return merged
+
+
+def _merge_fixture_stats(
+    left: dict[str, FixtureStats], right: dict[str, FixtureStats]
+) -> dict[str, FixtureStats]:
+    merged: dict[str, FixtureStats] = {}
+    for name in {**left, **right}:
+        stats = FixtureStats()
+        if (lhs := left.get(name)) is not None:
+            stats.total += lhs.total
+            stats.failed += lhs.failed
+            stats.skipped += lhs.skipped
+        if (rhs := right.get(name)) is not None:
+            stats.total += rhs.total
+            stats.failed += rhs.failed
+            stats.skipped += rhs.skipped
+        merged[name] = stats
+    return merged
+
+
+@dataclasses.dataclass
 class Summary:
-    def __init__(self, failed: int = 0, total: int = 0, skipped: int = 0):
-        self.failed = failed
-        self.total = total
-        self.skipped = skipped
+    failed: int = 0
+    total: int = 0
+    skipped: int = 0
+    failed_paths: list[Path] = dataclasses.field(default_factory=list)
+    skipped_paths: list[Path] = dataclasses.field(default_factory=list)
+    runner_stats: dict[str, RunnerStats] = dataclasses.field(default_factory=dict)
+    fixture_stats: dict[str, FixtureStats] = dataclasses.field(default_factory=dict)
 
     def __add__(self, other: "Summary") -> "Summary":
         return Summary(
-            self.failed + other.failed,
-            self.total + other.total,
-            self.skipped + other.skipped,
+            failed=self.failed + other.failed,
+            total=self.total + other.total,
+            skipped=self.skipped + other.skipped,
+            failed_paths=[*self.failed_paths, *other.failed_paths],
+            skipped_paths=[*self.skipped_paths, *other.skipped_paths],
+            runner_stats=_merge_runner_stats(self.runner_stats, other.runner_stats),
+            fixture_stats=_merge_fixture_stats(self.fixture_stats, other.fixture_stats),
         )
+
+    def record_runner_outcome(self, runner_name: str, outcome: bool | str) -> None:
+        stats = self.runner_stats.setdefault(runner_name, RunnerStats())
+        stats.total += 1
+        if outcome == "skipped":
+            stats.skipped += 1
+        elif not outcome:
+            stats.failed += 1
+
+    def record_fixture_outcome(self, fixtures: Iterable[str], outcome: bool | str) -> None:
+        for fixture in fixtures:
+            stats = self.fixture_stats.setdefault(fixture, FixtureStats())
+            stats.total += 1
+            if outcome == "skipped":
+                stats.skipped += 1
+            elif not outcome:
+                stats.failed += 1
 
 
 def _format_percentage(count: int, total: int) -> str:
@@ -720,6 +796,264 @@ def _format_summary(summary: Summary) -> str:
     )
 
     return f"Test summary: {passed_segment} • {failed_segment} • {skipped_segment}"
+
+
+def _relativize_path(path: Path) -> Path:
+    try:
+        return path.relative_to(ROOT)
+    except ValueError:
+        return path
+
+
+def _get_test_fixtures(test: Path, *, coverage: bool) -> tuple[str, ...]:
+    try:
+        config = parse_test_config(test, coverage=coverage)
+    except ValueError:
+        return tuple()
+    fixtures = config.get("fixtures", tuple())
+    if isinstance(fixtures, tuple):
+        return typing.cast(tuple[str, ...], fixtures)
+    return tuple(typing.cast(Iterable[str], fixtures))
+
+
+def _build_path_tree(paths: Iterable[Path]) -> dict[str, dict[str, Any]]:
+    tree: dict[str, dict[str, Any]] = {}
+    for path in sorted(paths, key=lambda p: p.parts):
+        node = tree
+        for part in path.parts:
+            node = node.setdefault(part, {})
+    return tree
+
+
+def _render_tree(tree: dict[str, dict[str, Any]], prefix: str = "") -> Iterator[str]:
+    items = sorted(tree.items())
+    for index, (name, subtree) in enumerate(items):
+        is_last = index == len(items) - 1
+        connector = "└── " if is_last else "├── "
+        yield f"{prefix}{connector}{name}"
+        if subtree:
+            extension = "    " if is_last else "│   "
+            yield from _render_tree(subtree, prefix + extension)
+
+
+def _strip_ansi(value: str) -> str:
+    return ANSI_ESCAPE.sub("", value)
+
+
+def _ljust_visible(value: str, width: int) -> str:
+    visible = len(_strip_ansi(value))
+    if visible >= width:
+        return value
+    return value + " " * (width - visible)
+
+
+def _rjust_visible(value: str, width: int) -> str:
+    visible = len(_strip_ansi(value))
+    if visible >= width:
+        return value
+    return " " * (width - visible) + value
+
+
+def _color_tree_glyphs(line: str, color: str) -> str:
+    glyphs = {"│", "├", "└", "─"}
+    parts = []
+    for char in line:
+        if char in glyphs:
+            parts.append(f"{color}{char}\033[0m")
+        else:
+            parts.append(char)
+    return "".join(parts)
+
+
+def _render_runner_box(summary: Summary) -> list[str]:
+    if not summary.runner_stats:
+        return []
+
+    headers = ("Runner", "Passed", "Failed", "Skipped", "Total", "Share")
+    rows: list[tuple[str, str, str, str, str, str]] = []
+    for name in sorted(summary.runner_stats):
+        stats = summary.runner_stats[name]
+        passed = max(0, stats.total - stats.failed - stats.skipped)
+        rows.append(
+            (
+                name,
+                str(passed),
+                str(stats.failed),
+                str(stats.skipped),
+                str(stats.total),
+                _format_percentage(stats.total, summary.total),
+            )
+        )
+
+    label_width = max(len(headers[0]), *(len(_strip_ansi(row[0])) for row in rows))
+    passed_width = max(len(headers[1]), *(len(row[1]) for row in rows))
+    failed_width = max(len(headers[2]), *(len(row[2]) for row in rows))
+    skipped_width = max(len(headers[3]), *(len(row[3]) for row in rows))
+    total_width = max(len(headers[4]), *(len(row[4]) for row in rows))
+    share_width = max(len(headers[5]), *(len(row[5]) for row in rows))
+
+    def frame(char: str, width: int) -> str:
+        return char * (width + 2)
+
+    top = (
+        f"┌{frame('─', label_width)}┬{frame('─', passed_width)}┬{frame('─', failed_width)}"
+        f"┬{frame('─', skipped_width)}┬{frame('─', total_width)}┬{frame('─', share_width)}┐"
+    )
+    header = (
+        f"│ {_ljust_visible(headers[0], label_width)} │ {headers[1].rjust(passed_width)} │ "
+        f"{headers[2].rjust(failed_width)} │ {headers[3].rjust(skipped_width)} │ "
+        f"{headers[4].rjust(total_width)} │ {headers[5].rjust(share_width)} │"
+    )
+    separator = (
+        f"├{frame('─', label_width)}┼{frame('─', passed_width)}┼{frame('─', failed_width)}"
+        f"┼{frame('─', skipped_width)}┼{frame('─', total_width)}┼{frame('─', share_width)}┤"
+    )
+    body = [
+        f"│ {_ljust_visible(name, label_width)} │ {_rjust_visible(passed, passed_width)} │ "
+        f"{_rjust_visible(failed, failed_width)} │ {_rjust_visible(skipped, skipped_width)} │ "
+        f"{_rjust_visible(total, total_width)} │ {_rjust_visible(share, share_width)} │"
+        for name, passed, failed, skipped, total, share in rows
+    ]
+    bottom = (
+        f"└{frame('─', label_width)}┴{frame('─', passed_width)}┴{frame('─', failed_width)}"
+        f"┴{frame('─', skipped_width)}┴{frame('─', total_width)}┴{frame('─', share_width)}┘"
+    )
+    return [top, header, separator, *body, bottom]
+
+
+def _render_fixture_box(summary: Summary) -> list[str]:
+    if not summary.fixture_stats:
+        return []
+
+    headers = ("Fixture", "Passed", "Failed", "Skipped", "Total", "Share")
+    rows: list[tuple[str, str, str, str, str, str]] = []
+    for name in sorted(summary.fixture_stats):
+        stats = summary.fixture_stats[name]
+        passed = max(0, stats.total - stats.failed - stats.skipped)
+        rows.append(
+            (
+                name,
+                str(passed),
+                str(stats.failed),
+                str(stats.skipped),
+                str(stats.total),
+                _format_percentage(stats.total, summary.total),
+            )
+        )
+
+    label_width = max(len(headers[0]), *(len(_strip_ansi(row[0])) for row in rows))
+    passed_width = max(len(headers[1]), *(len(row[1]) for row in rows))
+    failed_width = max(len(headers[2]), *(len(row[2]) for row in rows))
+    skipped_width = max(len(headers[3]), *(len(row[3]) for row in rows))
+    total_width = max(len(headers[4]), *(len(row[4]) for row in rows))
+    share_width = max(len(headers[5]), *(len(row[5]) for row in rows))
+
+    def frame(char: str, width: int) -> str:
+        return char * (width + 2)
+
+    top = (
+        f"┌{frame('─', label_width)}┬{frame('─', passed_width)}┬{frame('─', failed_width)}"
+        f"┬{frame('─', skipped_width)}┬{frame('─', total_width)}┬{frame('─', share_width)}┐"
+    )
+    header = (
+        f"│ {_ljust_visible(headers[0], label_width)} │ {headers[1].rjust(passed_width)} │ "
+        f"{headers[2].rjust(failed_width)} │ {headers[3].rjust(skipped_width)} │ "
+        f"{headers[4].rjust(total_width)} │ {headers[5].rjust(share_width)} │"
+    )
+    separator = (
+        f"├{frame('─', label_width)}┼{frame('─', passed_width)}┼{frame('─', failed_width)}"
+        f"┼{frame('─', skipped_width)}┼{frame('─', total_width)}┼{frame('─', share_width)}┤"
+    )
+    body = [
+        f"│ {_ljust_visible(name, label_width)} │ {_rjust_visible(passed, passed_width)} │ "
+        f"{_rjust_visible(failed, failed_width)} │ {_rjust_visible(skipped, skipped_width)} │ "
+        f"{_rjust_visible(total, total_width)} │ {_rjust_visible(share, share_width)} │"
+        for name, passed, failed, skipped, total, share in rows
+    ]
+    bottom = (
+        f"└{frame('─', label_width)}┴{frame('─', passed_width)}┴{frame('─', failed_width)}"
+        f"┴{frame('─', skipped_width)}┴{frame('─', total_width)}┴{frame('─', share_width)}┘"
+    )
+    return [top, header, separator, *body, bottom]
+
+
+def _render_summary_box(summary: Summary) -> list[str]:
+    total = summary.total
+    if total <= 0:
+        return [
+            "┌──────────────────────────┐",
+            "│ No tests were discovered │",
+            "└──────────────────────────┘",
+        ]
+
+    passed = max(0, total - summary.failed - summary.skipped)
+    rows = [
+        (f"{CHECKMARK} Passed", str(passed), _format_percentage(passed, total)),
+        (f"{SKIP} Skipped", str(summary.skipped), _format_percentage(summary.skipped, total)),
+        (f"{CROSS} Failed", str(summary.failed), _format_percentage(summary.failed, total)),
+        ("Total tests", str(total), "100.0%"),
+    ]
+    headers = ("Outcome", "Count", "Share")
+    label_width = max(len(headers[0]), *(len(_strip_ansi(row[0])) for row in rows))
+    count_width = max(len(headers[1]), *(len(row[1]) for row in rows))
+    share_width = max(len(headers[2]), *(len(row[2]) for row in rows))
+
+    def frame(char: str, width: int) -> str:
+        return char * (width + 2)
+
+    top = f"┌{frame('─', label_width)}┬{frame('─', count_width)}┬{frame('─', share_width)}┐"
+    header = (
+        f"│ {_ljust_visible(headers[0], label_width)} │ {headers[1].rjust(count_width)} │ "
+        f"{headers[2].rjust(share_width)} │"
+    )
+    separator = f"├{frame('─', label_width)}┼{frame('─', count_width)}┼{frame('─', share_width)}┤"
+    body = [
+        f"│ {_ljust_visible(label, label_width)} │ {_rjust_visible(count, count_width)} │ "
+        f"{_rjust_visible(share, share_width)} │"
+        for label, count, share in rows
+    ]
+    bottom = f"└{frame('─', label_width)}┴{frame('─', count_width)}┴{frame('─', share_width)}┘"
+    return [top, header, separator, *body, bottom]
+
+
+def _print_ascii_summary(
+    summary: Summary, *, include_runner: bool, include_fixture: bool
+) -> None:
+    runner_lines = _render_runner_box(summary) if include_runner else []
+    fixture_lines = _render_fixture_box(summary) if include_fixture else []
+    outcome_lines = _render_summary_box(summary)
+    if not runner_lines and not fixture_lines and not outcome_lines:
+        return
+    print()
+    segments: list[list[str]] = []
+    if runner_lines:
+        segments.append(runner_lines)
+    if fixture_lines:
+        segments.append(fixture_lines)
+    if outcome_lines:
+        segments.append(outcome_lines)
+    for index, block in enumerate(segments):
+        for line in block:
+            print(line)
+        if index < len(segments) - 1:
+            print()
+
+
+def _print_detailed_summary(summary: Summary) -> None:
+    if not summary.failed_paths and not summary.skipped_paths:
+        return
+
+    print()
+    if summary.skipped_paths:
+        print(f"{SKIP} Skipped tests:")
+        for line in _render_tree(_build_path_tree(summary.skipped_paths)):
+            print(f"  {line}")
+        if summary.failed_paths:
+            print()
+    if summary.failed_paths:
+        print(f"{CROSS} Failed tests:")
+        for line in _render_tree(_build_path_tree(summary.failed_paths)):
+            print(f"  {_color_tree_glyphs(line, '\033[31m')}")
 
 
 def get_version() -> str:
@@ -967,7 +1301,7 @@ def run_simple_test(
 
 def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool | str:
     rel_path = test.relative_to(ROOT)
-    print(f"{INFO} skipped {rel_path}: {reason}")
+    print(f"{SKIP} skipped {rel_path}: {reason}")
     ref_path = test.with_suffix(f".{output_ext}")
     if update:
         with ref_path.open("wb") as f:
@@ -1028,12 +1362,19 @@ class Worker:
                     break
 
                 runner, test_path = item
+                fixtures = _get_test_fixtures(test_path, coverage=self._coverage)
                 outcome = runner.run(test_path, self._update, self._coverage)
                 result.total += 1
+                result.record_runner_outcome(runner.name, outcome)
+                if fixtures:
+                    result.record_fixture_outcome(fixtures, outcome)
+                rel_path = _relativize_path(test_path)
                 if outcome == "skipped":
                     result.skipped += 1
+                    result.skipped_paths.append(rel_path)
                 elif not outcome:
                     result.failed += 1
+                    result.failed_paths.append(rel_path)
             return result
         except Exception as exc:  # pragma: no cover - defensive logging
             self._exception = exc
@@ -1087,6 +1428,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--coverage-source-dir",
         type=str,
         help="Source directory for code coverage path mapping (defaults to current directory)",
+    )
+    parser.add_argument(
+        "--runner-summary",
+        action="store_true",
+        help="Include per-runner statistics in the summary table",
+    )
+    parser.add_argument(
+        "--fixture-summary",
+        action="store_true",
+        help="Include per-fixture statistics in the summary table",
     )
     default_jobs = 4 * (os.cpu_count() or 16)
     parser.add_argument("-j", "--jobs", type=int, default=default_jobs, metavar="N")
@@ -1203,7 +1554,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         worker.start()
     for worker in workers:
         summary += worker.join()
-    print(f"{INFO} {_format_summary(summary)}")
+    _print_detailed_summary(summary)
+    _print_ascii_summary(
+        summary,
+        include_runner=args.runner_summary,
+        include_fixture=args.fixture_summary,
+    )
     if args.coverage:
         coverage_dir = os.environ.get(
             "CMAKE_COVERAGE_OUTPUT_DIRECTORY", os.path.join(os.getcwd(), "coverage")
