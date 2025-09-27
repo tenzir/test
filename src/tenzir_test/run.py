@@ -74,10 +74,10 @@ TENZIR_NODE_BINARY = _settings.tenzir_node_binary
 ROOT = _settings.root
 INPUTS_DIR = _settings.inputs_dir
 EXECUTION_MODE, _DETECTED_PACKAGE_ROOT = detect_execution_mode(ROOT)
-CHECKMARK = "\033[92;1m✓\033[0m"
+CHECKMARK = "\033[92;1m✔\033[0m"
 CROSS = "\033[31m✘\033[0m"
 INFO = "\033[94;1mi\033[0m"
-SKIP = "\033[33;1m➜\033[0m"
+SKIP = "\033[90;1m●\033[0m"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 stdout_lock = threading.RLock()
