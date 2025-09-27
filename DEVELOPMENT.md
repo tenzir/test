@@ -78,6 +78,10 @@ Releases use GitHub Actions with trusted publishing. When you are ready to cut
 a new version:
 
 1. Bump the version via `uv version <part>` (for example `uv version minor`).
+   This updates `pyproject.toml` and `uv.lock`; avoid sprinkling version
+   literals elsewhere. The runtime exposes `tenzir_test.__version__` via
+   `importlib.metadata`, returning `"0.0.0"` for editable installs so the
+   project has a single source of truth.
 2. Commit the changes and create an annotated tag `git tag vX.Y.Z`.
 3. Push the branch and tag to GitHub.
 4. Draft and publish a GitHub release for the tag.
