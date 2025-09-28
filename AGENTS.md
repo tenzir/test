@@ -4,7 +4,7 @@
 
 - `src/tenzir_test/` houses the package; `cli.py` provides the `tenzir-test` entrypoint and `engine/` orchestrates runner lifecycles.
 - Shared fixtures stay in `fixtures.py`, reusable scenario artifacts in `inputs/`, and public configuration schemas in `config.py`.
-- `example-project/` delivers an end-to-end walkthrough; whenever behaviour shifts, mirror updates in `DOCUMENTATION.md` to keep users aligned.
+- `example-project/` and `example-package/` deliver an end-to-end walkthrough; whenever behaviour shifts, mirror updates in `DOCUMENTATION.md` to keep users aligned.
 - Tests live in `tests/`, mirroring package modules so reviewers can locate coverage quickly.
 - Ship new public APIs with type hints and update `py.typed` exports if you add subpackages.
 - Keep `README.md` focused on user onboarding, `DOCUMENTATION.md` as the primary user guide, and `DEVELOPMENT.md` for contributor workflows; update all three when behaviour or processes change.
