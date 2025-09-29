@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import builtins
 import dataclasses
 import difflib
@@ -102,6 +101,12 @@ if not _CONFIG_LOGGER.handlers:
     _CONFIG_LOGGER.propagate = False
 _DIRECTORY_CONFIG_CACHE: dict[Path, "_DirectoryConfig"] = {}
 _MISSING = object()
+
+
+def get_default_jobs() -> int:
+    """Return the default number of worker threads for the CLI."""
+
+    return 4 * (os.cpu_count() or 16)
 
 
 @dataclasses.dataclass(slots=True)
@@ -1399,47 +1404,24 @@ def collect_all_tests(directory: Path) -> Iterator[Path]:
             yield candidate
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def run_cli(
+    *,
+    root: Path | None,
+    tenzir_binary: Path | None,
+    tenzir_node_binary: Path | None,
+    tests: Sequence[Path],
+    update: bool,
+    log_comparisons: bool,
+    purge: bool,
+    coverage: bool,
+    coverage_source_dir: Path | None,
+    runner_summary: bool,
+    fixture_summary: bool,
+    jobs: int,
+) -> None:
     from tenzir_test.engine import state as engine_state
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path)
-    parser.add_argument("--tenzir-binary", type=Path)
-    parser.add_argument("--tenzir-node-binary", type=Path)
-    parser.add_argument("tests", nargs="*", type=Path)
-    parser.add_argument("-u", "--update", action="store_true")
-    parser.add_argument(
-        "-v",
-        "--log-comparisons",
-        action="store_true",
-        help="Log reference comparison activity",
-    )
-    parser.add_argument("--purge", action="store_true")
-    parser.add_argument(
-        "--coverage",
-        action="store_true",
-        help="Enable code coverage collection (increases timeouts by 5x)",
-    )
-    parser.add_argument(
-        "--coverage-source-dir",
-        type=str,
-        help="Source directory for code coverage path mapping (defaults to current directory)",
-    )
-    parser.add_argument(
-        "--runner-summary",
-        action="store_true",
-        help="Include per-runner statistics in the summary table",
-    )
-    parser.add_argument(
-        "--fixture-summary",
-        action="store_true",
-        help="Include per-fixture statistics in the summary table",
-    )
-    default_jobs = 4 * (os.cpu_count() or 16)
-    parser.add_argument("-j", "--jobs", type=int, default=default_jobs, metavar="N")
-    args = parser.parse_args(argv)
-
-    verbosity_enabled = bool(args.log_comparisons or _log_comparisons)
+    verbosity_enabled = bool(log_comparisons or _log_comparisons)
     fixture_logger = logging.getLogger("tenzir_test.fixtures")
     if verbosity_enabled:
         if not logging.getLogger().handlers:
@@ -1451,12 +1433,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         fixture_logger.setLevel(logging.WARNING)
 
     settings = discover_settings(
-        root=args.root,
-        tenzir_binary=args.tenzir_binary,
-        tenzir_node_binary=args.tenzir_node_binary,
+        root=root,
+        tenzir_binary=tenzir_binary,
+        tenzir_node_binary=tenzir_node_binary,
     )
     apply_settings(settings)
-    if not args.tests and not _looks_like_project_root(ROOT):
+    selected_tests = list(tests)
+    if not selected_tests and not _looks_like_project_root(ROOT):
         print(
             f"{INFO} no tenzir-test project detected at {ROOT}.\n"
             f"{INFO} Run from your project root or provide --root."
@@ -1465,18 +1448,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     _load_project_runners(settings.root)
     _load_project_fixtures(settings.root)
     refresh_runner_metadata()
-    enable_comparison_logging(args.log_comparisons or _log_comparisons)
+    enable_comparison_logging(log_comparisons or _log_comparisons)
     engine_state.refresh()
 
-    tests = list(args.tests) if args.tests else [ROOT]
-    if args.purge:
+    tests_to_run = selected_tests or [ROOT]
+    if purge:
         for runner in runners_iter_runners():
             runner.purge()
         return
 
     # TODO Make sure that all tests are located in the `tests` directory.
     todo = set()
-    for test in tests:
+    for test in tests_to_run:
         if test.resolve() == ROOT:
             # Collect all tests in project-specific locations
             all_tests = []
@@ -1544,7 +1527,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(f"{INFO} running {len(queue)} tests with v{version}")
 
     # Pass coverage flag to workers
-    workers = [Worker(queue, update=args.update, coverage=args.coverage) for _ in range(args.jobs)]
+    workers = [Worker(queue, update=update, coverage=coverage) for _ in range(jobs)]
     summary = Summary()
     for worker in workers:
         worker.start()
@@ -1553,18 +1536,34 @@ def main(argv: Sequence[str] | None = None) -> None:
     _print_detailed_summary(summary)
     _print_ascii_summary(
         summary,
-        include_runner=args.runner_summary,
-        include_fixture=args.fixture_summary,
+        include_runner=runner_summary,
+        include_fixture=fixture_summary,
     )
-    if args.coverage:
+    if coverage:
         coverage_dir = os.environ.get(
             "CMAKE_COVERAGE_OUTPUT_DIRECTORY", os.path.join(os.getcwd(), "coverage")
         )
-        source_dir = args.coverage_source_dir or os.getcwd()
+        source_dir = str(coverage_source_dir) if coverage_source_dir else os.getcwd()
         print(f"{INFO} Code coverage data collected in {coverage_dir}")
         print(f"{INFO} Source directory for coverage mapping: {source_dir}")
     if summary.failed > 0:
         sys.exit(1)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    import click
+
+    from . import cli as cli_module
+
+    try:
+        cli_module.cli.main(
+            args=list(argv) if argv is not None else None,
+            standalone_mode=False,
+        )
+    except click.exceptions.Exit as exc:
+        raise SystemExit(exc.exit_code) from exc
+    except click.exceptions.Abort as exc:
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
