@@ -93,8 +93,7 @@ publishing, and runs a post-publish install smoke test.
 ## Pull Requests
 
 - Keep changes focused and reference related issues when applicable.
-- Update `DOCUMENTATION.md` and `example-project/` and `example-package/` when
-  behaviour shifts.
+- Update `example-project/` and `example-package/` when behaviour shifts.
 - Ensure CI is green before requesting a review.
 
 ## Code of Conduct

@@ -54,8 +54,13 @@ project-root/
    `.txt`) that the harness compares against.
 4. Run `uvx tenzir-test` from the project root to execute the full suite.
 
-Consult [`DOCUMENTATION.md`](DOCUMENTATION.md) for an end-to-end walkthrough and
-in-depth explanations of runners, configuration, and package mode.
+## 📚 Documentation
+
+Consult our [user guide](https://docs.tenzir.com/guides/testing/write-tests)
+for an end-to-end walkthrough of writing tests.
+
+We also provide a dense [reference](https://docs.tenzir.com/reference/test) that
+explains concepts, configuration, and CLI details.
 
 ## 🧑‍💻 Development
 
