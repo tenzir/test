@@ -153,27 +153,18 @@ def test_fixture_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
         assert env["X_FAKE"] == "ok"
 
 
-def test_fixture_decorator_supports_teardown(monkeypatch: pytest.MonkeyPatch) -> None:
-    teardown_called: dict[str, bool] = {"value": False}
+def test_fixture_decorator_registers_env() -> None:
     fixture_name = Path(__file__).stem
 
-    @fixtures.startup(replace=True)
+    @fixtures.fixture(name=fixture_name, replace=True)
     def _decorated():
         return {"X_DECORATED": "ok"}
-
-    @fixtures.teardown()
-    def _cleanup(env: dict[str, str]) -> None:
-        assert env["X_DECORATED"] == "ok"
-        teardown_called["value"] = True
 
     try:
         with fixtures.activate([fixture_name]) as env:
             assert env["X_DECORATED"] == "ok"
     finally:
         fixtures._FACTORIES.pop(fixture_name, None)  # type: ignore[attr-defined]
-        fixtures._TEARDOWNS.pop(fixture_name, None)  # type: ignore[attr-defined]
-
-    assert teardown_called["value"]
 
 
 def test_fixture_generator_registration() -> None:

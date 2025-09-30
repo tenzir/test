@@ -12,8 +12,6 @@ from .fixtures import (
     register,
     requested,
     require,
-    startup,
-    teardown,
 )
 
 __all__ = [
@@ -29,8 +27,6 @@ __all__ = [
     "register",
     "requested",
     "require",
-    "startup",
-    "teardown",
     "run",
 ]
 
