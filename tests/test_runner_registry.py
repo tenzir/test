@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 from tenzir_test import config, run, runners
 
 
@@ -130,4 +132,29 @@ def test_default_runner_for_registered_extension(tmp_path: Path) -> None:
     finally:
         runners.unregister("dummy-ext")
         run.refresh_runner_metadata()
+        run.apply_settings(original)
+
+
+def test_missing_runner_raises(tmp_path: Path) -> None:
+    test_file = tmp_path / "unknown.xyz"
+    test_file.write_text("payload\n", encoding="utf-8")
+
+    original = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    try:
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+        run.refresh_runner_metadata()
+        with pytest.raises(ValueError, match="No runner registered"):
+            run.parse_test_config(test_file)
+    finally:
         run.apply_settings(original)

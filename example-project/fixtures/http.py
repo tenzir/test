@@ -3,13 +3,12 @@
 Usage overview:
 
 - Tests declare ``fixtures: [http]`` in their frontmatter to opt in.
-- The harness imports this module, triggering the ``@startup`` registration.
+- Importing this module registers the ``@fixture`` definition below.
 - Consumers receive an ``HTTP_FIXTURE_URL`` environment variable pointing at a
   temporary HTTP server that echoes POST request bodies verbatim.
 
-The fixture demonstrates the simple ``@startup``/``@teardown`` pairing: the
-start function registers the listener, while the teardown hook stops it when the
-test finishes.
+The fixture showcases the concise ``@fixture`` decorator: the generator starts
+the server, yields the environment, and tears everything down automatically.
 """
 
 from __future__ import annotations
@@ -17,11 +16,12 @@ from __future__ import annotations
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Iterator
 
-from tenzir_test import startup, teardown
+from tenzir_test import fixture
 
 
-class _EchoHandler(BaseHTTPRequestHandler):
+class EchoHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         length_header = self.headers.get("Content-Length")
         try:
@@ -43,29 +43,16 @@ class _EchoHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-_ACTIVE_SERVERS: dict[str, tuple[ThreadingHTTPServer, threading.Thread]] = {}
+@fixture()
+def run() -> Iterator[dict[str, str]]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), EchoHandler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
 
-
-@startup(replace=True)
-def start_http() -> dict[str, str]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _EchoHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    port = server.server_address[1]
-    url = f"http://127.0.0.1:{port}/"
-
-    _ACTIVE_SERVERS[url] = (server, thread)
-    return {"HTTP_FIXTURE_URL": url}
-
-
-@teardown()
-def stop_http(env: dict[str, str]) -> None:
-    url = env.get("HTTP_FIXTURE_URL")
-    if not url:
-        return
-    server, thread = _ACTIVE_SERVERS.pop(url, (None, None))
-    if server is None or thread is None:
-        return
-    server.shutdown()
-    thread.join()
+    try:
+        port = server.server_address[1]
+        url = f"http://127.0.0.1:{port}/"
+        yield {"HTTP_FIXTURE_URL": url}
+    finally:
+        server.shutdown()
+        worker.join()

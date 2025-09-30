@@ -7,12 +7,11 @@ from .fixtures import (
     FixtureHandle,
     FixtureSelection,
     activate,
+    fixture,
     has,
     register,
     requested,
     require,
-    startup,
-    teardown,
 )
 
 __all__ = [
@@ -21,14 +20,13 @@ __all__ = [
     "FixtureHandle",
     "FixtureSelection",
     "activate",
+    "fixture",
     "Settings",
     "discover_settings",
     "has",
     "register",
     "requested",
     "require",
-    "startup",
-    "teardown",
     "run",
 ]
 

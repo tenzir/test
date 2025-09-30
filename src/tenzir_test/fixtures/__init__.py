@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import subprocess
@@ -173,7 +174,6 @@ class _FactoryCallable(Protocol):
 
 
 _FACTORIES: dict[str, FixtureFactory] = {}
-_TEARDOWNS: dict[str, list[Callable[[dict[str, str]], None]]] = {}
 
 
 def _normalize_factory(factory: _FactoryCallable) -> FixtureFactory:
@@ -248,60 +248,40 @@ def register(name: str | None, factory: _FactoryCallable, *, replace: bool = Fal
     _FACTORIES[resolved_name] = _normalize_factory(factory)
 
 
-def startup(
-    name: str | None = None, *, replace: bool = False
-) -> Callable[
-    [
-        Callable[
-            ...,
-            ContextManager[dict[str, str] | None]
-            | FixtureHandle
-            | dict[str, str]
-            | tuple[dict[str, str] | None, Callable[[], None] | None]
-            | None,
-        ]
-    ],
-    Callable[
-        ...,
-        ContextManager[dict[str, str] | None]
-        | FixtureHandle
-        | dict[str, str]
-        | tuple[dict[str, str] | None, Callable[[], None] | None]
-        | None,
-    ],
-]:
-    """Decorator that registers a fixture startup factory.
-
-    The decorated callable may return one of the following:
-
-    - a context manager yielding a mapping of environment variables
-    - a :class:`FixtureHandle` describing the environment and optional teardown
-    - a dictionary of environment variables
-    - a ``(env, teardown)`` tuple where ``teardown`` is a callable executed at exit
-    - ``None`` (interpreted as an empty environment)
-    """
-
-    def _decorator(func: _FactoryCallable) -> _FactoryCallable:
-        register(name, func, replace=replace)
-        return func
-
-    return _decorator
-
-
-def teardown(
+def fixture(
+    func: _FactoryCallable | None = None,
+    *,
     name: str | None = None,
-) -> Callable[[Callable[[dict[str, str]], None]], Callable[[dict[str, str]], None]]:
-    """Decorator registering a teardown hook for the inferred fixture name.
+    replace: bool = False,
+    log_teardown: bool = False,
+) -> Callable[[_FactoryCallable], _FactoryCallable] | _FactoryCallable:
+    """Decorator registering a fixture factory.
 
-    The decorated callable receives the environment dictionary produced by the
-    fixture factory (or an empty dict when ``None`` was returned).
+    ``@fixture`` accepts generator functions, context managers, or callables that
+    return any of the supported fixture factory types. When used on a generator
+    function, the decorator implicitly wraps it with :func:`contextlib.contextmanager`
+    so authors can ``yield`` environments directly.
     """
 
-    def _decorator(func: Callable[[dict[str, str]], None]) -> Callable[[dict[str, str]], None]:
-        resolved_name = _infer_name(func, name)
-        hooks = _TEARDOWNS.setdefault(resolved_name, [])
-        hooks.append(func)
-        return func
+    def _decorator(inner: _FactoryCallable) -> _FactoryCallable:
+        resolved_name = _infer_name(inner, name)
+        candidate: _FactoryCallable
+        if inspect.isgeneratorfunction(inner):
+            candidate = contextmanager(inner)
+        else:
+            candidate = inner
+
+        register(resolved_name, candidate, replace=replace)
+
+        if log_teardown:
+            registered = _FACTORIES.get(resolved_name)
+            if registered is not None:
+                setattr(registered, "tenzir_log_teardown", True)
+
+        return inner
+
+    if func is not None:
+        return _decorator(func)
 
     return _decorator
 
@@ -336,12 +316,6 @@ def activate(names: Iterable[str]) -> Iterator[dict[str, str]]:
                 finally:
                     if should_log_teardown:
                         logger.info("tearing down fixture '%s'", name)
-                    env_dict: dict[str, str] = dict(env or {})
-                    for hook in _TEARDOWNS.get(name, ()):
-                        try:
-                            hook(env_dict)
-                        except Exception as exc:  # pragma: no cover - defensive logging
-                            logger.warning("fixture '%s' teardown hook raised %s", name, exc)
 
         return _logged_context()
 

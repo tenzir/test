@@ -29,7 +29,7 @@ from . import fixtures as fixture_api
 from . import packages
 from .config import Settings, discover_settings
 from .runners import (
-    CustomFixture,  # noqa: F401
+    ShellRunner,  # noqa: F401
     CustomPythonFixture,  # noqa: F401
     ExtRunner,  # noqa: F401
     Runner,  # noqa: F401
@@ -88,6 +88,7 @@ _allowed_extensions: set[str] = set()
 _DEFAULT_RUNNER_BY_SUFFIX: dict[str, str] = {
     ".tql": "tenzir",
     ".py": "python",
+    ".sh": "shell",
 }
 
 _CONFIG_FILE_NAME = "test.yaml"
@@ -604,7 +605,8 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
         config[key] = value
 
     is_tql = test_file.suffix == ".tql"
-    is_py = test_file.suffix == ".py"
+    comment_frontmatter_suffixes = {".py", ".sh"}
+    is_comment_frontmatter = test_file.suffix in comment_frontmatter_suffixes
 
     def _error(message: str, line_number: int | None = None) -> None:
         location = f"{test_file}:{line_number}" if line_number is not None else f"{test_file}"
@@ -637,7 +639,7 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
             for key, value in yaml_data.items():
                 _assign_config_option(config, str(key), value, location=test_file)
 
-    if not consumed_frontmatter and is_py:
+    if not consumed_frontmatter and is_comment_frontmatter:
         line_number = 0
         for raw_line in lines:
             line_number += 1
@@ -677,7 +679,12 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
                 for runner in runners_iter_runners()
                 if getattr(runner, "_ext", None) == suffix.lstrip(".")
             ]
-            default_runner = matching_names[0] if matching_names else "tenzir"
+            if not matching_names:
+                raise ValueError(
+                    f"No runner registered for '{test_file}' (extension '{suffix or '<none>'}')"
+                    " and no 'runner' specified in frontmatter"
+                )
+            default_runner = matching_names[0]
         config["runner"] = default_runner
     return config
 
