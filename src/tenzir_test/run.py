@@ -11,17 +11,14 @@ import importlib.util
 import logging
 import os
 import re
-import socket
 import subprocess
 import sys
 import threading
-import time
 import typing
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Generator, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import yaml
 
@@ -1127,47 +1124,6 @@ def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
                 line = b"\033[31m" + line + b"\033[0m"
             prefix = ("│ " if i != len(diff) - 1 else "└─").encode()
             sys.stdout.buffer.write(prefix + line)
-
-
-@contextmanager
-def check_server(host: str = "127.0.0.1") -> Generator[int, None, None]:
-    stop = False
-    port_holder: dict[str, int | None] = {"port": None}
-
-    def _serve() -> None:
-        nonlocal stop
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((host, 0))
-            sock.listen()
-            port_holder["port"] = sock.getsockname()[1]
-            while not stop:
-                sock.settimeout(0.5)
-                try:
-                    conn, _addr = sock.accept()
-                except socket.timeout:
-                    continue
-                with conn:
-                    conn.settimeout(0.5)
-                    while not stop:
-                        try:
-                            data = conn.recv(1)
-                        except socket.timeout:
-                            continue
-                        if not data:
-                            break
-
-    thread = threading.Thread(target=_serve, daemon=True)
-    thread.start()
-    while port_holder["port"] is None:
-        time.sleep(0.05)
-    try:
-        port = port_holder["port"]
-        assert port is not None
-        yield port
-    finally:
-        stop = True
-        thread.join()
 
 
 def check_group_is_empty(pgid: int) -> None:

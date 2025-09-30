@@ -14,7 +14,6 @@ run_simple_test = run.run_simple_test
 print_diff = run.print_diff
 success = run.success
 fail = run.fail
-check_server = run.check_server
 
 __all__ = [
     "stdout_lock",
@@ -28,5 +27,4 @@ __all__ = [
     "print_diff",
     "success",
     "fail",
-    "check_server",
 ]

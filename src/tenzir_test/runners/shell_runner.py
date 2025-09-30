@@ -17,7 +17,7 @@ class ShellRunner(ExtRunner):
         super().__init__(name="shell", ext="sh")
 
     def run(self, test: Path, update: bool, coverage: bool = False) -> bool:
-        del coverage
+        del coverage, update
         run_mod = get_run_module()
         test_config = run_mod.parse_test_config(test)
         env = os.environ.copy()
@@ -38,23 +38,19 @@ class ShellRunner(ExtRunner):
                 env.update(fixture_env)
                 run_mod._apply_fixture_env(env, fixtures)
                 env["PATH"] = (run_mod.ROOT / "_shell").as_posix() + ":" + env["PATH"]
-                with run_mod.check_server() as port:
-                    env["TENZIR_TESTER_CHECK_PORT"] = str(port)
-                    env["TENZIR_TESTER_CHECK_UPDATE"] = str(int(update))
-                    env["TENZIR_TESTER_CHECK_PATH"] = str(test)
-                    try:
-                        cmd = ["sh", "-eu", str(test)]
-                        subprocess.check_output(cmd, stderr=subprocess.PIPE, env=env)
-                    except subprocess.CalledProcessError as e:
-                        with run_mod.stdout_lock:
-                            run_mod.fail(test)
-                            if e.stdout:
-                                sys.stdout.buffer.write(e.stdout)
-                            if e.output and e.output is not e.stdout:
-                                sys.stdout.buffer.write(e.output)
-                            if e.stderr:
-                                sys.stdout.buffer.write(e.stderr)
-                        return False
+                try:
+                    cmd = ["sh", "-eu", str(test)]
+                    subprocess.check_output(cmd, stderr=subprocess.PIPE, env=env)
+                except subprocess.CalledProcessError as e:
+                    with run_mod.stdout_lock:
+                        run_mod.fail(test)
+                        if e.stdout:
+                            sys.stdout.buffer.write(e.stdout)
+                        if e.output and e.output is not e.stdout:
+                            sys.stdout.buffer.write(e.output)
+                        if e.stderr:
+                            sys.stdout.buffer.write(e.stderr)
+                    return False
         finally:
             fixture_api.pop_context(context_token)
         run_mod.success(test)

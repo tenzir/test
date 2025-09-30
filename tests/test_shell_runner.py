@@ -43,7 +43,7 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
     script_dir.mkdir(parents=True, exist_ok=True)
     script = script_dir / "env-check.sh"
     script.write_text(
-        """# fixtures: [demo]\n\nset -eu\n\nif [ -z "${TENZIR_TESTER_CHECK_PORT:-}" ]; then\n  echo "missing check port" >&2\n  exit 1\nfi\n\nif [ "${TENZIR_TESTER_CHECK_PATH}" != "$0" ]; then\n  echo "unexpected check path" >&2\n  exit 1\nfi\n\ndir="$(dirname "$0")"\nhelper > "$dir/helper.txt"\nprintf %s "$DEMO_SHELL_FIXTURE" > "$dir/fixture.txt"\necho "${TENZIR_TESTER_CHECK_UPDATE}" >> "$dir/update.log"\n""",
+        """# fixtures: [demo]\n\nset -eu\n\ndir="$(dirname "$0")"\nhelper > "$dir/helper.txt"\nprintf %s "$DEMO_SHELL_FIXTURE" > "$dir/fixture.txt"\n""",
         encoding="utf-8",
     )
     script.chmod(0o755)
@@ -73,13 +73,10 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
         assert runner.run(script, update=True, coverage=False)
         assert (script_dir / "helper.txt").read_text(encoding="utf-8").strip() == "helper-ok"
         assert (script_dir / "fixture.txt").read_text(encoding="utf-8") == "fixture-ok"
-        assert (script_dir / "update.log").read_text(encoding="utf-8") == "0\n1\n"
     finally:
         run.apply_settings(original_settings)
         fixtures._FACTORIES.pop("demo", None)  # type: ignore[attr-defined]
         run.refresh_runner_metadata()
-        if (script_dir / "update.log").exists():
-            os.remove(script_dir / "update.log")
         if (script_dir / "helper.txt").exists():
             os.remove(script_dir / "helper.txt")
         if (script_dir / "fixture.txt").exists():
