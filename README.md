@@ -49,7 +49,9 @@ project-root/
 
 1. Author fixtures in `fixtures/` and register them at import time.
 2. Store reusable datasets in `inputs/`—the harness exposes the path via
-   `TENZIR_INPUTS` when tests execute.
+   `TENZIR_INPUTS` and provides a per-test scratch directory through
+   `TENZIR_TMP_DIR` when tests execute.
+   Use `--keep` (or `-k`) to preserve those temporary directories for debugging.
 3. Create tests in `tests/` and pair them with reference artifacts (for example
    `.txt`) that the harness compares against.
 4. Run `uvx tenzir-test` from the project root to execute the full suite.

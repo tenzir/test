@@ -50,4 +50,9 @@ def test_get_test_env_sets_inputs_key(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
     expected = str(inputs_dir)
     assert env["TENZIR_INPUTS"] == expected
+    tmp_dir_value = env[run.TEST_TMP_ENV_VAR]
+    tmp_dir_path = Path(tmp_dir_value)
+    assert tmp_dir_path.exists()
+    run.cleanup_test_tmp_dir(tmp_dir_value)
+    assert not tmp_dir_path.exists()
     assert args == []

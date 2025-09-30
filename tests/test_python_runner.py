@@ -58,6 +58,8 @@ def test_python_runner_update_writes_reference(
     _fixture_script(script)
 
     def fake_run(cmd, timeout, stdout, stderr, check, env):  # noqa: ANN001
+        scratch = Path(env["TENZIR_TMP_DIR"])
+        assert scratch.exists()
         return _DummyCompleted(stdout=b"payload", stderr=b"")
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
@@ -79,6 +81,8 @@ def test_python_runner_detects_mismatch(
     def fake_run(cmd, timeout, stdout, stderr, check, env):  # noqa: ANN001
         assert env["TENZIR_NODE_CLIENT_TIMEOUT"] == "30"
         assert env["TENZIR_TEST_FIXTURES"] == "sink"
+        scratch = Path(env["TENZIR_TMP_DIR"])
+        assert scratch.exists()
         return _DummyCompleted(stdout=b"different")
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
@@ -99,6 +103,8 @@ def test_python_runner_accepts_matching_output(
     reference.write_bytes(b"expected")
 
     def fake_run(cmd, timeout, stdout, stderr, check, env):  # noqa: ANN001
+        scratch = Path(env["TENZIR_TMP_DIR"])
+        assert scratch.exists()
         return _DummyCompleted(stdout=b"expected")
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
@@ -117,6 +123,8 @@ def test_python_runner_logs_when_enabled(
     reference.write_bytes(b"expected")
 
     def fake_run(cmd, timeout, stdout, stderr, check, env):  # noqa: ANN001
+        scratch = Path(env["TENZIR_TMP_DIR"])
+        assert scratch.exists()
         return _DummyCompleted(stdout=b"expected")
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)

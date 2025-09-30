@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import atexit
 import builtins
 import dataclasses
 import difflib
@@ -11,8 +12,10 @@ import importlib.util
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import typing
 from collections.abc import Iterable, Iterator, Sequence
@@ -77,6 +80,67 @@ SKIP = "\033[90;1m●\033[0m"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 stdout_lock = threading.RLock()
+
+TEST_TMP_ENV_VAR = "TENZIR_TMP_DIR"
+_TMP_KEEP_ENV_VAR = "TENZIR_KEEP_TMP_DIRS"
+_TMP_ROOT_NAME = ".tenzir-test"
+_TMP_SUBDIR_NAME = "tmp"
+_ACTIVE_TMP_DIRS: set[Path] = set()
+KEEP_TMP_DIRS = bool(os.environ.get(_TMP_KEEP_ENV_VAR))
+
+
+def _resolve_tmp_base() -> Path:
+    preferred = ROOT / _TMP_ROOT_NAME / _TMP_SUBDIR_NAME
+    try:
+        preferred.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        fallback = Path(tempfile.gettempdir()) / _TMP_ROOT_NAME.strip(".") / _TMP_SUBDIR_NAME
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+    return preferred
+
+
+def _tmp_prefix_for(test: Path) -> str:
+    try:
+        relative = test.relative_to(ROOT)
+        base = relative.with_suffix("")
+        candidate = "-".join(base.parts)
+    except ValueError:
+        candidate = test.stem
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]", "-", candidate)
+    sanitized = sanitized.strip("-") or "test"
+    return (sanitized[:32] if len(sanitized) > 32 else sanitized) or "test"
+
+
+def _create_test_tmp_dir(test: Path) -> Path:
+    base = _resolve_tmp_base()
+    prefix = f"{_tmp_prefix_for(test)}-"
+    path = Path(tempfile.mkdtemp(prefix=prefix, dir=str(base)))
+    _ACTIVE_TMP_DIRS.add(path)
+    return path
+
+
+def set_keep_tmp_dirs(enabled: bool) -> None:
+    global KEEP_TMP_DIRS
+    KEEP_TMP_DIRS = enabled
+
+
+def cleanup_test_tmp_dir(path: str | os.PathLike[str] | None) -> None:
+    if not path:
+        return
+    tmp_path = Path(path)
+    _ACTIVE_TMP_DIRS.discard(tmp_path)
+    if KEEP_TMP_DIRS:
+        return
+    shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def _cleanup_remaining_tmp_dirs() -> None:
+    for tmp_path in list(_ACTIVE_TMP_DIRS):
+        cleanup_test_tmp_dir(tmp_path)
+
+
+atexit.register(_cleanup_remaining_tmp_dirs)
 
 _log_comparisons = bool(os.environ.get("TENZIR_TEST_LOG_COMPARISONS"))
 
@@ -555,6 +619,8 @@ def get_test_env_and_config_args(test: Path) -> tuple[dict[str, str], list[str]]
     if TENZIR_NODE_BINARY:
         env["TENZIR_NODE_BINARY"] = TENZIR_NODE_BINARY
     env["TENZIR_TEST_ROOT"] = str(ROOT)
+    tmp_dir = _create_test_tmp_dir(test)
+    env[TEST_TMP_ENV_VAR] = str(tmp_dir)
     return env, config_args
 
 
@@ -1232,6 +1298,7 @@ def run_simple_test(
         return False
     finally:
         fixture_api.pop_context(context_token)
+        cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
 
     if expect_error == good:
         with stdout_lock:
@@ -1381,6 +1448,7 @@ def run_cli(
     runner_summary: bool,
     fixture_summary: bool,
     jobs: int,
+    keep_tmp_dirs: bool,
 ) -> None:
     from tenzir_test.engine import state as engine_state
 
@@ -1394,6 +1462,8 @@ def run_cli(
         fixture_logger.setLevel(logging.INFO)
     else:
         fixture_logger.setLevel(logging.WARNING)
+
+    set_keep_tmp_dirs(bool(os.environ.get(_TMP_KEEP_ENV_VAR)) or keep_tmp_dirs)
 
     settings = discover_settings(
         root=root,

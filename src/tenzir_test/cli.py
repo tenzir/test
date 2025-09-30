@@ -77,6 +77,13 @@ def _normalize_exit_code(value: object) -> int:
     help="Include per-fixture statistics in the summary table.",
 )
 @click.option(
+    "-k",
+    "--keep",
+    "keep_tmp_dirs",
+    is_flag=True,
+    help="Preserve per-test temporary directories instead of deleting them.",
+)
+@click.option(
     "-j",
     "--jobs",
     type=click.IntRange(min=1),
@@ -98,6 +105,7 @@ def cli(
     coverage_source_dir: Path | None,
     runner_summary: bool,
     fixture_summary: bool,
+    keep_tmp_dirs: bool,
     jobs: int,
 ) -> None:
     """Execute tenzir-test scenarios."""
@@ -114,6 +122,7 @@ def cli(
         coverage_source_dir=coverage_source_dir,
         runner_summary=runner_summary,
         fixture_summary=fixture_summary,
+        keep_tmp_dirs=keep_tmp_dirs,
         jobs=jobs,
     )
 

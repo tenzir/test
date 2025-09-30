@@ -21,3 +21,15 @@ def test_cli_handles_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
 
     assert cli.main([]) == 0
+
+
+def test_cli_keep_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert cli.main(["--keep"]) == 0
+    assert captured["keep_tmp_dirs"] is True

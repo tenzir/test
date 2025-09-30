@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import typing
@@ -20,7 +19,7 @@ class ShellRunner(ExtRunner):
         del coverage, update
         run_mod = get_run_module()
         test_config = run_mod.parse_test_config(test)
-        env = os.environ.copy()
+        env, _config_args = run_mod.get_test_env_and_config_args(test)
         fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
         context_token = fixture_api.push_context(
             fixture_api.FixtureContext(
@@ -53,6 +52,7 @@ class ShellRunner(ExtRunner):
                     return False
         finally:
             fixture_api.pop_context(context_token)
+            run_mod.cleanup_test_tmp_dir(env.get(run_mod.TEST_TMP_ENV_VAR))
         run_mod.success(test)
         return True
 

@@ -102,6 +102,7 @@ class DiffRunner(TqlRunner):
                 )
         finally:
             fixture_api.pop_context(context_token)
+            run_mod.cleanup_test_tmp_dir(env.get(run_mod.TEST_TMP_ENV_VAR))
 
         diff_chunks = list(
             difflib.diff_bytes(

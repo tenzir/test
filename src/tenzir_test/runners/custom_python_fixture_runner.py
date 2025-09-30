@@ -106,6 +106,7 @@ class CustomPythonFixture(ExtRunner):
                         return False
             finally:
                 fixture_api.pop_context(context_token)
+                run_mod.cleanup_test_tmp_dir(env.get(run_mod.TEST_TMP_ENV_VAR))
         except subprocess.TimeoutExpired:
             run_mod.report_failure(
                 test, f"└─▶ \033[31mpython fixture hit {timeout}s timeout\033[0m"

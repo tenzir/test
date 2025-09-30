@@ -43,7 +43,7 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
     script_dir.mkdir(parents=True, exist_ok=True)
     script = script_dir / "env-check.sh"
     script.write_text(
-        """# fixtures: [demo]\n\nset -eu\n\ndir="$(dirname "$0")"\nhelper > "$dir/helper.txt"\nprintf %s "$DEMO_SHELL_FIXTURE" > "$dir/fixture.txt"\n""",
+        """# fixtures: [demo]\n\nset -eu\n\ndir="$(dirname "$0")"\nhelper > "$dir/helper.txt"\nprintf %s "$DEMO_SHELL_FIXTURE" > "$dir/fixture.txt"\nprintf %s "$TENZIR_TMP_DIR" > "$dir/tmp-dir.txt"\n""",
         encoding="utf-8",
     )
     script.chmod(0o755)
@@ -73,6 +73,9 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
         assert runner.run(script, update=True, coverage=False)
         assert (script_dir / "helper.txt").read_text(encoding="utf-8").strip() == "helper-ok"
         assert (script_dir / "fixture.txt").read_text(encoding="utf-8") == "fixture-ok"
+        tmp_dir_value = (script_dir / "tmp-dir.txt").read_text(encoding="utf-8").strip()
+        assert tmp_dir_value
+        assert tmp_dir_value.startswith(str(tmp_path))
     finally:
         run.apply_settings(original_settings)
         fixtures._FACTORIES.pop("demo", None)  # type: ignore[attr-defined]
@@ -81,3 +84,5 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
             os.remove(script_dir / "helper.txt")
         if (script_dir / "fixture.txt").exists():
             os.remove(script_dir / "fixture.txt")
+        if (script_dir / "tmp-dir.txt").exists():
+            os.remove(script_dir / "tmp-dir.txt")

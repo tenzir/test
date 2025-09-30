@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import sys
 
 import pytest
@@ -108,11 +109,30 @@ def test_get_test_env_and_config_args(configured_root: Path) -> None:
     expected_inputs = str(configured_root / "inputs")
     assert env["TENZIR_INPUTS"] == expected_inputs
     assert env["TENZIR_TEST_ROOT"] == str(run.ROOT)
+    tmp_dir_value = env[run.TEST_TMP_ENV_VAR]
+    tmp_dir_path = Path(tmp_dir_value)
+    assert tmp_dir_path.exists()
+    run.cleanup_test_tmp_dir(tmp_dir_value)
+    assert not tmp_dir_path.exists()
     if run.TENZIR_BINARY:
         assert env["TENZIR_BINARY"] == run.TENZIR_BINARY
     if run.TENZIR_NODE_BINARY:
         assert env["TENZIR_NODE_BINARY"] == run.TENZIR_NODE_BINARY
     assert args == [f"--config={config_file}"]
+
+
+def test_cleanup_respects_keep_flag(tmp_path: Path) -> None:
+    scratch_dir = tmp_path / "scratch"
+    scratch_dir.mkdir()
+
+    original = run.KEEP_TMP_DIRS
+    run.set_keep_tmp_dirs(True)
+    try:
+        run.cleanup_test_tmp_dir(scratch_dir)
+        assert scratch_dir.exists()
+    finally:
+        run.set_keep_tmp_dirs(original)
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 def test_parse_python_comment_frontmatter(tmp_path: Path, configured_root: Path) -> None:
@@ -254,6 +274,8 @@ def test_run_simple_test_injects_package_dirs(
     def fake_run(cmd, timeout, stdout, env):  # type: ignore[no-untyped-def]
         captured["cmd"] = list(cmd)
         captured["env"] = dict(env)
+        scratch = Path(env[run.TEST_TMP_ENV_VAR])
+        assert scratch.exists()
         return FakeCompletedProcess()
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
@@ -271,6 +293,9 @@ def test_run_simple_test_injects_package_dirs(
     assert env["TENZIR_PACKAGE_ROOT"] == str(package_root)
     expected_inputs = package_root / "tests" / "inputs"
     assert env["TENZIR_INPUTS"] == str(expected_inputs)
+    scratch_value = env[run.TEST_TMP_ENV_VAR]
+    assert scratch_value.startswith(str(package_root))
+    assert not Path(scratch_value).exists()
 
 
 def test_parse_fixture_string(tmp_path: Path, configured_root: Path) -> None:
