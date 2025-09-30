@@ -88,6 +88,7 @@ _allowed_extensions: set[str] = set()
 _DEFAULT_RUNNER_BY_SUFFIX: dict[str, str] = {
     ".tql": "tenzir",
     ".py": "python",
+    ".sh": "shell",
 }
 
 _CONFIG_FILE_NAME = "test.yaml"
@@ -678,7 +679,12 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
                 for runner in runners_iter_runners()
                 if getattr(runner, "_ext", None) == suffix.lstrip(".")
             ]
-            default_runner = matching_names[0] if matching_names else "tenzir"
+            if not matching_names:
+                raise ValueError(
+                    f"No runner registered for '{test_file}' (extension '{suffix or '<none>'}')"
+                    " and no 'runner' specified in frontmatter"
+                )
+            default_runner = matching_names[0]
         config["runner"] = default_runner
     return config
 
