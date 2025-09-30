@@ -82,7 +82,8 @@ a new version:
    literals elsewhere. The runtime exposes `tenzir_test.__version__` via
    `importlib.metadata`, returning `"0.0.0"` for editable installs so the
    project has a single source of truth.
-2. Commit the changes and create an annotated tag `git tag vX.Y.Z`.
+2. Commit the changes and create an annotated tag using
+   `git tag -a vX.Y.Z -m "Release vX.Y.Z"` to keep tag messages consistent.
 3. Push the branch and tag to GitHub.
 4. Draft and publish a GitHub release for the tag.
 
