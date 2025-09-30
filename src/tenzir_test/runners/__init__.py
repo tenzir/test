@@ -8,7 +8,7 @@ from .runner import Runner
 from .ext_runner import ExtRunner
 from .tql_runner import TqlRunner
 from .diff_runner import DiffRunner
-from .custom_fixture_runner import CustomFixture
+from .shell_runner import ShellRunner
 from .custom_python_fixture_runner import CustomPythonFixture
 from .tenzir_runner import TenzirRunner
 
@@ -128,7 +128,7 @@ def get_runner_for_test(test_path: Path) -> Runner:
     raise ValueError(f"Runner '{runner_name}' not found - this is a bug")
 
 
-register(CustomFixture())
+register(ShellRunner())
 register(CustomPythonFixture())
 register(TenzirRunner())
 
@@ -138,7 +138,7 @@ __all__ = [
     "Runner",
     "ExtRunner",
     "TqlRunner",
-    "CustomFixture",
+    "ShellRunner",
     "CustomPythonFixture",
     "TenzirRunner",
     "DiffRunner",

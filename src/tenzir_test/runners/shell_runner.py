@@ -12,9 +12,9 @@ from ._utils import get_run_module
 from .ext_runner import ExtRunner
 
 
-class CustomFixture(ExtRunner):
+class ShellRunner(ExtRunner):
     def __init__(self) -> None:
-        super().__init__(name="custom", ext="sh")
+        super().__init__(name="shell", ext="sh")
 
     def run(self, test: Path, update: bool, coverage: bool = False) -> bool:
         del coverage
@@ -37,7 +37,7 @@ class CustomFixture(ExtRunner):
             with fixture_api.activate(fixtures) as fixture_env:
                 env.update(fixture_env)
                 run_mod._apply_fixture_env(env, fixtures)
-                env["PATH"] = (run_mod.ROOT / "_custom").as_posix() + ":" + env["PATH"]
+                env["PATH"] = (run_mod.ROOT / "_shell").as_posix() + ":" + env["PATH"]
                 with run_mod.check_server() as port:
                     env["TENZIR_TESTER_CHECK_PORT"] = str(port)
                     env["TENZIR_TESTER_CHECK_UPDATE"] = str(int(update))
@@ -61,4 +61,4 @@ class CustomFixture(ExtRunner):
         return True
 
 
-__all__ = ["CustomFixture"]
+__all__ = ["ShellRunner"]

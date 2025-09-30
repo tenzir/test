@@ -23,6 +23,8 @@ example-project/
     ├── hex/
     │   ├── hello.xxd
     │   └── hello.txt
+    ├── shell/
+    │   └── http-fixture-check.sh
     ├── http-fixture-use.tql
     ├── node-fixture-use.tql
     └── python/
@@ -33,9 +35,10 @@ example-project/
 
 - The `.tql` scenarios use YAML frontmatter blocks bounded by `---` (including `fixtures` when needed) and the `env("TENZIR_INPUTS")` helper to read test data from the project-level `inputs/` directory. `tests/node-fixture-use.tql` marks itself with `fixtures: [node]`, so the harness spawns a `tenzir-node` automatically.
 - The Python scenario under `fixtures/` uses `#` frontmatter with `runner: python` so the harness executes it with the active interpreter.
+- The shell scenario under `tests/shell/` uses `#` frontmatter with `runner: shell` implied by the `.sh` suffix. It `curl`s JSON to the HTTP fixture and fails if the echo server does not respond with the same payload.
 - The `hex/` directory showcases a custom `xxd` runner: we register it in `runners/__init__.py`, bind it to the `.xxd` extension, and compare the hex dump against `hello.txt`.
 - The accompanying `.txt` file captures the expected output when the scenario succeeds.
-- The `fixtures/` package registers a small HTTP echo server via the `@tenzir_test.startup` decorator. Tests that declare `fixtures: [http]` receive an `HTTP_FIXTURE_URL` pointing at the temporary listener; `tests/http-fixture-use.tql` demonstrates issuing a POST request with `body=this` and checking the echoed response against its baseline.
+- The `fixtures/` package registers a small HTTP echo server via the `@tenzir_test.fixture()` decorator. Tests that declare `fixtures: [http]` receive an `HTTP_FIXTURE_URL` pointing at the temporary listener; `tests/http-fixture-use.tql` demonstrates issuing a POST request with `body=this` and checking the echoed response against its baseline.
 - Subdirectories under `tests/` are purely organisational—you can nest them arbitrarily to keep suites tidy.
 
 ## Running the Example
