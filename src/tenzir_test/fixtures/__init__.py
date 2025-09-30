@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import subprocess
@@ -246,6 +247,44 @@ def register(name: str | None, factory: _FactoryCallable, *, replace: bool = Fal
     if resolved_name in _FACTORIES and not replace:
         raise ValueError(f"fixture '{resolved_name}' already registered")
     _FACTORIES[resolved_name] = _normalize_factory(factory)
+
+
+def fixture(
+    func: _FactoryCallable | None = None,
+    *,
+    name: str | None = None,
+    replace: bool = False,
+    log_teardown: bool = False,
+) -> Callable[[_FactoryCallable], _FactoryCallable] | _FactoryCallable:
+    """Decorator registering a fixture factory.
+
+    ``@fixture`` accepts generator functions, context managers, or callables that
+    return any of the supported fixture factory types. When used on a generator
+    function, the decorator implicitly wraps it with :func:`contextlib.contextmanager`
+    so authors can ``yield`` environments directly.
+    """
+
+    def _decorator(inner: _FactoryCallable) -> _FactoryCallable:
+        resolved_name = _infer_name(inner, name)
+        candidate: _FactoryCallable
+        if inspect.isgeneratorfunction(inner):
+            candidate = contextmanager(inner)
+        else:
+            candidate = inner
+
+        register(resolved_name, candidate, replace=replace)
+
+        if log_teardown:
+            registered = _FACTORIES.get(resolved_name)
+            if registered is not None:
+                setattr(registered, "tenzir_log_teardown", True)
+
+        return inner
+
+    if func is not None:
+        return _decorator(func)
+
+    return _decorator
 
 
 def startup(

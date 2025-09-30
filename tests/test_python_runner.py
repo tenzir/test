@@ -176,6 +176,27 @@ def test_fixture_decorator_supports_teardown(monkeypatch: pytest.MonkeyPatch) ->
     assert teardown_called["value"]
 
 
+def test_fixture_generator_registration() -> None:
+    fixture_name = "generator_fixture"
+    teardown_called = {"value": False}
+
+    @fixtures.fixture(name=fixture_name, replace=True)
+    def _generator_fixture():
+        try:
+            yield {"X_GENERATOR": "ok"}
+        finally:
+            teardown_called["value"] = True
+
+    try:
+        with fixtures.activate([fixture_name]) as env:
+            assert env["X_GENERATOR"] == "ok"
+            assert teardown_called["value"] is False
+    finally:
+        fixtures._FACTORIES.pop(fixture_name, None)  # type: ignore[attr-defined]
+
+    assert teardown_called["value"]
+
+
 def test_fixture_handle_registration(monkeypatch: pytest.MonkeyPatch) -> None:
     flag = {"stopped": False}
 
