@@ -92,6 +92,12 @@ def _normalize_exit_code(value: object) -> int:
     metavar="N",
     help="Number of parallel worker threads.",
 )
+@click.option(
+    "--details",
+    "show_test_details",
+    is_flag=True,
+    help="Show runner and fixture details alongside test outcomes.",
+)
 def cli(
     *,
     root: Path | None,
@@ -107,6 +113,7 @@ def cli(
     fixture_summary: bool,
     keep_tmp_dirs: bool,
     jobs: int,
+    show_test_details: bool,
 ) -> None:
     """Execute tenzir-test scenarios."""
 
@@ -124,6 +131,7 @@ def cli(
         fixture_summary=fixture_summary,
         keep_tmp_dirs=keep_tmp_dirs,
         jobs=jobs,
+        show_test_details=show_test_details,
     )
 
 

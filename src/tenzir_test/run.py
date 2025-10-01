@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import atexit
 import builtins
+import contextlib
 import dataclasses
 import difflib
 import enum
@@ -18,7 +19,7 @@ import sys
 import tempfile
 import threading
 import typing
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any, TypeVar, cast
@@ -80,6 +81,29 @@ SKIP = "\033[90;1m●\033[0m"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 stdout_lock = threading.RLock()
+
+_CURRENT_TEST_CONTEXT = threading.local()
+SHOW_TEST_DETAILS = False
+
+
+@contextlib.contextmanager
+def _push_test_context(
+    *, runner_name: str | None, runner_version: str | None, fixtures: tuple[str, ...]
+) -> Iterator[None]:
+    previous = getattr(_CURRENT_TEST_CONTEXT, "value", None)
+    _CURRENT_TEST_CONTEXT.value = {
+        "runner_name": runner_name,
+        "runner_version": runner_version,
+        "fixtures": fixtures,
+    }
+    try:
+        yield
+    finally:
+        if previous is None:
+            if hasattr(_CURRENT_TEST_CONTEXT, "value"):
+                delattr(_CURRENT_TEST_CONTEXT, "value")
+        else:
+            _CURRENT_TEST_CONTEXT.value = previous
 
 TEST_TMP_ENV_VAR = "TENZIR_TMP_DIR"
 _TMP_KEEP_ENV_VAR = "TENZIR_KEEP_TMP_DIRS"
@@ -868,6 +892,91 @@ def _format_summary(summary: Summary) -> str:
     return f"Test summary: {passed_segment} • {failed_segment} • {skipped_segment}"
 
 
+def _format_run_context_suffix() -> str:
+    if not SHOW_TEST_DETAILS:
+        return ""
+    context = getattr(_CURRENT_TEST_CONTEXT, "value", None)
+    if not isinstance(context, dict):
+        return ""
+
+    runner_name = context.get("runner_name")
+    fixtures = context.get("fixtures") or tuple()
+    parts: list[str] = []
+    if isinstance(runner_name, str) and runner_name:
+        parts.append(f"runner={runner_name}")
+    if isinstance(fixtures, tuple) and fixtures:
+        parts.append(f"fixtures={', '.join(fixtures)}")
+    if not parts:
+        return ""
+    details = ", ".join(parts)
+    return f"  \033[2;37m{details}\033[0m"
+
+
+def _summarize_runner_plan(
+    queue: Sequence[RunnerQueueItem],
+    *,
+    tenzir_version: str | None,
+    runner_versions: Mapping[str, str] | None = None,
+) -> str:
+    if not queue:
+        return "no runners"
+
+    counts: dict[str, int] = {}
+    for runner, _ in queue:
+        counts[runner.name] = counts.get(runner.name, 0) + 1
+
+    def format_runner(name: str, count: int) -> str:
+        base = name
+        version = (runner_versions or {}).get(name)
+        if version is None and name == "tenzir":
+            version = tenzir_version
+        if version:
+            base = f"{base} (v{version})"
+        return f"{count}× {base}"
+
+    return ", ".join(format_runner(name, counts[name]) for name in sorted(counts))
+
+
+def _collect_runner_versions(
+    queue: Sequence[RunnerQueueItem],
+    *,
+    tenzir_version: str | None,
+) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    if tenzir_version:
+        versions["tenzir"] = tenzir_version
+
+    for runner, _ in queue:
+        attr = getattr(runner, "version", None)
+        if isinstance(attr, str) and attr:
+            versions.setdefault(runner.name, attr)
+    return versions
+
+
+def _summarize_harness_configuration(
+    *,
+    jobs: int,
+    update: bool,
+    coverage: bool,
+    log_comparisons: bool,
+    runner_summary: bool,
+    fixture_summary: bool,
+) -> tuple[int, str]:
+    enabled_flags: list[str] = []
+    toggles = (
+        ("update", update),
+        ("coverage", coverage),
+        ("log-comparisons", log_comparisons),
+        ("runner-summary", runner_summary),
+        ("fixture-summary", fixture_summary),
+        ("keep-tmp-dirs", KEEP_TMP_DIRS),
+    )
+    for name, flag in toggles:
+        if flag:
+            enabled_flags.append(name)
+    return jobs, ", ".join(enabled_flags)
+
+
 def _relativize_path(path: Path) -> Path:
     try:
         return path.relative_to(ROOT)
@@ -1151,13 +1260,15 @@ def get_version() -> str:
 def success(test: Path) -> None:
     with stdout_lock:
         rel_test = _relativize_path(test)
-        print(f"{CHECKMARK} {rel_test}")
+        suffix = _format_run_context_suffix()
+        print(f"{CHECKMARK} {rel_test}{suffix}")
 
 
 def fail(test: Path) -> None:
     with stdout_lock:
         rel_test = _relativize_path(test)
-        print(f"{CROSS} {rel_test}")
+        suffix = _format_run_context_suffix()
+        print(f"{CROSS} {rel_test}{suffix}")
 
 
 def last_and(items: Iterable[T]) -> Iterator[tuple[bool, T]]:
@@ -1339,7 +1450,8 @@ def run_simple_test(
 
 def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool | str:
     rel_path = _relativize_path(test)
-    print(f"{SKIP} skipped {rel_path}: {reason}")
+    suffix = _format_run_context_suffix()
+    print(f"{SKIP} skipped {rel_path}{suffix}: {reason}")
     ref_path = test.with_suffix(f".{output_ext}")
     if update:
         with ref_path.open("wb") as f:
@@ -1370,12 +1482,14 @@ class Worker:
         *,
         update: bool,
         coverage: bool = False,
+        runner_versions: Mapping[str, str] | None = None,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
         self._exception: BaseException | None = None
         self._update = update
         self._coverage = coverage
+        self._runner_versions = dict(runner_versions or {})
         self._thread = threading.Thread(target=self._work)
 
     def start(self) -> None:
@@ -1401,7 +1515,15 @@ class Worker:
 
                 runner, test_path = item
                 fixtures = _get_test_fixtures(test_path, coverage=self._coverage)
-                outcome = runner.run(test_path, self._update, self._coverage)
+                if SHOW_TEST_DETAILS:
+                    with _push_test_context(
+                        runner_name=runner.name,
+                        runner_version=self._runner_versions.get(runner.name),
+                        fixtures=fixtures,
+                    ):
+                        outcome = runner.run(test_path, self._update, self._coverage)
+                else:
+                    outcome = runner.run(test_path, self._update, self._coverage)
                 result.total += 1
                 result.record_runner_outcome(runner.name, outcome)
                 if fixtures:
@@ -1456,6 +1578,7 @@ def run_cli(
     fixture_summary: bool,
     jobs: int,
     keep_tmp_dirs: bool,
+    show_test_details: bool,
 ) -> None:
     from tenzir_test.engine import state as engine_state
 
@@ -1470,7 +1593,9 @@ def run_cli(
     else:
         fixture_logger.setLevel(logging.WARNING)
 
+    global SHOW_TEST_DETAILS
     set_keep_tmp_dirs(bool(os.environ.get(_TMP_KEEP_ENV_VAR)) or keep_tmp_dirs)
+    SHOW_TEST_DETAILS = show_test_details
 
     settings = discover_settings(
         root=root,
@@ -1560,14 +1685,39 @@ def run_cli(
     if not TENZIR_BINARY:
         sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
     try:
-        version = get_version()
+        tenzir_version = get_version()
     except FileNotFoundError:
         sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
 
-    print(f"{INFO} running {len(queue)} tests with v{version}")
+    runner_versions = _collect_runner_versions(queue, tenzir_version=tenzir_version)
+    runner_plan = _summarize_runner_plan(
+        queue,
+        tenzir_version=tenzir_version,
+        runner_versions=runner_versions,
+    )
+    job_count, enabled_flags = _summarize_harness_configuration(
+        jobs=jobs,
+        update=update,
+        coverage=coverage,
+        log_comparisons=bool(log_comparisons or _log_comparisons),
+        runner_summary=runner_summary,
+        fixture_summary=fixture_summary,
+    )
+
+    jobs_segment = f" ({job_count} jobs)" if job_count else ""
+    toggle_suffix = f"; {enabled_flags}" if enabled_flags else ""
+    print(f"{INFO} running {len(queue)} tests{jobs_segment} using {runner_plan}{toggle_suffix}")
 
     # Pass coverage flag to workers
-    workers = [Worker(queue, update=update, coverage=coverage) for _ in range(jobs)]
+    workers = [
+        Worker(
+            queue,
+            update=update,
+            coverage=coverage,
+            runner_versions=runner_versions,
+        )
+        for _ in range(jobs)
+    ]
     summary = Summary()
     for worker in workers:
         worker.start()
