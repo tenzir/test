@@ -30,7 +30,7 @@ def configured_root(tmp_path: Path) -> Path:
 
 def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> None:
     test_file = tmp_path / "example.tql"
-    test_file.write_text("from file\n| write json\n", encoding="utf-8")
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
 
     config = run.parse_test_config(test_file)
 
@@ -40,6 +40,7 @@ def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> No
     assert "node" not in config
     assert config["skip"] is None
     assert config["fixtures"] == tuple()
+    assert config["inputs"] is None
 
 
 def test_parse_test_config_override(tmp_path: Path, configured_root: Path) -> None:
@@ -52,8 +53,8 @@ runner: ir
 skip: reason
 ---
 
-from file
-| write json
+version
+write_json
 """,
         encoding="utf-8",
     )
@@ -66,6 +67,7 @@ from file
         "runner": "ir",
         "skip": "reason",
         "fixtures": tuple(),
+        "inputs": None,
     }
 
 
@@ -79,8 +81,8 @@ error: true
 skip: maintenance
 ---
 
-from_file f"{env("TENZIR_INPUTS")}/events.json"
-write json
+version
+write_json
 """,
         encoding="utf-8",
     )
@@ -93,6 +95,7 @@ write json
         "runner": "ir",
         "skip": "maintenance",
         "fixtures": tuple(),
+        "inputs": None,
     }
 
 
@@ -114,6 +117,18 @@ def test_get_test_env_and_config_args(configured_root: Path) -> None:
     assert tmp_dir_path.exists()
     run.cleanup_test_tmp_dir(tmp_dir_value)
     assert not tmp_dir_path.exists()
+    custom_inputs = test_dir / "custom-inputs"
+    custom_inputs.mkdir()
+    env_override, args_override = run.get_test_env_and_config_args(
+        test_file, inputs=custom_inputs
+    )
+    override_tmp = env_override[run.TEST_TMP_ENV_VAR]
+    override_tmp_path = Path(override_tmp)
+    assert override_tmp_path.exists()
+    run.cleanup_test_tmp_dir(override_tmp)
+    assert not override_tmp_path.exists()
+    assert env_override["TENZIR_INPUTS"] == str(custom_inputs.resolve())
+    assert args_override == [f"--config={config_file}"]
     if run.TENZIR_BINARY:
         assert env["TENZIR_BINARY"] == run.TENZIR_BINARY
     if run.TENZIR_NODE_BINARY:
@@ -136,6 +151,52 @@ def test_get_test_env_prefers_node_specific_config(configured_root: Path) -> Non
 
     assert env["TENZIR_NODE_CONFIG"] == str(node_config)
     assert args == [f"--config={tenzir_config}"]
+
+
+def test_directory_inputs_override(tmp_path: Path, configured_root: Path) -> None:
+    suite_dir = configured_root / "suite"
+    suite_dir.mkdir()
+    data_dir = configured_root / "data"
+    data_dir.mkdir()
+    (suite_dir / "test.yaml").write_text("inputs: ../data\n", encoding="utf-8")
+    test_file = suite_dir / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    config = run.parse_test_config(test_file)
+
+    expected_inputs = str((suite_dir / "../data").resolve())
+    assert config["inputs"] == expected_inputs
+
+    env, _ = run.get_test_env_and_config_args(test_file, inputs=config["inputs"])
+    assert env["TENZIR_INPUTS"] == expected_inputs
+    run.cleanup_test_tmp_dir(env[run.TEST_TMP_ENV_VAR])
+
+
+def test_frontmatter_inputs_override(tmp_path: Path, configured_root: Path) -> None:
+    suite_dir = configured_root / "suite"
+    suite_dir.mkdir()
+    alternate_inputs = configured_root / "alternate"
+    alternate_inputs.mkdir()
+    test_file = suite_dir / "case.tql"
+    test_file.write_text(
+        """---
+inputs: ../alternate
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    config = run.parse_test_config(test_file)
+
+    expected_inputs = str((suite_dir / "../alternate").resolve())
+    assert config["inputs"] == expected_inputs
+
+    env, _ = run.get_test_env_and_config_args(test_file, inputs=config["inputs"])
+    assert env["TENZIR_INPUTS"] == expected_inputs
+    run.cleanup_test_tmp_dir(env[run.TEST_TMP_ENV_VAR])
 
 
 def test_cleanup_respects_keep_flag(tmp_path: Path) -> None:
@@ -173,6 +234,7 @@ print("ok")
         "runner": "python",
         "skip": None,
         "fixtures": tuple(),
+        "inputs": None,
     }
 
 
@@ -189,10 +251,10 @@ def test_collect_all_tests_skips_inputs(configured_root: Path) -> None:
     suite = configured_root / "suite"
     suite.mkdir()
     real_test = suite / "case.tql"
-    real_test.write_text("from_file foo\n", encoding="utf-8")
+    real_test.write_text("version\nwrite_json\n", encoding="utf-8")
     data_dir = configured_root / "inputs"
     data_dir.mkdir(exist_ok=True)
-    (data_dir / "ignored.tql").write_text("from_file bar\n", encoding="utf-8")
+    (data_dir / "ignored.tql").write_text("version\nwrite_json\n", encoding="utf-8")
 
     collected = list(run.collect_all_tests(configured_root))
 
@@ -266,7 +328,7 @@ def test_run_simple_test_injects_package_dirs(
     tests_dir.mkdir(parents=True)
     (package_root / "package.yaml").write_text("name: pkg\n", encoding="utf-8")
     test_file = tests_dir / "case.tql"
-    test_file.write_text("from_file foo\n", encoding="utf-8")
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
 
     original_settings = config.Settings(
         root=run.ROOT,
@@ -315,6 +377,62 @@ def test_run_simple_test_injects_package_dirs(
     assert not Path(scratch_value).exists()
 
 
+def test_run_simple_test_respects_inputs_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    package_root = tmp_path / "pkg"
+    tests_dir = package_root / "tests"
+    tests_dir.mkdir(parents=True)
+    (package_root / "package.yaml").write_text("name: pkg\n", encoding="utf-8")
+    custom_inputs = package_root / "alt-inputs"
+    custom_inputs.mkdir()
+    (tests_dir / "test.yaml").write_text("inputs: ../alt-inputs\n", encoding="utf-8")
+    test_file = tests_dir / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=package_root,
+            tenzir_binary=sys.executable,
+            tenzir_node_binary=None,
+        )
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeCompletedProcess:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = b"ok"
+
+    def fake_run(cmd, timeout, stdout, env):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(env)
+        scratch = Path(env[run.TEST_TMP_ENV_VAR])
+        assert scratch.exists()
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    try:
+        assert run.run_simple_test(test_file, update=True, output_ext="txt") is True
+    finally:
+        run.apply_settings(original_settings)
+
+    env = captured.get("env")
+    assert isinstance(env, dict)
+    expected_inputs = str(custom_inputs.resolve())
+    assert env["TENZIR_INPUTS"] == expected_inputs
+    scratch_value = env[run.TEST_TMP_ENV_VAR]
+    assert scratch_value.startswith(str(package_root))
+    assert not Path(scratch_value).exists()
+
+
 def test_parse_fixture_string(tmp_path: Path, configured_root: Path) -> None:
     test_file = tmp_path / "fixture.tql"
     test_file.write_text(
@@ -322,8 +440,8 @@ def test_parse_fixture_string(tmp_path: Path, configured_root: Path) -> None:
 fixture: sink
 ---
 
-from file
-| write json
+version
+write_json
 """,
         encoding="utf-8",
     )
@@ -340,8 +458,8 @@ def test_parse_fixtures_list(tmp_path: Path, configured_root: Path) -> None:
 fixtures: [node, sink]
 ---
 
-from file
-| write json
+version
+write_json
 """,
         encoding="utf-8",
     )

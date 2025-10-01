@@ -24,7 +24,10 @@ class CustomPythonFixture(ExtRunner):
             raise RuntimeError("TENZIR_BINARY must be configured for python fixtures")
         try:
             cmd = [sys.executable, str(test)]
-            env, _config_args = run_mod.get_test_env_and_config_args(test)
+            inputs_override = typing.cast(str | None, test_config.get("inputs"))
+            env, _config_args = run_mod.get_test_env_and_config_args(
+                test, inputs=inputs_override
+            )
             fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
             node_requested = "node" in fixtures
             timeout = typing.cast(int, test_config["timeout"])

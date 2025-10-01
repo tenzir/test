@@ -209,6 +209,7 @@ def _default_test_config() -> TestConfig:
         "runner": None,
         "skip": None,
         "fixtures": tuple(),
+        "inputs": None,
     }
 
 
@@ -270,6 +271,49 @@ def _normalize_fixtures_value(
     return tuple(fixtures)
 
 
+def _extract_location_path(location: Path | str) -> Path:
+    if isinstance(location, Path):
+        return location
+    location_str = str(location)
+    if ":" in location_str:
+        location_str = location_str.split(":", 1)[0]
+    return Path(location_str)
+
+
+def _normalize_inputs_value(
+    value: typing.Any,
+    *,
+    location: Path | str,
+    line_number: int | None = None,
+) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, os.PathLike) or isinstance(value, str):
+        raw = os.fspath(value).strip()
+        if not raw:
+            _raise_config_error(
+                location,
+                "'inputs' value must be a non-empty string",
+                line_number,
+            )
+        base_dir = _extract_location_path(location).parent
+        path = Path(raw)
+        if not path.is_absolute():
+            path = base_dir / path
+        try:
+            normalized = path.resolve()
+        except OSError:
+            normalized = path
+        return str(normalized)
+
+    _raise_config_error(
+        location,
+        f"Invalid value for 'inputs', expected string, got '{value}'",
+        line_number,
+    )
+    return None
+
+
 def _assign_config_option(
     config: TestConfig,
     key: str,
@@ -279,7 +323,7 @@ def _assign_config_option(
     line_number: int | None = None,
 ) -> None:
     canonical = _canonical_config_key(key)
-    valid_keys: set[str] = {"error", "timeout", "runner", "skip", "fixtures"}
+    valid_keys: set[str] = {"error", "timeout", "runner", "skip", "fixtures", "inputs"}
     if canonical not in valid_keys:
         _raise_config_error(location, f"Unknown configuration key '{key}'", line_number)
 
@@ -332,6 +376,12 @@ def _assign_config_option(
 
     if canonical == "fixtures":
         config[canonical] = _normalize_fixtures_value(
+            value, location=location, line_number=line_number
+        )
+        return
+
+    if canonical == "inputs":
+        config[canonical] = _normalize_inputs_value(
             value, location=location, line_number=line_number
         )
         return
@@ -631,12 +681,24 @@ def _load_project_runners(root: Path) -> None:
     _refresh_registry()
 
 
-def get_test_env_and_config_args(test: Path) -> tuple[dict[str, str], list[str]]:
+def get_test_env_and_config_args(
+    test: Path,
+    *,
+    inputs: str | os.PathLike[str] | None = None,
+) -> tuple[dict[str, str], list[str]]:
     config_file = test.parent / "tenzir.yaml"
     node_config_file = test.parent / "tenzir-node.yaml"
     config_args = [f"--config={config_file}"] if config_file.exists() else []
     env = os.environ.copy()
-    inputs_path = str(_resolve_inputs_dir(ROOT))
+    if inputs is None:
+        inputs_path = str(_resolve_inputs_dir(ROOT))
+    else:
+        candidate = Path(os.fspath(inputs))
+        if not candidate.is_absolute():
+            candidate = (test.parent / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        inputs_path = str(candidate)
     env["TENZIR_INPUTS"] = inputs_path
     if config_file.exists():
         env.setdefault("TENZIR_CONFIG", str(config_file))
@@ -1334,7 +1396,8 @@ def run_simple_test(
         report_failure(test, f"└─▶ \033[31m{e}\033[0m")
         return False
 
-    env, config_args = get_test_env_and_config_args(test)
+    inputs_override = typing.cast(str | None, test_config.get("inputs"))
+    env, config_args = get_test_env_and_config_args(test, inputs=inputs_override)
     fixtures = cast(tuple[str, ...], test_config.get("fixtures", tuple()))
     timeout = cast(int, test_config["timeout"])
     expect_error = bool(test_config.get("error", False))
@@ -1360,7 +1423,8 @@ def run_simple_test(
             if package_root is not None:
                 env["TENZIR_PACKAGE_ROOT"] = str(package_root)
                 package_tests_root = package_root / "tests"
-                env["TENZIR_INPUTS"] = str(package_tests_root / "inputs")
+                if inputs_override is None:
+                    env["TENZIR_INPUTS"] = str(package_tests_root / "inputs")
                 package_args.append(f"--package-dirs={package_root}")
 
             # Set up environment for code coverage if enabled
