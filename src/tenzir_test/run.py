@@ -105,6 +105,7 @@ def _push_test_context(
         else:
             _CURRENT_TEST_CONTEXT.value = previous
 
+
 TEST_TMP_ENV_VAR = "TENZIR_TMP_DIR"
 _TMP_KEEP_ENV_VAR = "TENZIR_KEEP_TMP_DIRS"
 _TMP_ROOT_NAME = ".tenzir-test"
