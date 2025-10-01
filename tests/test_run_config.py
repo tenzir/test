@@ -119,9 +119,7 @@ def test_get_test_env_and_config_args(configured_root: Path) -> None:
     assert not tmp_dir_path.exists()
     custom_inputs = test_dir / "custom-inputs"
     custom_inputs.mkdir()
-    env_override, args_override = run.get_test_env_and_config_args(
-        test_file, inputs=custom_inputs
-    )
+    env_override, args_override = run.get_test_env_and_config_args(test_file, inputs=custom_inputs)
     override_tmp = env_override[run.TEST_TMP_ENV_VAR]
     override_tmp_path = Path(override_tmp)
     assert override_tmp_path.exists()

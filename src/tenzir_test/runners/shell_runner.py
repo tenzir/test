@@ -20,9 +20,7 @@ class ShellRunner(ExtRunner):
         run_mod = get_run_module()
         test_config = run_mod.parse_test_config(test)
         inputs_override = typing.cast(str | None, test_config.get("inputs"))
-        env, _config_args = run_mod.get_test_env_and_config_args(
-            test, inputs=inputs_override
-        )
+        env, _config_args = run_mod.get_test_env_and_config_args(test, inputs=inputs_override)
         fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
         context_token = fixture_api.push_context(
             fixture_api.FixtureContext(
