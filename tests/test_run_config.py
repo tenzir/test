@@ -118,7 +118,24 @@ def test_get_test_env_and_config_args(configured_root: Path) -> None:
         assert env["TENZIR_BINARY"] == run.TENZIR_BINARY
     if run.TENZIR_NODE_BINARY:
         assert env["TENZIR_NODE_BINARY"] == run.TENZIR_NODE_BINARY
+    assert "TENZIR_NODE_CONFIG" not in env
     assert args == [f"--config={config_file}"]
+
+
+def test_get_test_env_prefers_node_specific_config(configured_root: Path) -> None:
+    test_dir = configured_root / "suite"
+    test_dir.mkdir()
+    test_file = test_dir / "case.tql"
+    test_file.touch()
+    node_config = test_dir / "tenzir-node.yaml"
+    node_config.write_text("console-verbosity: warning\n", encoding="utf-8")
+    tenzir_config = test_dir / "tenzir.yaml"
+    tenzir_config.write_text("console-verbosity: info\n", encoding="utf-8")
+
+    env, args = run.get_test_env_and_config_args(test_file)
+
+    assert env["TENZIR_NODE_CONFIG"] == str(node_config)
+    assert args == [f"--config={tenzir_config}"]
 
 
 def test_cleanup_respects_keep_flag(tmp_path: Path) -> None:

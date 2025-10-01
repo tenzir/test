@@ -608,12 +608,15 @@ def _load_project_runners(root: Path) -> None:
 
 def get_test_env_and_config_args(test: Path) -> tuple[dict[str, str], list[str]]:
     config_file = test.parent / "tenzir.yaml"
+    node_config_file = test.parent / "tenzir-node.yaml"
     config_args = [f"--config={config_file}"] if config_file.exists() else []
     env = os.environ.copy()
     inputs_path = str(_resolve_inputs_dir(ROOT))
     env["TENZIR_INPUTS"] = inputs_path
     if config_file.exists():
         env.setdefault("TENZIR_CONFIG", str(config_file))
+    if node_config_file.exists():
+        env["TENZIR_NODE_CONFIG"] = str(node_config_file)
     if TENZIR_BINARY:
         env["TENZIR_BINARY"] = TENZIR_BINARY
     if TENZIR_NODE_BINARY:
@@ -639,14 +642,8 @@ def enable_comparison_logging(enabled: bool) -> None:
 def log_comparison(test: Path, ref_path: Path, *, mode: str) -> None:
     if not _log_comparisons:
         return
-    try:
-        rel_test = test.relative_to(ROOT)
-    except ValueError:
-        rel_test = test
-    try:
-        rel_ref = ref_path.relative_to(ROOT)
-    except ValueError:
-        rel_ref = ref_path
+    rel_test = _relativize_path(test)
+    rel_ref = _relativize_path(ref_path)
     compare_glyph = "\033[95m⇄\033[0m"
     verbose_glyph = "\033[37m•\033[0m"
     print(f"{verbose_glyph} {mode} {rel_test} {compare_glyph} {rel_ref}")
@@ -875,7 +872,11 @@ def _relativize_path(path: Path) -> Path:
     try:
         return path.relative_to(ROOT)
     except ValueError:
-        return path
+        try:
+            relative = os.path.relpath(path, ROOT)
+        except ValueError:
+            return path
+        return Path(relative)
 
 
 def _get_test_fixtures(test: Path, *, coverage: bool) -> tuple[str, ...]:
@@ -893,7 +894,10 @@ def _build_path_tree(paths: Iterable[Path]) -> dict[str, dict[str, Any]]:
     tree: dict[str, dict[str, Any]] = {}
     for path in sorted(paths, key=lambda p: p.parts):
         node = tree
-        for part in path.parts:
+        parts = path.parts
+        if parts and parts[0] in {"..", "."}:
+            parts = (path.as_posix(),)
+        for part in parts:
             node = node.setdefault(part, {})
     return tree
 
@@ -1146,12 +1150,14 @@ def get_version() -> str:
 
 def success(test: Path) -> None:
     with stdout_lock:
-        print(f"{CHECKMARK} {test.relative_to(ROOT)}")
+        rel_test = _relativize_path(test)
+        print(f"{CHECKMARK} {rel_test}")
 
 
 def fail(test: Path) -> None:
     with stdout_lock:
-        print(f"{CROSS} {test.relative_to(ROOT)}")
+        rel_test = _relativize_path(test)
+        print(f"{CROSS} {rel_test}")
 
 
 def last_and(items: Iterable[T]) -> Iterator[tuple[bool, T]]:
@@ -1176,13 +1182,14 @@ def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
         )
     )
     with stdout_lock:
+        rel_path = _relativize_path(path)
         skip = 2
         for i, line in enumerate(diff):
             if skip > 0:
                 skip -= 1
                 continue
             if line.startswith(b"@@"):
-                print(f"┌─▶ \033[31m{path.relative_to(ROOT)}\033[0m")
+                print(f"┌─▶ \033[31m{rel_path}\033[0m")
                 continue
             if line.startswith(b"+"):
                 line = b"\033[92m" + line + b"\033[0m"
@@ -1331,7 +1338,7 @@ def run_simple_test(
 
 
 def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool | str:
-    rel_path = test.relative_to(ROOT)
+    rel_path = _relativize_path(test)
     print(f"{SKIP} skipped {rel_path}: {reason}")
     ref_path = test.with_suffix(f".{output_ext}")
     if update:

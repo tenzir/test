@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from tenzir_test import run
+from tenzir_test import fixtures as fixture_api
+from tenzir_test.fixtures import node as node_fixture
 
 
 def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
@@ -158,6 +162,115 @@ def test_handle_skip_uses_skip_glyph(tmp_path, capsys):
         assert output == f"{run.SKIP} skipped tests/example.tql: slow"
     finally:
         run.ROOT = original_root
+
+
+def test_node_fixture_uses_explicit_node_config(tmp_path, monkeypatch):
+    test_path = tmp_path / "suite" / "case.tql"
+    test_path.parent.mkdir(parents=True)
+    test_path.touch()
+
+    node_config = tmp_path / "tenzir-node.yaml"
+    node_config.write_text("console-verbosity: warning\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        process = SimpleNamespace(
+            stdout=io.StringIO("localhost:14258\n"),
+            stderr=io.StringIO(""),
+            pid=42,
+            terminate=lambda: captured.setdefault("terminated", True),
+            wait=lambda timeout=None: captured.setdefault("waits", []).append(timeout),
+            kill=lambda: captured.setdefault("killed", True),
+        )
+        return process
+
+    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(node_fixture.os, "getpgid", lambda pid: 100)
+
+    def fake_killpg(pgid, sig):
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(node_fixture.os, "killpg", fake_killpg)
+
+    env = {
+        "TENZIR_NODE_BINARY": "/usr/bin/tenzir-node",
+        "TENZIR_NODE_CONFIG": str(node_config),
+        "TENZIR_BINARY": "/usr/bin/tenzir",
+    }
+    context = fixture_api.FixtureContext(
+        test=test_path,
+        config={"timeout": 30},
+        coverage=False,
+        env=env,
+        config_args=("--config=/default/tenzir.yaml", "--package-dirs=/pkg"),
+        tenzir_binary="/usr/bin/tenzir",
+        tenzir_node_binary="/usr/bin/tenzir-node",
+    )
+
+    token = fixture_api.push_context(context)
+    try:
+        with node_fixture.node() as fixture_env:
+            assert fixture_env["TENZIR_NODE_CLIENT_ENDPOINT"] == "localhost:14258"
+            assert fixture_env["TENZIR_NODE_CLIENT_BINARY"] == "/usr/bin/tenzir"
+            assert fixture_env["TENZIR_NODE_CLIENT_TIMEOUT"] == "30"
+    finally:
+        fixture_api.pop_context(token)
+
+    cmd = captured["cmd"]
+    assert "--config=/default/tenzir.yaml" not in cmd
+    assert f"--config={node_config}" in cmd
+    assert "--package-dirs=/pkg" in cmd
+
+
+def test_node_fixture_skips_config_when_unset(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return SimpleNamespace(
+            stdout=io.StringIO("localhost:10000\n"),
+            stderr=io.StringIO(""),
+            pid=43,
+            terminate=lambda: None,
+            wait=lambda timeout=None: None,
+            kill=lambda: None,
+        )
+
+    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(node_fixture.os, "getpgid", lambda pid: 100)
+
+    def fake_killpg(_pgid, _sig):
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(node_fixture.os, "killpg", fake_killpg)
+
+    env = {
+        "TENZIR_NODE_BINARY": "/usr/bin/tenzir-node",
+        "TENZIR_BINARY": "/usr/bin/tenzir",
+    }
+    context = fixture_api.FixtureContext(
+        test=Path("/tmp/test.tql"),
+        config={"timeout": 30},
+        coverage=False,
+        env=env,
+        config_args=("--config=/default/tenzir.yaml", "--package-dirs=/pkg"),
+        tenzir_binary="/usr/bin/tenzir",
+        tenzir_node_binary="/usr/bin/tenzir-node",
+    )
+
+    token = fixture_api.push_context(context)
+    try:
+        with node_fixture.node():
+            pass
+    finally:
+        fixture_api.pop_context(token)
+
+    cmd = captured["cmd"]
+    assert all(not arg.startswith("--config=") for arg in cmd)
+    assert "--package-dirs=/pkg" in cmd
 
 
 def test_detailed_summary_order(capsys):

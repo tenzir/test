@@ -49,7 +49,10 @@ def node() -> Iterator[dict[str, str]]:
         raise RuntimeError("TENZIR_NODE_BINARY must be configured for the node fixture")
 
     env = context.env.copy()
-    config_args = list(context.config_args)
+    config_args = [arg for arg in context.config_args if not arg.startswith("--config=")]
+    node_config = env.get("TENZIR_NODE_CONFIG")
+    if node_config:
+        config_args.append(f"--config={node_config}")
     with tempfile.TemporaryDirectory() as temp_dir:
         if context.coverage:
             coverage_dir = env.get(
