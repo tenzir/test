@@ -1,6 +1,6 @@
 [project]
 name = "tenzir-test"
-version = "0.4.3"
+version = "0.4.4"
 description = "Reusable test execution framework extracted from the Tenzir repository."
 readme = "README.md"
 requires-python = ">=3.12"
