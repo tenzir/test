@@ -68,6 +68,8 @@ def node() -> Iterator[dict[str, str]]:
             env["LLVM_PROFILE_FILE"] = profile_path
             env["COVERAGE_SOURCE_DIR"] = source_dir
 
+        test_root = context.test.parent
+
         node_cmd = [
             node_binary,
             "--bare-mode",
@@ -87,6 +89,7 @@ def node() -> Iterator[dict[str, str]]:
             bufsize=1,
             env=env,
             start_new_session=True,
+            cwd=test_root,
         )
 
         endpoint: str | None = None
