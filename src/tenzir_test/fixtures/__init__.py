@@ -10,11 +10,13 @@ from contextlib import ExitStack, AbstractContextManager, contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Iterable, Iterator, Protocol, Sequence
+from functools import wraps
+from typing import Any, Callable, ContextManager, Iterable, Iterator, Mapping, Protocol, Sequence
 
 
 
 _FIXTURES_ENV = "TENZIR_TEST_FIXTURES"
+_HOOKS_ATTR = "__tenzir_fixture_hooks__"
 
 
 @dataclass(frozen=True)
@@ -38,11 +40,19 @@ logger = logging.getLogger(__name__)
 
 
 class Executor:
-    def __init__(self) -> None:
-        self.binary: str = os.environ["TENZIR_NODE_CLIENT_BINARY"]
-        self.endpoint: str | None = os.environ.get("TENZIR_NODE_CLIENT_ENDPOINT")
-        timeout_raw = os.environ.get("TENZIR_NODE_CLIENT_TIMEOUT")
+    def __init__(self, env: Mapping[str, str] | None = None) -> None:
+        source = env or os.environ
+        try:
+            self.binary: str = source["TENZIR_NODE_CLIENT_BINARY"]
+        except KeyError as exc:  # pragma: no cover - defensive guard
+            raise RuntimeError("TENZIR_NODE_CLIENT_BINARY is not configured") from exc
+        self.endpoint: str | None = source.get("TENZIR_NODE_CLIENT_ENDPOINT")
+        timeout_raw = source.get("TENZIR_NODE_CLIENT_TIMEOUT")
         self.remaining_timeout: float = float(timeout_raw) if timeout_raw is not None else 0.0
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> "Executor":
+        return cls(env=env)
 
     def run(
         self, source: str, desired_timeout: float | None = None, mirror: bool = False
@@ -95,6 +105,19 @@ class FixtureSelection:
 
     def has(self, name: str) -> bool:
         return name in self.names
+
+    def __getattr__(self, item: str) -> bool:
+        if item in self.names:
+            return True
+        raise AttributeError(
+            f"fixture '{item}' was not requested; available fixtures: "
+            f"{', '.join(sorted(self.names)) or '<none>'}"
+        )
+
+    def __dir__(self) -> list[str]:
+        base = set(super().__dir__())
+        base.update(self.names)
+        return sorted(base)
 
     def __getattr__(self, item: str) -> bool:
         if item in self.names:
@@ -167,6 +190,114 @@ class FixturesAccessor:
 fixtures_api = FixturesAccessor()
 
 
+class FixtureController:
+    """Imperative controller for manually driving a fixture lifecycle."""
+
+    def __init__(self, name: str, factory: FixtureFactory) -> None:
+        self._name = name
+        self._factory = factory
+        self._force_teardown_log = bool(getattr(factory, "tenzir_log_teardown", False))
+        self._state: tuple[ContextManager[dict[str, str] | None], bool] | None = None
+        self.env: dict[str, str] = {}
+        self._hooks: dict[str, Callable[..., Any]] = {}
+
+    def __enter__(self) -> "FixtureController":
+        self.start()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object | None,
+    ) -> bool:
+        self.stop()
+        return False
+
+    @property
+    def is_running(self) -> bool:
+        return self._state is not None
+
+    def start(self) -> dict[str, str]:
+        if self._state is not None:
+            raise RuntimeError(f"fixture '{self._name}' is already running")
+
+        context = self._factory()
+        logger.info("activating fixture '%s'", self._name)
+        should_log_teardown = self._force_teardown_log
+
+        env = context.__enter__()
+        env_dict = env or {}
+        if env_dict:
+            keys = ", ".join(sorted(env_dict.keys()))
+            logger.info("fixture '%s' provided context keys: %s", self._name, keys)
+            should_log_teardown = True
+
+        hooks = getattr(context, _HOOKS_ATTR, {}) or {}
+        self._hooks = {
+            name: self._wrap_hook(name, hook)
+            for name, hook in hooks.items()
+            if callable(hook)
+        }
+
+        self.env = env_dict
+        self._state = (context, should_log_teardown)
+        return self.env
+
+    def stop(self) -> None:
+        if self._state is None:
+            return
+        context, should_log_teardown = self._state
+        self._state = None
+        try:
+            context.__exit__(None, None, None)
+        finally:
+            if should_log_teardown:
+                logger.info("tearing down fixture '%s'", self._name)
+            self.env = {}
+            self._hooks.clear()
+
+    def restart(self) -> dict[str, str]:
+        self.stop()
+        return self.start()
+
+    def _wrap_hook(self, name: str, hook: Callable[..., Any]) -> Callable[..., Any]:
+        @wraps(hook)
+        def _inner(*args: Any, **kwargs: Any) -> Any:
+            if self._state is None:
+                raise RuntimeError(
+                    f"cannot call '{name}' on fixture '{self._name}' because it is not running"
+                )
+            return hook(*args, **kwargs)
+
+        return _inner
+
+    def __getattr__(self, item: str) -> Any:
+        hooks = self._hooks
+        if item in hooks:
+            return hooks[item]
+        raise AttributeError(f"fixture controller has no attribute '{item}'")
+
+    def __dir__(self) -> list[str]:
+        base = set(super().__dir__())
+        base.update(self._hooks.keys())
+        return sorted(base)
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        status = "running" if self.is_running else "stopped"
+        return f"FixtureController(name={self._name!r}, status={status})"
+
+def acquire_fixture(name: str) -> FixtureController:
+    """Return a controller for manually driving the named fixture."""
+
+    factory = _FACTORIES.get(name)
+    if factory is None:
+        available = ', '.join(sorted(_FACTORIES.keys())) or '<none>'
+        raise ValueError(f"fixture '{name}' is not registered (available: {available})")
+    return FixtureController(name, factory)
+
+
+
 def push_context(context: FixtureContext) -> Token:
     """Install the given context for the duration of fixture activation."""
 
@@ -194,6 +325,7 @@ class FixtureHandle:
 
     env: dict[str, str] | None = None
     teardown: Callable[[], None] | None = None
+    hooks: Mapping[str, Callable[..., Any]] | None = None
 
 
 class _FactoryCallable(Protocol):
@@ -211,13 +343,25 @@ class _FactoryCallable(Protocol):
 _FACTORIES: dict[str, FixtureFactory] = {}
 
 
+def _attach_hooks(
+    manager: ContextManager[dict[str, str] | None],
+    hooks: Mapping[str, Callable[..., Any]] | None = None,
+) -> ContextManager[dict[str, str] | None]:
+    if hooks:
+        setattr(manager, _HOOKS_ATTR, dict(hooks))
+    elif not hasattr(manager, _HOOKS_ATTR):
+        setattr(manager, _HOOKS_ATTR, {})
+    return manager
+
+
 def _normalize_factory(factory: _FactoryCallable) -> FixtureFactory:
     def _as_context_manager() -> ContextManager[dict[str, str] | None]:
         result = factory()
         if isinstance(result, AbstractContextManager):
-            return result
+            return _attach_hooks(result)
         if isinstance(result, FixtureHandle):
             env_dict: dict[str, str] = result.env or {}
+            hooks = result.hooks
 
             @contextmanager
             def _ctx() -> Iterator[dict[str, str] | None]:
@@ -227,7 +371,7 @@ def _normalize_factory(factory: _FactoryCallable) -> FixtureFactory:
                     if result.teardown:
                         result.teardown()
 
-            return _ctx()
+            return _attach_hooks(_ctx(), hooks)
         if isinstance(result, tuple) and len(result) == 2:
             raw_env, teardown = result
             env_dict = raw_env or {}
@@ -240,21 +384,21 @@ def _normalize_factory(factory: _FactoryCallable) -> FixtureFactory:
                     if callable(teardown):
                         teardown()
 
-            return _ctx()
+            return _attach_hooks(_ctx())
         if result is None:
 
             @contextmanager
             def _ctx_none() -> Iterator[dict[str, str] | None]:
                 yield {}
 
-            return _ctx_none()
+            return _attach_hooks(_ctx_none())
         if isinstance(result, dict):
 
             @contextmanager
             def _ctx_dict() -> Iterator[dict[str, str] | None]:
                 yield result
 
-            return _ctx_dict()
+            return _attach_hooks(_ctx_dict())
         raise TypeError(
             "fixture factory must return a context manager, FixtureHandle, dict,"
             " tuple[env, teardown], or None"
@@ -381,7 +525,9 @@ __all__ = [
     "FixtureHandle",
     "FixtureSelection",
     "FixturesAccessor",
+    "FixtureController",
     "activate",
+    "acquire_fixture",
     "fixture",
     "fixtures",
     "fixtures_api",

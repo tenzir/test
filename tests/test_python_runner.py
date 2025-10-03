@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+import signal
+
 from tenzir_test import config, run, fixtures
 
 
@@ -162,6 +164,57 @@ def test_fixture_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(fixtures._FACTORIES, "sink", _fake_fixture)  # type: ignore[attr-defined]
     with fixtures.activate(["sink"]) as env:
         assert env["X_FAKE"] == "ok"
+
+
+def test_acquire_fixture_controller(monkeypatch: pytest.MonkeyPatch) -> None:
+    flags: dict[str, object] = {"teardown": False, "killed": None}
+
+    def _factory() -> fixtures.FixtureHandle:
+        def _teardown() -> None:
+            flags["teardown"] = True
+
+        def _kill(sig: int = signal.SIGTERM) -> None:
+            flags["killed"] = sig
+
+        return fixtures.FixtureHandle(
+            env={"VALUE": "42"},
+            teardown=_teardown,
+            hooks={"kill": _kill},
+        )
+
+    previous = fixtures._FACTORIES.get("controller_fixture")  # type: ignore[attr-defined]
+    fixtures.register("controller_fixture", _factory, replace=True)
+    try:
+        controller = fixtures.acquire_fixture("controller_fixture")
+        env = controller.start()
+        assert env == {"VALUE": "42"}
+        assert controller.is_running
+        controller.kill(signal.SIGKILL)
+        assert flags["killed"] == signal.SIGKILL
+        controller.stop()
+        assert flags["teardown"] is True
+        assert not controller.is_running
+        with pytest.raises(AttributeError):
+            _ = controller.kill
+        env = controller.restart()
+        assert env == {"VALUE": "42"}
+        controller.stop()
+    finally:
+        if previous is None:
+            fixtures._FACTORIES.pop("controller_fixture", None)  # type: ignore[attr-defined]
+        else:
+            fixtures._FACTORIES["controller_fixture"] = previous  # type: ignore[attr-defined]
+
+
+def test_executor_from_env() -> None:
+    env = {
+        "TENZIR_NODE_CLIENT_BINARY": "/usr/bin/tenzir-node",
+        "TENZIR_NODE_CLIENT_ENDPOINT": "localhost:0",
+        "TENZIR_NODE_CLIENT_TIMEOUT": "5",
+    }
+    executor = fixtures.Executor.from_env(env)
+    assert executor.binary == "/usr/bin/tenzir-node"
+    assert executor.endpoint == "localhost:0"
 
 
 def test_fixture_decorator_registers_env() -> None:

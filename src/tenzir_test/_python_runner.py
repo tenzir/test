@@ -6,11 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from . import fixtures as _fixtures
-
-try:
-    from .fixtures import acquire_fixture as _acquire_fixture
-except ImportError:  # pragma: no cover - future extension
-    _acquire_fixture = None
+from .fixtures import acquire_fixture as _acquire_fixture
 
 
 _EXPORTED_HELPERS: dict[str, Any] = {
@@ -23,11 +19,11 @@ _EXPORTED_HELPERS: dict[str, Any] = {
     "FixtureContext": _fixtures.FixtureContext,
     "FixtureHandle": _fixtures.FixtureHandle,
     "FixtureSelection": _fixtures.FixtureSelection,
+    "FixtureController": _fixtures.FixtureController,
     "Executor": _fixtures.Executor,
 }
 
-if _acquire_fixture is not None:
-    _EXPORTED_HELPERS["acquire_fixture"] = _acquire_fixture
+_EXPORTED_HELPERS["acquire_fixture"] = _acquire_fixture
 
 
 def _build_init_globals() -> Dict[str, Any]:
