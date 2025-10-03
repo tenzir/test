@@ -1,0 +1,5 @@
+# server started via context manager
+# sent SIGTERM to server
+# server stopped automatically on context exit
+# server started manually
+# server stopped manually

@@ -1,6 +1,8 @@
 """Project-scoped fixtures for the example tenzir-test project."""
 
-# Import modules with fixture registrations so decorators execute at import time.
-from . import http
+from __future__ import annotations
 
-__all__ = ["http"]
+# Import submodules so their @fixture decorators run at import time.
+from . import http, server  # noqa: F401
+
+__all__ = ["http", "server"]

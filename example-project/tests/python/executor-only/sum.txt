@@ -1,0 +1,8 @@
+error: operator `unpack` not found
+ --> <input>:1:26
+  |
+1 | from {xs: [1,2,3,4,5]} | unpack xs | summarize total=count()
+  |                          ^^^^^^ 
+  |
+  = hint: did you mean `legacy`?
+  = docs: https://docs.tenzir.com/reference/operators

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -10,6 +11,19 @@ from tenzir_test import fixtures as fixture_api
 
 from ._utils import get_run_module, resolve_run_module_dir
 from .ext_runner import ExtRunner
+
+
+def _jsonify_config(config: dict[str, typing.Any]) -> dict[str, typing.Any]:
+    def _convert(value: typing.Any) -> typing.Any:
+        if isinstance(value, tuple):
+            return [_convert(item) for item in value]
+        if isinstance(value, list):
+            return [_convert(item) for item in value]
+        if isinstance(value, dict):
+            return {str(k): _convert(v) for k, v in value.items()}
+        return value
+
+    return {str(key): _convert(val) for key, val in config.items()}
 
 
 class CustomPythonFixture(ExtRunner):
@@ -34,17 +48,16 @@ class CustomPythonFixture(ExtRunner):
             fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
             node_requested = "node" in fixtures
             timeout = typing.cast(int, test_config["timeout"])
-            context_token = fixture_api.push_context(
-                fixture_api.FixtureContext(
-                    test=test,
-                    config=typing.cast(dict[str, typing.Any], test_config),
-                    coverage=coverage,
-                    env=env,
-                    config_args=tuple(),
-                    tenzir_binary=run_mod.TENZIR_BINARY,
-                    tenzir_node_binary=run_mod.TENZIR_NODE_BINARY,
-                )
+            fixture_context = fixture_api.FixtureContext(
+                test=test,
+                config=typing.cast(dict[str, typing.Any], test_config),
+                coverage=coverage,
+                env=env,
+                config_args=tuple(),
+                tenzir_binary=run_mod.TENZIR_BINARY,
+                tenzir_node_binary=run_mod.TENZIR_NODE_BINARY,
             )
+            context_token = fixture_api.push_context(fixture_context)
             pythonpath_entries: list[str] = []
             project_root = getattr(run_mod, "ROOT", None)
             project_root_path: Path | None = None
@@ -63,6 +76,14 @@ class CustomPythonFixture(ExtRunner):
             if existing_pythonpath:
                 pythonpath_entries.append(existing_pythonpath)
 
+            env["TENZIR_PYTHON_FIXTURE_CONTEXT"] = json.dumps(
+                {
+                    "test": str(test),
+                    "config": _jsonify_config(test_config),
+                    "coverage": coverage,
+                    "config_args": list(fixture_context.config_args),
+                }
+            )
             try:
                 with fixture_api.activate(fixtures) as fixture_env:
                     env.update(fixture_env)
@@ -73,13 +94,15 @@ class CustomPythonFixture(ExtRunner):
                             raise RuntimeError(
                                 "node fixture did not provide TENZIR_NODE_CLIENT_ENDPOINT"
                             )
+                    else:
+                        endpoint = None
                     new_pythonpath = os.pathsep.join(pythonpath_entries)
                     env["PYTHONPATH"] = new_pythonpath
                     env["TENZIR_NODE_CLIENT_BINARY"] = binary
                     env["TENZIR_NODE_CLIENT_TIMEOUT"] = str(timeout)
                     env.setdefault("TENZIR_PYTHON_FIXTURE_BINARY", binary)
                     env["TENZIR_PYTHON_FIXTURE_TIMEOUT"] = str(timeout)
-                    if node_requested:
+                    if node_requested and endpoint:
                         env["TENZIR_PYTHON_FIXTURE_ENDPOINT"] = endpoint
                     completed = subprocess.run(
                         cmd,

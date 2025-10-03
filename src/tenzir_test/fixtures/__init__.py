@@ -11,8 +11,17 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
 from functools import wraps
-from typing import Any, Callable, ContextManager, Iterable, Iterator, Mapping, Protocol, Sequence
-
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Iterable,
+    Iterator,
+    Mapping,
+    Protocol,
+    Sequence,
+    Literal,
+)
 
 
 _FIXTURES_ENV = "TENZIR_TEST_FIXTURES"
@@ -119,19 +128,6 @@ class FixtureSelection:
         base.update(self.names)
         return sorted(base)
 
-    def __getattr__(self, item: str) -> bool:
-        if item in self.names:
-            return True
-        raise AttributeError(
-            f"fixture '{item}' was not requested; available fixtures: "
-            f"{', '.join(sorted(self.names)) or '<none>'}"
-        )
-
-    def __dir__(self) -> list[str]:
-        base = set(super().__dir__())
-        base.update(self.names)
-        return sorted(base)
-
     def require(self, *names: str) -> None:
         missing = [name for name in names if name not in self.names]
         if missing:
@@ -210,7 +206,7 @@ class FixtureController:
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         tb: object | None,
-    ) -> bool:
+    ) -> Literal[False]:
         self.stop()
         return False
 
@@ -235,9 +231,7 @@ class FixtureController:
 
         hooks = getattr(context, _HOOKS_ATTR, {}) or {}
         self._hooks = {
-            name: self._wrap_hook(name, hook)
-            for name, hook in hooks.items()
-            if callable(hook)
+            name: self._wrap_hook(name, hook) for name, hook in hooks.items() if callable(hook)
         }
 
         self.env = env_dict
@@ -287,15 +281,15 @@ class FixtureController:
         status = "running" if self.is_running else "stopped"
         return f"FixtureController(name={self._name!r}, status={status})"
 
+
 def acquire_fixture(name: str) -> FixtureController:
     """Return a controller for manually driving the named fixture."""
 
     factory = _FACTORIES.get(name)
     if factory is None:
-        available = ', '.join(sorted(_FACTORIES.keys())) or '<none>'
+        available = ", ".join(sorted(_FACTORIES.keys())) or "<none>"
         raise ValueError(f"fixture '{name}' is not registered (available: {available})")
     return FixtureController(name, factory)
-
 
 
 def push_context(context: FixtureContext) -> Token:

@@ -1,64 +1,86 @@
 # Example tenzir-test Project
 
-This example demonstrates the directory layout that `tenzir-test` expects and ships with a handful of runnable scenarios. Bring your own Tenzir build and point the harness at the `tests/` folder to try it out.
+This miniature project illustrates the conventions that the `tenzir-test`
+harness expects: how to lay out tests, register fixtures, and mix runners. Point
+a local Tenzir build at the project and explore the scenarios to see how the
+pieces fit together.
 
 ## Prerequisites
 
-- A `tenzir` binary on your `PATH`, or set the `TENZIR_BINARY` environment variable.
-- Optional: `tenzir-node` if you experiment with runners that require a node (none of the scenarios here do).
+- A `tenzir` binary on your `PATH`, or an explicit `TENZIR_BINARY`.
+- `tenzir-node` for scenarios that talk to a running node.
+- Python 3.12+ with [`uv`](https://docs.astral.sh/uv/) (used in the commands
+  below).
 
-## Directory Structure
+## Layout
 
 ```
 example-project/
 ├── fixtures/
-│   └── http.py
+│   ├── __init__.py
+│   ├── http.py
+│   └── server.py
 ├── inputs/
 │   └── events.ndjson
 ├── runners/
+│   └── __init__.py
 └── tests/
-    ├── alerts/
-    │   ├── high-severity.tql
-    │   └── high-severity.txt
-    ├── hex/
-    │   ├── hello.xxd
-    │   └── hello.txt
-    ├── shell/
-    │   └── http-fixture-check.sh
-    ├── http-fixture-use.tql
-    ├── node-fixture-use.tql
-    └── python/
-        └── severity/
-            ├── high_severity_count.py
-            └── high_severity_count.txt
+    ├── alerts/high-severity.{tql,txt}
+    ├── hex/hello.{xxd,txt}
+    ├── http-fixture-use.{tql,txt}
+    ├── node-fixture-use.{tql,txt}
+    ├── python/
+    │   ├── pure-python/hello_world.{py,txt}
+    │   ├── executor-only/sum.{py,txt}
+    │   ├── executor-with-http-fixture/request.{py,txt}
+    │   ├── executor-with-node-fixture/context-manager.{py,txt}
+    │   └── fixture-driving/manual_control.{py,txt}
+    └── shell/
+        ├── http-fixture-check.sh
+        └── tmp-dir.sh
 ```
 
-- The `.tql` scenarios use YAML frontmatter blocks bounded by `---` (including `fixtures` when needed) and the `env("TENZIR_INPUTS")` helper to read test data from the project-level `inputs/` directory. The harness also publishes a per-test scratch directory via `env("TENZIR_TMP_DIR")`. `tests/node-fixture-use.tql` marks itself with `fixtures: [node]`, so the harness spawns a `tenzir-node` automatically.
-  Add `--keep` when running `tenzir-test` if you want to inspect those scratch directories after execution.
-- The Python scenario under `fixtures/` uses `#` frontmatter with `runner: python` so the harness executes it with the active interpreter.
-- The shell scenario under `tests/shell/` uses `#` frontmatter with `runner: shell` implied by the `.sh` suffix. `tests/shell/tmp-dir.sh` verifies that `TENZIR_TMP_DIR` exists, writes temporary output there, and confirms the content without leaking the absolute path into the baseline.
-- The `hex/` directory showcases a custom `xxd` runner: we register it in `runners/__init__.py`, bind it to the `.xxd` extension, and compare the hex dump against `hello.txt`.
-- The accompanying `.txt` file captures the expected output when the scenario succeeds.
-- The `fixtures/` package registers a small HTTP echo server via the `@tenzir_test.fixture()` decorator. Tests that declare `fixtures: [http]` receive an `HTTP_FIXTURE_URL` pointing at the temporary listener; `tests/http-fixture-use.tql` demonstrates issuing a POST request with `body=this` and checking the echoed response against its baseline.
-- Subdirectories under `tests/` are purely organisational—you can nest them arbitrarily to keep suites tidy.
+### Highlights
 
-## Running the Example
+- **Pipelines** (`tests/alerts`, `tests/http-fixture-use.tql`): demonstrate YAML
+  frontmatter, shared inputs via `env("TENZIR_INPUTS")`, and fixture opt-ins such
+  as `fixtures: [http]`.
+- **Custom runner** (`tests/hex`): `runners/__init__.py` registers a tiny `xxd`
+  runner that transforms `.xxd` inputs and compares the hex dump against a
+  captured baseline.
+- **Python basics** (`tests/python/pure-python`): show how the Python runner
+  behaves without invoking Tenzir—handy for script-style checks.
+- **Executor examples** (`tests/python/executor-*`): exercise the `Executor`
+  helper against the built-in `node` fixture and the project-defined HTTP
+  fixture.
+- **Manual fixture control** (`tests/python/fixture-driving`): simply import the
+  `fixtures` package to trigger registration and then drive the `server` fixture
+  via `with acquire_fixture(...) as controller:` or explicit `start()`/`stop()`
+  calls.
 
-From the repository root:
+Every scenario keeps its expected output in a neighbouring `.txt` file. Run with
+`--update` after deliberate behaviour changes to refresh the baselines.
+
+## Running the suite
+
+From the repository root run:
 
 ```sh
 TENZIR_BINARY=/path/to/tenzir \
-  uv run tenzir-test --root example-project
+TENZIR_NODE_BINARY=/path/to/tenzir-node \
+uv run tenzir-test --root example-project
 ```
 
-Use `--update` to regenerate reference outputs after modifying the tests, and `--purge` to drop any stale artefacts.
+Add `--update` the first time to capture baselines, and `--keep` when you want
+to inspect the scratch directories referenced by `TENZIR_TMP_DIR`.
 
-Feel free to copy this directory as a starting point for new projects or experiment by adding additional runners (for example new `tenzir` refinements or utilities such as `xxd`) and fixtures that start `tenzir-node`.
+## Extending the example
 
-## Custom `xxd` Runner
-
-`runners/__init__.py` registers a small runner that discovers `.xxd` files, invokes `xxd -g1`, and diff-checks
-the output against a neighbouring `.txt` file. Because it inherits from `ExtRunner`, the harness
-automatically collects those files and treats `runner: xxd` in frontmatter as an explicit override
-when needed. The example keeps the test body simple—the contents of `hello.xxd` become the input to
-`xxd`—but you can expand the pattern to cover more complex scripting scenarios.
+- Copy this directory as a seed for real-world suites.
+- Add more fixtures under `fixtures/`—the harness imports the package before
+  each run, so registering new modules is as simple as importing them in
+  `fixtures/__init__.py`.
+- Extend `runners/__init__.py` with custom runners that wrap additional tools or
+  Tenzir commands.
+- Use `test.yaml` files inside `tests/` to set directory-scoped defaults (for
+  example timeouts or fixture selections).

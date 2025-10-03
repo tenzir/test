@@ -26,7 +26,7 @@ from typing import Any, TypeVar, cast
 
 import yaml
 
-from . import fixtures as fixture_api
+import tenzir_test.fixtures as fixtures_impl
 from . import packages
 from .config import Settings, discover_settings
 from .runners import (
@@ -657,7 +657,7 @@ def _load_project_fixtures(root: Path) -> None:
         return
 
     fixtures_package = root / "fixtures"
-    fixtures_module = root / "fixtures.py"
+    fixtures_file = root / "fixtures.py"
 
     try:
         alias_target = None
@@ -672,8 +672,8 @@ def _load_project_fixtures(root: Path) -> None:
                     alias_target = _import_module_from_path(
                         f"_tenzir_project_fixture_{candidate.stem}", candidate
                     )
-        elif fixtures_module.exists():
-            alias_target = _import_module_from_path("_tenzir_project_fixtures", fixtures_module)
+        elif fixtures_file.exists():
+            alias_target = _import_module_from_path("_tenzir_project_fixtures", fixtures_file)
         if alias_target is not None and "fixtures" not in sys.modules:
             sys.modules["fixtures"] = alias_target
     except Exception as exc:  # pragma: no cover - defensive logging
@@ -1433,8 +1433,8 @@ def run_simple_test(
     timeout = cast(int, test_config["timeout"])
     expect_error = bool(test_config.get("error", False))
 
-    context_token = fixture_api.push_context(
-        fixture_api.FixtureContext(
+    context_token = fixtures_impl.push_context(
+        fixtures_impl.FixtureContext(
             test=test,
             config=cast(dict[str, Any], test_config),
             coverage=coverage,
@@ -1445,7 +1445,7 @@ def run_simple_test(
         )
     )
     try:
-        with fixture_api.activate(fixtures) as fixture_env:
+        with fixtures_impl.activate(fixtures) as fixture_env:
             env.update(fixture_env)
             _apply_fixture_env(env, fixtures)
 
@@ -1511,7 +1511,7 @@ def run_simple_test(
         report_failure(test, f"└─▶ \033[31munexpected exception: {e}\033[0m")
         return False
     finally:
-        fixture_api.pop_context(context_token)
+        fixtures_impl.pop_context(context_token)
         cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
 
     if expect_error == good:
