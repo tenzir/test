@@ -135,6 +135,33 @@ def test_get_test_env_and_config_args(configured_root: Path) -> None:
     assert args == [f"--config={config_file}"]
 
 
+def test_tmp_base_directory_removed_when_empty(configured_root: Path) -> None:
+    scratch_root = configured_root / "suite"
+    scratch_root.mkdir()
+    test_file = scratch_root / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    env, _ = run.get_test_env_and_config_args(test_file)
+    tmp_value = env[run.TEST_TMP_ENV_VAR]
+    tmp_path = Path(tmp_value)
+    base_dir = tmp_path.parent
+    container_dir = base_dir.parent
+    assert base_dir.exists()
+
+    original_keep = run.KEEP_TMP_DIRS
+    run.set_keep_tmp_dirs(False)
+    try:
+        run.cleanup_test_tmp_dir(tmp_value)
+    finally:
+        run.set_keep_tmp_dirs(original_keep)
+
+    assert not tmp_path.exists()
+    assert not base_dir.exists()
+    expected_container = configured_root / run._TMP_ROOT_NAME
+    if container_dir == expected_container:
+        assert not container_dir.exists()
+
+
 def test_get_test_env_prefers_node_specific_config(configured_root: Path) -> None:
     test_dir = configured_root / "suite"
     test_dir.mkdir()

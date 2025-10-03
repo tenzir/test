@@ -110,6 +110,7 @@ TEST_TMP_ENV_VAR = "TENZIR_TMP_DIR"
 _TMP_KEEP_ENV_VAR = "TENZIR_KEEP_TMP_DIRS"
 _TMP_ROOT_NAME = ".tenzir-test"
 _TMP_SUBDIR_NAME = "tmp"
+_TMP_BASE_DIRS: set[Path] = set()
 _ACTIVE_TMP_DIRS: set[Path] = set()
 KEEP_TMP_DIRS = bool(os.environ.get(_TMP_KEEP_ENV_VAR))
 
@@ -119,10 +120,12 @@ def _resolve_tmp_base() -> Path:
     try:
         preferred.mkdir(parents=True, exist_ok=True)
     except OSError:
-        fallback = Path(tempfile.gettempdir()) / _TMP_ROOT_NAME.strip(".") / _TMP_SUBDIR_NAME
-        fallback.mkdir(parents=True, exist_ok=True)
-        return fallback
-    return preferred
+        base = Path(tempfile.gettempdir()) / _TMP_ROOT_NAME.strip(".") / _TMP_SUBDIR_NAME
+        base.mkdir(parents=True, exist_ok=True)
+    else:
+        base = preferred
+    _TMP_BASE_DIRS.add(base)
+    return base
 
 
 def _tmp_prefix_for(test: Path) -> str:
@@ -158,11 +161,39 @@ def cleanup_test_tmp_dir(path: str | os.PathLike[str] | None) -> None:
     if KEEP_TMP_DIRS:
         return
     shutil.rmtree(tmp_path, ignore_errors=True)
+    _cleanup_tmp_base_dirs()
 
 
 def _cleanup_remaining_tmp_dirs() -> None:
     for tmp_path in list(_ACTIVE_TMP_DIRS):
         cleanup_test_tmp_dir(tmp_path)
+    _cleanup_tmp_base_dirs()
+
+
+def _cleanup_tmp_base_dirs() -> None:
+    if KEEP_TMP_DIRS:
+        return
+    for base in tuple(_TMP_BASE_DIRS):
+        if not base.exists():
+            _TMP_BASE_DIRS.discard(base)
+            continue
+        for candidate in _ACTIVE_TMP_DIRS:
+            try:
+                candidate.relative_to(base)
+            except ValueError:
+                continue
+            break
+        else:
+            try:
+                base.rmdir()
+            except OSError:
+                continue
+            _TMP_BASE_DIRS.discard(base)
+            parent = base.parent
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
 
 
 atexit.register(_cleanup_remaining_tmp_dirs)
