@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # runner: python
 # timeout: 30
+# fixtures: [http]
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING
 
-from tenzir_test.fixtures import Executor, requested
+if TYPE_CHECKING:  # pragma: no cover - hints only
+    from tenzir_test import Executor, FixtureSelection, fixtures
 
 
 def main() -> int:
-    fixtures = requested()
-    if fixtures.has("sink"):
-        print("# using sink fixture\n", end="")
+    selection: FixtureSelection = fixtures()
+    if selection.http:
+        print("# using http fixture\n", end="")
     executor = Executor()
     query = (
         "\n".join(

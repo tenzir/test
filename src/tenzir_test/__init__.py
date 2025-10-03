@@ -10,9 +10,11 @@ from .fixtures import (
     fixture,
     has,
     register,
-    requested,
+    fixtures_api,
     require,
 )
+
+fixtures = fixtures_api
 
 __all__ = [
     "__version__",
@@ -21,11 +23,11 @@ __all__ = [
     "FixtureSelection",
     "activate",
     "fixture",
+    "fixtures",
     "Settings",
     "discover_settings",
     "has",
     "register",
-    "requested",
     "require",
     "run",
 ]

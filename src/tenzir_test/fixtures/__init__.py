@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterable, Iterator, Protocol, Sequence
 
 
+
 _FIXTURES_ENV = "TENZIR_TEST_FIXTURES"
 
 
@@ -95,6 +96,19 @@ class FixtureSelection:
     def has(self, name: str) -> bool:
         return name in self.names
 
+    def __getattr__(self, item: str) -> bool:
+        if item in self.names:
+            return True
+        raise AttributeError(
+            f"fixture '{item}' was not requested; available fixtures: "
+            f"{', '.join(sorted(self.names)) or '<none>'}"
+        )
+
+    def __dir__(self) -> list[str]:
+        base = set(super().__dir__())
+        base.update(self.names)
+        return sorted(base)
+
     def require(self, *names: str) -> None:
         missing = [name for name in names if name not in self.names]
         if missing:
@@ -114,8 +128,8 @@ class FixtureSelection:
         return tuple(sorted(self.names))
 
 
-def requested() -> FixtureSelection:
-    """Return the fixture selection encoded in the TENZIR_TEST_FIXTURES env var."""
+def fixtures() -> FixtureSelection:
+    """Return the current fixture selection."""
 
     return FixtureSelection(_parse_fixture_env(os.environ.get(_FIXTURES_ENV)))
 
@@ -123,13 +137,34 @@ def requested() -> FixtureSelection:
 def has(name: str) -> bool:
     """Check whether the given fixture was requested."""
 
-    return name in requested()
+    return name in fixtures()
 
 
 def require(*names: str) -> None:
     """Assert that all requested fixtures are present, raising RuntimeError otherwise."""
 
-    requested().require(*names)
+    fixtures().require(*names)
+
+
+class FixturesAccessor:
+    def __call__(self) -> FixtureSelection:
+        return fixtures()
+
+    def __getattr__(self, item: str) -> Any:
+        module = sys.modules[__name__]
+        return getattr(module, item)
+
+    def __dir__(self) -> list[str]:
+        module = sys.modules[__name__]
+        base = set(dir(module))
+        try:
+            base.update(fixtures().names)
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return sorted(base)
+
+
+fixtures_api = FixturesAccessor()
 
 
 def push_context(context: FixtureContext) -> Token:
@@ -338,3 +373,19 @@ def activate(names: Iterable[str]) -> Iterator[dict[str, str]]:
 
 # Import built-in fixtures so they self-register on package import.
 from . import node  # noqa: F401,E402
+
+
+__all__ = [
+    "Executor",
+    "FixtureContext",
+    "FixtureHandle",
+    "FixtureSelection",
+    "FixturesAccessor",
+    "activate",
+    "fixture",
+    "fixtures",
+    "fixtures_api",
+    "has",
+    "register",
+    "require",
+]

@@ -143,9 +143,12 @@ def test_python_runner_logs_when_enabled(
 
 def test_fixture_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TENZIR_TEST_FIXTURES", " sink ,node,, ")
-    selection = fixtures.requested()
+    selection = fixtures()
 
     assert selection.has("sink")
+    assert selection.sink is True
+    with pytest.raises(AttributeError):
+        _ = selection.missing
     assert fixtures.has("node")
     assert selection.as_tuple() == ("node", "sink")
 
