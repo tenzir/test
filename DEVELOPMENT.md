@@ -82,9 +82,9 @@ a new version:
    uv run ruff format
    ```
    Commit the resulting edits before continuing if the command touched files.
-2. Bump the version via `uv version <part>` (for example `uv version minor`).
-   This updates `pyproject.toml` and `uv.lock`; avoid sprinkling version
-   literals elsewhere. The runtime exposes `tenzir_test.__version__` via
+2. Bump the version via `uv version --bump <part>` (for example `uv version
+   --bump minor`). This updates `pyproject.toml` and `uv.lock`; avoid sprinkling
+   version literals elsewhere. The runtime exposes `tenzir_test.__version__` via
    `importlib.metadata`, returning `"0.0.0"` for editable installs so the
    project has a single source of truth.
 3. Commit the changes and create an annotated tag using
