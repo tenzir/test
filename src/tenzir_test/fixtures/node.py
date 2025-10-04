@@ -5,11 +5,17 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from dataclasses import dataclass
+from typing import Iterator, TYPE_CHECKING
+import weakref
 
 from . import current_context, register
+
+if TYPE_CHECKING:
+    from . import FixtureContext
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:
@@ -36,6 +42,42 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
             raise RuntimeError("tenzir-node left descendant processes running")
 
 
+@dataclass(slots=True)
+class _TempDirRecord:
+    temp_dir: tempfile.TemporaryDirectory[str]
+    ref: weakref.ref["FixtureContext"]
+
+
+_TEMP_DIRS: dict[int, _TempDirRecord] = {}
+_TEMP_DIR_LOCK = threading.Lock()
+
+
+def _ensure_temp_dir(context: "FixtureContext") -> Path:
+    key = id(context)
+    with _TEMP_DIR_LOCK:
+        record = _TEMP_DIRS.get(key)
+        if record is not None:
+            current = record.ref()
+            if current is context:
+                return Path(record.temp_dir.name)
+            record.temp_dir.cleanup()
+            _TEMP_DIRS.pop(key, None)
+
+        tmp_root = context.env.get("TENZIR_TMP_DIR") or None
+        temp_dir = tempfile.TemporaryDirectory(prefix="tenzir-node-", dir=tmp_root)
+
+        def _cleanup(dead_ref: weakref.ref["FixtureContext"]) -> None:
+            with _TEMP_DIR_LOCK:
+                existing = _TEMP_DIRS.get(key)
+                if existing is not None and existing.ref is dead_ref:
+                    existing.temp_dir.cleanup()
+                    _TEMP_DIRS.pop(key, None)
+
+        ctx_ref = weakref.ref(context, _cleanup)
+        _TEMP_DIRS[key] = _TempDirRecord(temp_dir=temp_dir, ref=ctx_ref)
+        return Path(temp_dir.name)
+
+
 @contextmanager
 def node() -> Iterator[dict[str, str]]:
     """Start ``tenzir-node`` and yield environment data for dependent tests."""
@@ -53,67 +95,79 @@ def node() -> Iterator[dict[str, str]]:
     node_config = env.get("TENZIR_NODE_CONFIG")
     if node_config:
         config_args.append(f"--config={node_config}")
-    with tempfile.TemporaryDirectory() as temp_dir:
-        if context.coverage:
-            coverage_dir = env.get(
-                "CMAKE_COVERAGE_OUTPUT_DIRECTORY",
-                os.path.join(os.getcwd(), "coverage"),
-            )
-            source_dir = env.get("COVERAGE_SOURCE_DIR", os.getcwd())
-            os.makedirs(coverage_dir, exist_ok=True)
-            profile_path = os.path.join(
-                coverage_dir,
-                f"{context.test.stem}-node-%p.profraw",
-            )
-            env["LLVM_PROFILE_FILE"] = profile_path
-            env["COVERAGE_SOURCE_DIR"] = source_dir
+    temp_dir = _ensure_temp_dir(context)
 
-        test_root = context.test.parent
+    configured_state = env.get("TENZIR_NODE_STATE_DIRECTORY")
+    state_dir = Path(configured_state) if configured_state else temp_dir / "state"
+    configured_cache = env.get("TENZIR_NODE_CACHE_DIRECTORY")
+    cache_dir = Path(configured_cache) if configured_cache else temp_dir / "cache"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    env.setdefault("TENZIR_NODE_STATE_DIRECTORY", str(state_dir))
+    env.setdefault("TENZIR_NODE_CACHE_DIRECTORY", str(cache_dir))
 
-        node_cmd = [
-            node_binary,
-            "--bare-mode",
-            "--console-verbosity=warning",
-            f"--state-directory={Path(temp_dir) / 'state'}",
-            f"--cache-directory={Path(temp_dir) / 'cache'}",
-            "--endpoint=localhost:0",
-            "--print-endpoint",
-            *config_args,
-        ]
-
-        process = subprocess.Popen(
-            node_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            env=env,
-            start_new_session=True,
-            cwd=test_root,
+    if context.coverage:
+        coverage_dir = env.get(
+            "CMAKE_COVERAGE_OUTPUT_DIRECTORY",
+            os.path.join(os.getcwd(), "coverage"),
         )
+        source_dir = env.get("COVERAGE_SOURCE_DIR", os.getcwd())
+        os.makedirs(coverage_dir, exist_ok=True)
+        profile_path = os.path.join(
+            coverage_dir,
+            f"{context.test.stem}-node-%p.profraw",
+        )
+        env["LLVM_PROFILE_FILE"] = profile_path
+        env["COVERAGE_SOURCE_DIR"] = source_dir
 
-        endpoint: str | None = None
-        try:
-            if process.stdout:
-                endpoint = process.stdout.readline().strip()
+    test_root = context.test.parent
 
-            if not endpoint:
-                raise RuntimeError("failed to obtain endpoint from tenzir-node")
+    node_cmd = [
+        node_binary,
+        "--bare-mode",
+        "--console-verbosity=warning",
+        f"--state-directory={state_dir}",
+        f"--cache-directory={cache_dir}",
+        "--endpoint=localhost:0",
+        "--print-endpoint",
+        *config_args,
+    ]
 
-            fixture_env = {
-                "TENZIR_NODE_CLIENT_ENDPOINT": endpoint,
-                "TENZIR_NODE_CLIENT_BINARY": context.tenzir_binary or env.get("TENZIR_BINARY"),
-                "TENZIR_NODE_CLIENT_TIMEOUT": str(context.config["timeout"]),
-            }
-            # Filter out empty values to avoid polluting the environment.
-            filtered_env = {k: v for k, v in fixture_env.items() if v}
-            yield filtered_env
-        finally:
-            if process.stdout:
-                process.stdout.close()
-            if process.stderr:
-                process.stderr.close()
-            _terminate_process(process)
+    process = subprocess.Popen(
+        node_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        env=env,
+        start_new_session=True,
+        cwd=test_root,
+    )
+
+    endpoint: str | None = None
+    try:
+        if process.stdout:
+            endpoint = process.stdout.readline().strip()
+
+        if not endpoint:
+            raise RuntimeError("failed to obtain endpoint from tenzir-node")
+
+        fixture_env = {
+            "TENZIR_NODE_CLIENT_ENDPOINT": endpoint,
+            "TENZIR_NODE_CLIENT_BINARY": context.tenzir_binary or env.get("TENZIR_BINARY"),
+            "TENZIR_NODE_CLIENT_TIMEOUT": str(context.config["timeout"]),
+            "TENZIR_NODE_STATE_DIRECTORY": str(state_dir),
+            "TENZIR_NODE_CACHE_DIRECTORY": str(cache_dir),
+        }
+        # Filter out empty values to avoid polluting the environment.
+        filtered_env = {k: v for k, v in fixture_env.items() if v}
+        yield filtered_env
+    finally:
+        if process.stdout:
+            process.stdout.close()
+        if process.stderr:
+            process.stderr.close()
+        _terminate_process(process)
 
 
 register("node", node, replace=True)

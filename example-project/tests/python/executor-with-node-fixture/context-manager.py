@@ -1,10 +1,13 @@
-#!/usr/bin/env python3
-# runner: python
-# timeout: 30
+#!/usr/bin/env python
+# timeout: 10
 
 # Context-manager style: `with` calls start() on enter and stop() on exit.
 with acquire_fixture("node") as node:
-    # Get the Tenzir executor, with env adapted to work with the node fixture.
-    executor = Executor.from_env(node.env)
-    result = executor.run("remote { version } | summarize num_events=count()")
+    # Perform a side-effect on the persistent state of the node.
+    Executor.from_env(node.env).run("from {x: 42} | import")
+
+# Now we restart the node and re-use the persistent state.
+with acquire_fixture("node") as node:
+    # Regurgitate the imported value of x.
+    result = Executor.from_env(node.env).run("export")
     print(result.stdout.decode(), end="")

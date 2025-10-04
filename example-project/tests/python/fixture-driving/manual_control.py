@@ -1,6 +1,5 @@
-#!/usr/bin/env python3
-# runner: python
-# timeout: 10
+#!/usr/bin/env python
+# timeout: 20
 
 import signal
 
@@ -16,7 +15,8 @@ with acquire_fixture("server") as server:
 
 print("# server stopped automatically on context exit")
 
-# Manual style: same controller API, but we start/stop ourselves.
+# Manual style: same controller API, but we start/stop explicitly ourselves, as
+# opposed to letting `with` do it for us.
 server = acquire_fixture("server")
 server.start()
 print("# server started manually")
