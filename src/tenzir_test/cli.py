@@ -98,7 +98,15 @@ def _normalize_exit_code(value: object) -> int:
     is_flag=True,
     help="Show runner and fixture details alongside test outcomes.",
 )
+@click.option(
+    "-p",
+    "--passthrough",
+    is_flag=True,
+    help="Stream raw test output directly to the terminal.",
+)
+@click.pass_context
 def cli(
+    ctx: click.Context,
     *,
     root: Path | None,
     tenzir_binary: Path | None,
@@ -114,8 +122,12 @@ def cli(
     keep_tmp_dirs: bool,
     jobs: int,
     show_test_details: bool,
+    passthrough: bool,
 ) -> None:
     """Execute tenzir-test scenarios."""
+
+    jobs_source = ctx.get_parameter_source("jobs")
+    jobs_overridden = jobs_source is not click.core.ParameterSource.DEFAULT
 
     runtime.run_cli(
         root=root,
@@ -132,6 +144,8 @@ def cli(
         keep_tmp_dirs=keep_tmp_dirs,
         jobs=jobs,
         show_test_details=show_test_details,
+        passthrough=passthrough,
+        jobs_overridden=jobs_overridden,
     )
 
 

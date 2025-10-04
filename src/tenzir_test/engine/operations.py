@@ -14,6 +14,9 @@ run_simple_test = run.run_simple_test
 print_diff = run.print_diff
 success = run.success
 fail = run.fail
+run_subprocess = run.run_subprocess
+is_passthrough_enabled = run.is_passthrough_enabled
+get_harness_mode = run.get_harness_mode
 
 __all__ = [
     "stdout_lock",
@@ -27,4 +30,7 @@ __all__ = [
     "print_diff",
     "success",
     "fail",
+    "run_subprocess",
+    "is_passthrough_enabled",
+    "get_harness_mode",
 ]

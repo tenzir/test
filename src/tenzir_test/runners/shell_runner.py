@@ -19,6 +19,7 @@ class ShellRunner(ExtRunner):
         del coverage, update
         run_mod = get_run_module()
         test_config = run_mod.parse_test_config(test)
+        passthrough = run_mod.is_passthrough_enabled()
         inputs_override = typing.cast(str | None, test_config.get("inputs"))
         env, _config_args = run_mod.get_test_env_and_config_args(test, inputs=inputs_override)
         fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
@@ -40,16 +41,22 @@ class ShellRunner(ExtRunner):
                 env["PATH"] = (run_mod.ROOT / "_shell").as_posix() + ":" + env["PATH"]
                 try:
                     cmd = ["sh", "-eu", str(test)]
-                    subprocess.check_output(cmd, stderr=subprocess.PIPE, env=env)
+                    run_mod.run_subprocess(
+                        cmd,
+                        env=env,
+                        check=True,
+                        capture_output=not passthrough,
+                    )
                 except subprocess.CalledProcessError as e:
                     with run_mod.stdout_lock:
                         run_mod.fail(test)
-                        if e.stdout:
-                            sys.stdout.buffer.write(e.stdout)
-                        if e.output and e.output is not e.stdout:
-                            sys.stdout.buffer.write(e.output)
-                        if e.stderr:
-                            sys.stdout.buffer.write(e.stderr)
+                        if not passthrough:
+                            if e.stdout:
+                                sys.stdout.buffer.write(e.stdout)
+                            if e.output and e.output is not e.stdout:
+                                sys.stdout.buffer.write(e.output)
+                            if e.stderr:
+                                sys.stdout.buffer.write(e.stderr)
                     return False
         finally:
             fixture_api.pop_context(context_token)

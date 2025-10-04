@@ -375,8 +375,9 @@ def test_run_simple_test_injects_package_dirs(
             self.returncode = 0
             self.stdout = b"ok"
 
-    def fake_run(cmd, timeout, stdout, env):  # type: ignore[no-untyped-def]
+    def fake_run(cmd, timeout, stdout=None, stderr=None, env=None, **kwargs):  # type: ignore[no-untyped-def]
         captured["cmd"] = list(cmd)
+        assert env is not None
         captured["env"] = dict(env)
         scratch = Path(env[run.TEST_TMP_ENV_VAR])
         assert scratch.exists()
@@ -435,8 +436,9 @@ def test_run_simple_test_respects_inputs_override(
             self.returncode = 0
             self.stdout = b"ok"
 
-    def fake_run(cmd, timeout, stdout, env):  # type: ignore[no-untyped-def]
+    def fake_run(cmd, timeout, stdout=None, stderr=None, env=None, **kwargs):  # type: ignore[no-untyped-def]
         captured["cmd"] = list(cmd)
+        assert env is not None
         captured["env"] = dict(env)
         scratch = Path(env[run.TEST_TMP_ENV_VAR])
         assert scratch.exists()
@@ -456,6 +458,52 @@ def test_run_simple_test_respects_inputs_override(
     scratch_value = env[run.TEST_TMP_ENV_VAR]
     assert scratch_value.startswith(str(package_root))
     assert not Path(scratch_value).exists()
+
+
+def test_run_simple_test_passthrough_streams_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    test_file = tmp_path / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=sys.executable,
+            tenzir_node_binary=None,
+        )
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeCompletedProcess:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout: bytes | None = None
+
+    def fake_run(cmd, timeout, stdout=None, stderr=None, env=None, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["stdout"] = stdout
+        assert env is not None
+        captured["env"] = dict(env)
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    previous_mode = run.is_passthrough_enabled()
+    run.set_passthrough_enabled(True)
+    try:
+        assert run.run_simple_test(test_file, update=False, output_ext="txt") is True
+    finally:
+        run.set_passthrough_enabled(previous_mode)
+        run.apply_settings(original_settings)
+
+    assert captured.get("stdout") is None
 
 
 def test_parse_fixture_string(tmp_path: Path, configured_root: Path) -> None:

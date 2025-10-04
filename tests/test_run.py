@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tenzir_test import run
+from tenzir_test import config, run
 from tenzir_test import fixtures as fixture_api
 from tenzir_test.fixtures import node as node_fixture
 
@@ -271,6 +271,55 @@ def test_node_fixture_skips_config_when_unset(monkeypatch):
     cmd = captured["cmd"]
     assert all(not arg.startswith("--config=") for arg in cmd)
     assert "--package-dirs=/pkg" in cmd
+
+
+def test_worker_prints_passthrough_header(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    test_dir = tmp_path / "tests"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    test_file = test_dir / "sample.tql"
+    test_file.write_text("version\n", encoding="utf-8")
+
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(self, path: Path) -> set[tuple[run.Runner, Path]]:  # noqa: ARG002
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    previous_passthrough = run.is_passthrough_enabled()
+    run.set_passthrough_enabled(True)
+    try:
+        queue: list[tuple[run.Runner, Path]] = [(StubRunner(), test_file)]
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        worker.join()
+    finally:
+        run.set_passthrough_enabled(previous_passthrough)
+        run.apply_settings(original_settings)
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert any("running tests/sample.tql" in line and "[passthrough]" in line for line in lines)
 
 
 def test_detailed_summary_order(capsys):

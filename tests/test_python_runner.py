@@ -59,7 +59,7 @@ def test_python_runner_update_writes_reference(
     script.parent.mkdir(parents=True, exist_ok=True)
     _fixture_script(script)
 
-    def fake_run(cmd, timeout, stdout, stderr, check, env):  # noqa: ANN001
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
         scratch = Path(env["TENZIR_TMP_DIR"])
         assert scratch.exists()
         return _DummyCompleted(stdout=b"payload", stderr=b"")
@@ -80,7 +80,7 @@ def test_python_runner_detects_mismatch(
     reference = script.with_suffix(".txt")
     reference.write_bytes(b"expected")
 
-    def fake_run(cmd, timeout, stdout, stderr, check, env):  # noqa: ANN001
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
         assert env["TENZIR_NODE_CLIENT_TIMEOUT"] == "30"
         assert env["TENZIR_TEST_FIXTURES"] == "sink"
         scratch = Path(env["TENZIR_TMP_DIR"])
@@ -104,7 +104,7 @@ def test_python_runner_accepts_matching_output(
     reference = script.with_suffix(".txt")
     reference.write_bytes(b"expected")
 
-    def fake_run(cmd, timeout, stdout, stderr, check, env):  # noqa: ANN001
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
         scratch = Path(env["TENZIR_TMP_DIR"])
         assert scratch.exists()
         return _DummyCompleted(stdout=b"expected")
@@ -113,6 +113,41 @@ def test_python_runner_accepts_matching_output(
 
     runner = run.CustomPythonFixture()
     assert runner.run(script, update=False, coverage=False)
+
+
+def test_python_runner_passthrough_streams_output(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = python_fixture_root / "python" / "fixture.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    _fixture_script(script)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
+        captured.update(
+            {
+                "stdout": stdout,
+                "stderr": stderr,
+                "check": check,
+                "cmd": list(cmd),
+            }
+        )
+        return _DummyCompleted()
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    runner = run.CustomPythonFixture()
+    previous = run.is_passthrough_enabled()
+    run.set_passthrough_enabled(True)
+    try:
+        assert runner.run(script, update=False, coverage=False)
+    finally:
+        run.set_passthrough_enabled(previous)
+
+    assert captured["stdout"] is None
+    assert captured["stderr"] is None
+    assert captured["check"] is True
 
 
 def test_python_runner_logs_when_enabled(
@@ -124,7 +159,7 @@ def test_python_runner_logs_when_enabled(
     reference = script.with_suffix(".txt")
     reference.write_bytes(b"expected")
 
-    def fake_run(cmd, timeout, stdout, stderr, check, env):  # noqa: ANN001
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
         scratch = Path(env["TENZIR_TMP_DIR"])
         assert scratch.exists()
         return _DummyCompleted(stdout=b"expected")

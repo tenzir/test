@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import difflib
 import os
-import subprocess
 import typing
 from pathlib import Path
 
@@ -81,12 +80,13 @@ class DiffRunner(TqlRunner):
                         coverage_dir, f"{test.stem}-unopt-%p.profraw"
                     )
 
-                unoptimized = subprocess.run(
+                unoptimized = run_mod.run_subprocess(
                     [*base_cmd, self._a, *node_args, "-f", str(test)],
                     timeout=timeout,
-                    stdout=subprocess.PIPE,
                     env=env,
+                    capture_output=True,
                     check=False,
+                    force_capture=True,
                 )
 
                 if coverage:
@@ -94,12 +94,13 @@ class DiffRunner(TqlRunner):
                         coverage_dir, f"{test.stem}-opt-%p.profraw"
                     )
 
-                optimized = subprocess.run(
+                optimized = run_mod.run_subprocess(
                     [*base_cmd, self._b, *node_args, "-f", str(test)],
                     timeout=timeout,
-                    stdout=subprocess.PIPE,
                     env=env,
+                    capture_output=True,
                     check=False,
+                    force_capture=True,
                 )
         finally:
             fixture_api.pop_context(context_token)

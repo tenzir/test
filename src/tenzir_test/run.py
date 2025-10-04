@@ -22,7 +22,7 @@ import typing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast, overload
 
 import yaml
 
@@ -55,6 +55,14 @@ class ExecutionMode(enum.Enum):
     PACKAGE = "package"
 
 
+class HarnessMode(enum.Enum):
+    """Internal execution modes for the harness."""
+
+    COMPARE = "compare"
+    UPDATE = "update"
+    PASSTHROUGH = "passthrough"
+
+
 def detect_execution_mode(root: Path) -> tuple[ExecutionMode, Path | None]:
     """Return the execution mode and detected package root for `root`."""
 
@@ -74,6 +82,7 @@ TENZIR_NODE_BINARY = _settings.tenzir_node_binary
 ROOT = _settings.root
 INPUTS_DIR = _settings.inputs_dir
 EXECUTION_MODE, _DETECTED_PACKAGE_ROOT = detect_execution_mode(ROOT)
+HARNESS_MODE = HarnessMode.COMPARE
 CHECKMARK = "\033[92;1m✔\033[0m"
 CROSS = "\033[31m✘\033[0m"
 INFO = "\033[94;1mi\033[0m"
@@ -113,6 +122,101 @@ _TMP_SUBDIR_NAME = "tmp"
 _TMP_BASE_DIRS: set[Path] = set()
 _ACTIVE_TMP_DIRS: set[Path] = set()
 KEEP_TMP_DIRS = bool(os.environ.get(_TMP_KEEP_ENV_VAR))
+
+
+def set_harness_mode(mode: HarnessMode) -> None:
+    """Set the global harness execution mode."""
+
+    global HARNESS_MODE
+    HARNESS_MODE = mode
+
+
+def get_harness_mode() -> HarnessMode:
+    """Return the current harness execution mode."""
+
+    return HARNESS_MODE
+
+
+def is_passthrough_enabled() -> bool:
+    """Return whether passthrough output is enabled."""
+
+    return HARNESS_MODE is HarnessMode.PASSTHROUGH
+
+
+def is_update_mode() -> bool:
+    """Return whether the harness updates reference artifacts."""
+
+    return HARNESS_MODE is HarnessMode.UPDATE
+
+
+def set_passthrough_enabled(enabled: bool) -> None:
+    """Backward-compatible helper to toggle passthrough mode."""
+
+    if enabled:
+        set_harness_mode(HarnessMode.PASSTHROUGH)
+    elif HARNESS_MODE is HarnessMode.PASSTHROUGH:
+        set_harness_mode(HarnessMode.COMPARE)
+
+
+@overload
+def run_subprocess(
+    args: Sequence[str],
+    *,
+    capture_output: bool,
+    check: bool = False,
+    text: Literal[False] = False,
+    force_capture: bool = False,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[bytes]: ...
+
+
+@overload
+def run_subprocess(
+    args: Sequence[str],
+    *,
+    capture_output: bool,
+    check: bool = False,
+    text: Literal[True],
+    force_capture: bool = False,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[str]: ...
+
+
+def run_subprocess(
+    args: Sequence[str],
+    *,
+    capture_output: bool,
+    check: bool = False,
+    text: bool = False,
+    force_capture: bool = False,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str]:
+    """Execute a subprocess honoring passthrough configuration.
+
+    When passthrough is enabled the process inherits stdout/stderr so developers
+    can observe output directly. Otherwise the helper captures both streams when
+    `capture_output` is true, mirroring ``subprocess.run``'s behaviour.
+
+    Runner authors should prefer this helper over direct ``subprocess`` calls so
+    passthrough semantics remain consistent across implementations.
+    """
+
+    if any(key in kwargs for key in {"stdout", "stderr", "capture_output"}):
+        raise TypeError("run_subprocess manages stdout/stderr automatically")
+
+    passthrough = is_passthrough_enabled()
+    stream_output = passthrough and not force_capture
+    stdout = subprocess.PIPE if capture_output and not stream_output else None
+    stderr = subprocess.PIPE if capture_output and not stream_output else None
+
+    return subprocess.run(
+        args,
+        check=check,
+        stdout=stdout,
+        stderr=stderr,
+        text=text,
+        **kwargs,
+    )
 
 
 def _resolve_tmp_base() -> Path:
@@ -1055,6 +1159,7 @@ def _summarize_harness_configuration(
     log_comparisons: bool,
     runner_summary: bool,
     fixture_summary: bool,
+    passthrough: bool,
 ) -> tuple[int, str]:
     enabled_flags: list[str] = []
     toggles = (
@@ -1068,6 +1173,8 @@ def _summarize_harness_configuration(
     for name, flag in toggles:
         if flag:
             enabled_flags.append(name)
+    if passthrough:
+        enabled_flags.append("passthrough")
     return jobs, ", ".join(enabled_flags)
 
 
@@ -1432,6 +1539,7 @@ def run_simple_test(
     fixtures = cast(tuple[str, ...], test_config.get("fixtures", tuple()))
     timeout = cast(int, test_config["timeout"])
     expect_error = bool(test_config.get("error", False))
+    passthrough_mode = is_passthrough_enabled()
 
     context_token = fixtures_impl.push_context(
         fixtures_impl.FixtureContext(
@@ -1492,15 +1600,17 @@ def run_simple_test(
                 "-f",
                 str(test),
             ]
-            completed = subprocess.run(
+            completed = run_subprocess(
                 cmd,
                 timeout=timeout,
-                stdout=subprocess.PIPE,
                 env=env,
+                capture_output=not passthrough_mode,
             )
-        output = completed.stdout
-        output = output.replace(str(ROOT).encode() + b"/", b"")
         good = completed.returncode == 0
+        output = b""
+        if not passthrough_mode:
+            captured = completed.stdout or b""
+            output = captured.replace(str(ROOT).encode() + b"/", b"")
     except subprocess.TimeoutExpired:
         report_failure(test, f"└─▶ \033[31msubprocess hit {timeout}s timeout\033[0m")
         return False
@@ -1515,15 +1625,24 @@ def run_simple_test(
         cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
 
     if expect_error == good:
-        with stdout_lock:
+        if passthrough_mode:
             report_failure(
                 test,
                 f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m",
             )
-            for last, line in last_and(output.split(b"\n")):
-                prefix = "│ " if not last else "└─"
-                sys.stdout.buffer.write(prefix.encode() + line + b"\n")
+        else:
+            with stdout_lock:
+                report_failure(
+                    test,
+                    f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m",
+                )
+                for last, line in last_and(output.split(b"\n")):
+                    prefix = "│ " if not last else "└─"
+                    sys.stdout.buffer.write(prefix.encode() + line + b"\n")
         return False
+    if passthrough_mode:
+        success(test)
+        return True
     if not good:
         output_ext = "txt"
     ref_path = test.with_suffix(f".{output_ext}")
@@ -1611,6 +1730,14 @@ class Worker:
 
                 runner, test_path = item
                 fixtures = _get_test_fixtures(test_path, coverage=self._coverage)
+                if is_passthrough_enabled():
+                    rel_path = _relativize_path(test_path)
+                    detail_bits = [f"runner={runner.name}"]
+                    if fixtures:
+                        detail_bits.append(f"fixtures={', '.join(fixtures)}")
+                    detail_segment = f" ({', '.join(detail_bits)})" if detail_bits else ""
+                    with stdout_lock:
+                        print(f"{INFO} running {rel_path}{detail_segment} [passthrough]")
                 if SHOW_TEST_DETAILS:
                     with _push_test_context(
                         runner_name=runner.name,
@@ -1675,6 +1802,8 @@ def run_cli(
     jobs: int,
     keep_tmp_dirs: bool,
     show_test_details: bool,
+    passthrough: bool,
+    jobs_overridden: bool = False,
 ) -> None:
     from tenzir_test.engine import state as engine_state
 
@@ -1692,6 +1821,21 @@ def run_cli(
     global SHOW_TEST_DETAILS
     set_keep_tmp_dirs(bool(os.environ.get(_TMP_KEEP_ENV_VAR)) or keep_tmp_dirs)
     SHOW_TEST_DETAILS = show_test_details
+    if passthrough:
+        harness_mode = HarnessMode.PASSTHROUGH
+    elif update:
+        harness_mode = HarnessMode.UPDATE
+    else:
+        harness_mode = HarnessMode.COMPARE
+    set_harness_mode(harness_mode)
+    passthrough_mode = harness_mode is HarnessMode.PASSTHROUGH
+    if passthrough_mode and jobs > 1:
+        if jobs_overridden:
+            print(f"{INFO} forcing --jobs=1 in passthrough mode to preserve output ordering")
+        jobs = 1
+    if passthrough_mode and update:
+        print(f"{INFO} ignoring --update in passthrough mode")
+        update = False
 
     settings = discover_settings(
         root=root,
@@ -1798,6 +1942,7 @@ def run_cli(
         log_comparisons=bool(log_comparisons or _log_comparisons),
         runner_summary=runner_summary,
         fixture_summary=fixture_summary,
+        passthrough=passthrough_mode,
     )
 
     jobs_segment = f" ({job_count} jobs)" if job_count else ""

@@ -33,3 +33,32 @@ def test_cli_keep_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert cli.main(["--keep"]) == 0
     assert captured["keep_tmp_dirs"] is True
+    assert captured["passthrough"] is False
+    assert captured["jobs_overridden"] is False
+
+
+def test_cli_passthrough_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert cli.main(["-p"]) == 0
+    assert captured["passthrough"] is True
+    assert captured["jobs_overridden"] is False
+
+
+def test_cli_passthrough_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert cli.main(["-p", "-j", "3"]) == 0
+    assert captured["jobs"] == 3
+    assert captured["passthrough"] is True
+    assert captured["jobs_overridden"] is True

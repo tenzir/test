@@ -86,3 +86,54 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
             os.remove(script_dir / "fixture.txt")
         if (script_dir / "tmp-dir.txt").exists():
             os.remove(script_dir / "tmp-dir.txt")
+
+
+def test_shell_runner_passthrough_streams_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "tests" / "echo.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("echo streaming\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_subprocess(cmd, *, capture_output, check, env, **kwargs):  # noqa: ANN001
+        captured.update(
+            {
+                "cmd": list(cmd),
+                "capture_output": capture_output,
+                "check": check,
+            }
+        )
+        return type("Result", (), {"returncode": 0, "stdout": None, "stderr": None})()
+
+    monkeypatch.setattr(run, "run_subprocess", fake_run_subprocess)
+
+    try:
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+        previous = run.is_passthrough_enabled()
+        run.set_passthrough_enabled(True)
+        try:
+            runner = run.ShellRunner()
+            assert runner.run(script, update=False, coverage=False)
+        finally:
+            run.set_passthrough_enabled(previous)
+    finally:
+        run.apply_settings(original_settings)
+
+    assert captured["cmd"] == ["sh", "-eu", str(script)]
+    assert captured["check"] is True
+    assert captured["capture_output"] is False

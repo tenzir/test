@@ -36,6 +36,7 @@ class CustomPythonFixture(ExtRunner):
         binary = run_mod.TENZIR_BINARY
         if not binary:
             raise RuntimeError("TENZIR_BINARY must be configured for python fixtures")
+        passthrough = run_mod.is_passthrough_enabled()
         try:
             cmd = [
                 sys.executable,
@@ -104,19 +105,23 @@ class CustomPythonFixture(ExtRunner):
                     env["TENZIR_PYTHON_FIXTURE_TIMEOUT"] = str(timeout)
                     if node_requested and endpoint:
                         env["TENZIR_PYTHON_FIXTURE_ENDPOINT"] = endpoint
-                    completed = subprocess.run(
+                    stdout_target = None if passthrough else subprocess.PIPE
+                    stderr_target = None if passthrough else subprocess.PIPE
+                    completed = run_mod.run_subprocess(
                         cmd,
                         timeout=timeout,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        check=True,
                         env=env,
+                        capture_output=not passthrough,
+                        check=True,
                     )
                 ref_path = test.with_suffix(".txt")
                 if completed.returncode != 0:
                     run_mod.fail(test)
                     return False
-                output = completed.stdout + completed.stderr
+                if passthrough:
+                    run_mod.success(test)
+                    return True
+                output = (completed.stdout or b"") + (completed.stderr or b"")
                 if update:
                     with open(ref_path, "wb") as f:
                         f.write(output)
@@ -144,12 +149,13 @@ class CustomPythonFixture(ExtRunner):
         except subprocess.CalledProcessError as e:
             with run_mod.stdout_lock:
                 run_mod.fail(test)
-                if e.stdout:
-                    sys.stdout.buffer.write(e.stdout)
-                if e.output and e.output is not e.stdout:
-                    sys.stdout.buffer.write(e.output)
-                if e.stderr:
-                    sys.stdout.buffer.write(e.stderr)
+                if not passthrough:
+                    if e.stdout:
+                        sys.stdout.buffer.write(e.stdout)
+                    if e.output and e.output is not e.stdout:
+                        sys.stdout.buffer.write(e.output)
+                    if e.stderr:
+                        sys.stdout.buffer.write(e.stderr)
             return False
         run_mod.success(test)
         return True
