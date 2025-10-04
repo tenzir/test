@@ -105,8 +105,6 @@ class CustomPythonFixture(ExtRunner):
                     env["TENZIR_PYTHON_FIXTURE_TIMEOUT"] = str(timeout)
                     if node_requested and endpoint:
                         env["TENZIR_PYTHON_FIXTURE_ENDPOINT"] = endpoint
-                    stdout_target = None if passthrough else subprocess.PIPE
-                    stderr_target = None if passthrough else subprocess.PIPE
                     completed = run_mod.run_subprocess(
                         cmd,
                         timeout=timeout,

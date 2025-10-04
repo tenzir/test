@@ -1,5 +1,7 @@
 """Test execution utilities for the Tenzir ecosystem."""
 
+from importlib.metadata import PackageNotFoundError, version
+
 from . import run
 from .config import Settings, discover_settings
 from .fixtures import (
@@ -35,8 +37,6 @@ __all__ = [
     "require",
     "run",
 ]
-
-from importlib.metadata import PackageNotFoundError, version
 
 
 def _get_version() -> str:
