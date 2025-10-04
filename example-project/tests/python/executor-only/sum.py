@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 # runner: python
-# timeout: 30
+# timeout: 10
 
 # The Executor runs the `tenzir` binary with the configured environment.
-executor = Executor()
-pipeline = "from {xs: [1,2,3,4,5]} | unpack xs | summarize total=count()"
-result = executor.run(pipeline)
-if result.stdout:
-    print(result.stdout.decode(), end="")
+result = Executor().run("from {xs: [1,2,3,4,5]} | sum=xs.sum()")
+print(result.stdout.decode(), end="")
