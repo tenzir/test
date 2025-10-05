@@ -106,12 +106,13 @@ def test_shell_runner_passthrough_streams_output(
 
     captured: dict[str, object] = {}
 
-    def fake_run_subprocess(cmd, *, capture_output, check, env, **kwargs):  # noqa: ANN001
+    def fake_run_subprocess(cmd, *, capture_output, check, env, cwd=None, **kwargs):  # noqa: ANN001
         captured.update(
             {
                 "cmd": list(cmd),
                 "capture_output": capture_output,
                 "check": check,
+                "cwd": cwd,
             }
         )
         return type("Result", (), {"returncode": 0, "stdout": None, "stderr": None})()
@@ -139,3 +140,4 @@ def test_shell_runner_passthrough_streams_output(
     assert captured["cmd"] == ["sh", "-eu", str(script)]
     assert captured["check"] is True
     assert captured["capture_output"] is False
+    assert captured["cwd"] == str(tmp_path)

@@ -56,6 +56,7 @@ class ShellRunner(ExtRunner):
                         capture_output=not passthrough,
                         check=not expect_error,
                         text=False,
+                        cwd=str(run_mod.ROOT),
                     )
                 except subprocess.CalledProcessError as exc:
                     completed = exc  # treat like CompletedProcess for diagnostics

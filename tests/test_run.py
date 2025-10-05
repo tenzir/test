@@ -412,6 +412,41 @@ def test_root_runs_when_only_satellites_requested(tmp_path, monkeypatch):
     assert plan.satellites[0].run_all is True
 
 
+def test_plan_detects_top_level_satellite(tmp_path, monkeypatch):
+    root = tmp_path / "main"
+    root.mkdir(parents=True)
+    (root / "tests").mkdir()
+
+    satellite = root / "example-satellite"
+    (satellite / "tests").mkdir(parents=True)
+
+    monkeypatch.chdir(root)
+
+    plan = run._build_execution_plan(root, [Path("example-satellite")], root_explicit=False)
+
+    assert not plan.root.should_run()
+    assert len(plan.satellites) == 1
+    assert plan.satellites[0].root == satellite.resolve()
+
+
+def test_plan_detects_satellite_with_nested_test_dir(tmp_path, monkeypatch):
+    root = tmp_path / "main"
+    root.mkdir(parents=True)
+    (root / "tests").mkdir()
+
+    plugin_root = root / "plugins" / "context"
+    satellite = plugin_root / "test"
+    (satellite / "tests").mkdir(parents=True)
+
+    monkeypatch.chdir(root)
+
+    plan = run._build_execution_plan(root, [Path("plugins/context")], root_explicit=False)
+
+    assert not plan.root.should_run()
+    assert len(plan.satellites) == 1
+    assert plan.satellites[0].root == satellite.resolve()
+
+
 def test_print_execution_plan_lists_projects(capsys):
     root = Path("/tmp/root-project")
     satellite_root = Path("/tmp/satellite-project")

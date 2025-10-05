@@ -402,24 +402,43 @@ def _find_project_root(path: Path, *, base_root: Path) -> Path | None:
         return package_root.resolve()
 
     resolved = path.resolve()
+    nested_test_dir = resolved / "test"
+    if _is_project_root(nested_test_dir):
+        resolved = nested_test_dir
     try:
         resolved.relative_to(base_root)
-        return base_root
     except ValueError:
         pass
+    else:
+        if resolved != base_root and _is_project_root(resolved):
+            try:
+                rel = resolved.relative_to(base_root)
+            except ValueError:
+                return resolved
+            if not rel.parts or rel.parts[0] != "tests":
+                return resolved
+        return base_root
 
-    for candidate in [path, *path.parents]:
-        resolved = candidate.resolve()
-        if resolved == base_root:
+    for candidate in [resolved, *resolved.parents]:
+        if candidate == base_root:
             return base_root
         if candidate.name == "tests":
-            parent = candidate.parent.resolve()
+            parent = candidate.parent
             if parent == base_root:
                 return base_root
             if _is_project_root(parent):
                 return parent
-        if _is_project_root(resolved):
-            return resolved
+        candidate_test_dir = candidate / "test"
+        if _is_project_root(candidate_test_dir):
+            candidate = candidate_test_dir
+        if _is_project_root(candidate):
+            try:
+                rel = candidate.relative_to(base_root)
+            except ValueError:
+                return candidate
+            if rel.parts and rel.parts[0] == "tests":
+                continue
+            return candidate
     return None
 
 
@@ -1046,14 +1065,12 @@ def get_test_env_and_config_args(
     config_args = [f"--config={config_file}"] if config_file.exists() else []
     env = os.environ.copy()
     if inputs is None:
-        inputs_path = str(_resolve_inputs_dir(ROOT))
+        inputs_path = str(_resolve_inputs_dir(ROOT).resolve())
     else:
         candidate = Path(os.fspath(inputs))
         if not candidate.is_absolute():
-            candidate = (test.parent / candidate).resolve()
-        else:
-            candidate = candidate.resolve()
-        inputs_path = str(candidate)
+            candidate = test.parent / candidate
+        inputs_path = str(candidate.resolve())
     env["TENZIR_INPUTS"] = inputs_path
     if config_file.exists():
         env.setdefault("TENZIR_CONFIG", str(config_file))
@@ -1852,6 +1869,7 @@ def run_simple_test(
                 timeout=timeout,
                 env=env,
                 capture_output=not passthrough_mode,
+                cwd=str(ROOT),
             )
         good = completed.returncode == 0
         output = b""
@@ -2111,6 +2129,17 @@ def run_cli(
 
     for selection in plan.projects():
         if not selection.should_run():
+            if selection.kind == "root":
+                _set_project_root(selection.root)
+                engine_state.refresh()
+                try:
+                    _load_project_runners(selection.root, expose_namespace=True)
+                    _load_project_fixtures(selection.root, expose_namespace=True)
+                except RuntimeError as exc:
+                    sys.exit(f"error: {exc}")
+                refresh_runner_metadata()
+                _set_project_root(settings.root)
+                engine_state.refresh()
             continue
 
         if executed_projects:
