@@ -8,7 +8,7 @@ you can diff against established baselines.
 ## ✨ Highlights
 
 - 🔍 Auto-discovers tests, inputs, and configuration across both project and
-  package layouts.
+  package layouts, including linked satellite projects.
 - 🧩 Supports configurable runners and reusable fixtures so you can tailor how
   scenarios execute and share setup logic.
 - 🛠️ Provides a `tenzir-test` CLI for orchestrating suites, updating baselines,
@@ -62,7 +62,7 @@ Consult our [user guide](https://docs.tenzir.com/guides/testing/write-tests)
 for an end-to-end walkthrough of writing tests.
 
 We also provide a dense [reference](https://docs.tenzir.com/reference/test) that
-explains concepts, configuration, and CLI details.
+explains concepts, configuration, multi-project execution, and CLI details.
 
 ## 🧑‍💻 Development
 

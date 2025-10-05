@@ -343,3 +343,173 @@ def test_detailed_summary_order(capsys):
     table_start = next(i for i, line in enumerate(non_empty) if line.startswith("┌"))
 
     assert skipped_index < failed_index < table_start
+
+
+def test_build_execution_plan_detects_satellite(tmp_path, monkeypatch):
+    root = tmp_path / "main"
+    (root / "tests").mkdir(parents=True)
+    (root / "tests" / "root.tql").touch()
+
+    satellite = tmp_path / "satellite"
+    (satellite / "tests").mkdir(parents=True)
+    (satellite / "tests" / "sat.tql").touch()
+
+    monkeypatch.chdir(tmp_path)
+
+    plan = run._build_execution_plan(root, [Path("satellite")], root_explicit=False)
+
+    assert plan.root.root == root
+    assert plan.root.run_all is False
+    assert not plan.root.selectors
+    assert len(plan.satellites) == 1
+    sat = plan.satellites[0]
+    assert sat.root == satellite.resolve()
+    assert sat.run_all
+    assert sat.selectors == []
+
+
+def test_build_execution_plan_tracks_selectors(tmp_path, monkeypatch):
+    root = tmp_path / "main"
+    target_dir = root / "tests" / "smoke"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "case.tql"
+    target.touch()
+
+    satellite = tmp_path / "satellite"
+    (satellite / "tests").mkdir(parents=True)
+    selection = satellite / "tests" / "alt.tql"
+    selection.touch()
+
+    monkeypatch.chdir(tmp_path)
+
+    args = [Path("tests/smoke"), Path("satellite/tests/alt.tql")]
+    plan = run._build_execution_plan(root, args, root_explicit=False)
+
+    assert plan.root.run_all is False
+    assert plan.root.selectors == [target_dir.resolve()]
+    assert len(plan.satellites) == 1
+    sat = plan.satellites[0]
+    assert sat.run_all is False
+    assert sat.selectors == [selection.resolve()]
+
+
+def test_root_runs_when_only_satellites_requested(tmp_path, monkeypatch):
+    root = tmp_path / "main"
+    (root / "tests").mkdir(parents=True)
+    (root / "tests" / "case.tql").touch()
+
+    satellite = tmp_path / "satellite"
+    (satellite / "tests").mkdir(parents=True)
+    (satellite / "tests" / "other.tql").touch()
+
+    monkeypatch.chdir(tmp_path)
+
+    plan = run._build_execution_plan(root, [Path("satellite")], root_explicit=True)
+
+    assert plan.root.run_all is True
+    assert not plan.root.selectors
+    assert len(plan.satellites) == 1
+    assert plan.satellites[0].run_all is True
+
+
+def test_print_execution_plan_lists_projects(capsys):
+    root = Path("/tmp/root-project")
+    satellite_root = Path("/tmp/satellite-project")
+    plan = run.ExecutionPlan(
+        root=run.ProjectSelection(
+            root=root,
+            selectors=[],
+            run_all=True,
+            kind="root",
+        ),
+        satellites=[
+            run.ProjectSelection(
+                root=satellite_root,
+                selectors=[],
+                run_all=True,
+                kind="satellite",
+            )
+        ],
+    )
+
+    run._print_execution_plan(plan, display_base=root)
+
+    output = capsys.readouterr().out
+    assert "executing 2 project(s)" in output
+    assert "■ root-project" in output
+    assert "□ satellite-project" in output
+
+
+def test_execution_plan_single_project_summary(tmp_path, monkeypatch, capsys):
+    root = tmp_path
+    plan = run.ExecutionPlan(
+        root=run.ProjectSelection(
+            root=root,
+            selectors=[],
+            run_all=True,
+            kind="root",
+        ),
+        satellites=[],
+    )
+
+    run._print_execution_plan(plan, display_base=root)
+
+    output = capsys.readouterr().out
+    assert "executing project" in output
+    assert "root:" not in output
+    assert "satellite:" not in output
+
+
+def test_execution_plan_skips_inactive_root(capsys):
+    root = Path("/tmp/root-project")
+    plan = run.ExecutionPlan(
+        root=run.ProjectSelection(
+            root=root,
+            selectors=[],
+            run_all=False,
+            kind="root",
+        ),
+        satellites=[
+            run.ProjectSelection(
+                root=Path("/tmp/satellite-project"),
+                selectors=[],
+                run_all=True,
+                kind="satellite",
+            )
+        ],
+    )
+
+    run._print_execution_plan(plan, display_base=root)
+
+    output = capsys.readouterr().out
+    assert "executing project" in output
+    assert "satellite-project" in output
+    assert "root-project" not in output
+
+
+def test_print_aggregate_totals(capsys):
+    summary = run.Summary(total=10, failed=2, skipped=1)
+
+    run._print_aggregate_totals(3, summary)
+
+    output = capsys.readouterr().out
+    assert "aggregate totals across 3 projects" in output
+    assert "10 tests" in output
+    assert "passed=7" in output
+    assert "failed=2" in output
+    assert "skipped=1" in output
+
+
+def test_directory_with_test_yaml_inside_root_is_selector(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    alerts_dir = root / "tests" / "alerts"
+    alerts_dir.mkdir(parents=True)
+    (alerts_dir / "test.yaml").write_text("timeout: 5\n", encoding="utf-8")
+    (alerts_dir / "case.tql").write_text("", encoding="utf-8")
+
+    monkeypatch.chdir(root)
+
+    plan = run._build_execution_plan(root, [Path("tests/alerts")], root_explicit=False)
+
+    assert plan.root.selectors == [alerts_dir.resolve()]
+    assert not plan.satellites

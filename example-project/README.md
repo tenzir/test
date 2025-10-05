@@ -38,6 +38,9 @@ example-project/
     └── shell/
         ├── http-fixture-check.sh
         └── tmp-dir.sh
+
+../example-satellite/
+└── tests/satellite/marker.{sh,txt}
 ```
 
 ### Highlights
@@ -57,6 +60,10 @@ example-project/
   `fixtures` package to trigger registration and then drive the `server` fixture
   via `with acquire_fixture(...) as controller:` or explicit `start()`/`stop()`
   calls.
+- **Satellite demo** (`../example-satellite/`): a self-contained project that
+  reuses the root fixtures **and** the `xxd` runner while adding its own
+  `satellite_marker` fixture. Invoke `uv run tenzir-test --root example-project
+  example-satellite` to run both projects in one go.
 
 Every scenario keeps its expected output in a neighbouring `.txt` file. Run with
 `--update` after deliberate behaviour changes to refresh the baselines.

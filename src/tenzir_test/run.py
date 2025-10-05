@@ -45,6 +45,33 @@ from .runners import (
 TestConfig = dict[str, object]
 
 RunnerQueueItem = tuple[Runner, Path]
+
+
+@dataclasses.dataclass(slots=True)
+class ProjectSelection:
+    """Describe which tests to execute for a given project root."""
+
+    root: Path
+    selectors: list[Path]
+    run_all: bool
+    kind: Literal["root", "satellite"]
+
+    def should_run(self) -> bool:
+        return self.run_all or bool(self.selectors)
+
+
+@dataclasses.dataclass(slots=True)
+class ExecutionPlan:
+    """Aggregate the projects participating in a CLI invocation."""
+
+    root: ProjectSelection
+    satellites: list[ProjectSelection]
+
+    def projects(self) -> Iterator[ProjectSelection]:
+        yield self.root
+        yield from self.satellites
+
+
 T = TypeVar("T")
 
 
@@ -322,6 +349,197 @@ if not _CONFIG_LOGGER.handlers:
     _CONFIG_LOGGER.addHandler(handler)
     _CONFIG_LOGGER.propagate = False
 _DIRECTORY_CONFIG_CACHE: dict[Path, "_DirectoryConfig"] = {}
+
+
+def _set_project_root(path: Path) -> None:
+    """Switch global project state to `path`."""
+
+    global ROOT, INPUTS_DIR, EXECUTION_MODE, _DETECTED_PACKAGE_ROOT
+    ROOT = path
+    INPUTS_DIR = _resolve_inputs_dir(path)
+    EXECUTION_MODE, _DETECTED_PACKAGE_ROOT = detect_execution_mode(path)
+    _clear_directory_config_cache()
+
+
+def _is_project_root(path: Path) -> bool:
+    """Return True if the directory looks like a tenzir-test project root."""
+
+    if not path.exists() or not path.is_dir():
+        return False
+    if packages.is_package_dir(path):
+        return True
+    if (path / "tests").is_dir():
+        return True
+    if (path / "test.yaml").is_file():
+        return True
+    if (path / "fixtures.py").is_file():
+        return True
+    if (path / "fixtures").is_dir():
+        return True
+    if (path / "runners").is_dir():
+        return True
+    if (path / "inputs").is_dir():
+        return True
+    return False
+
+
+def _resolve_cli_path(argument: Path, *, base_root: Path) -> Path:
+    if argument.is_absolute():
+        return argument.resolve()
+
+    candidates = [Path.cwd() / argument, base_root / argument]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    # Neither candidate exists; prefer base-root resolution for error messages.
+    return (base_root / argument).resolve()
+
+
+def _find_project_root(path: Path, *, base_root: Path) -> Path | None:
+    package_root = packages.find_package_root(path)
+    if package_root is not None:
+        return package_root.resolve()
+
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(base_root)
+        return base_root
+    except ValueError:
+        pass
+
+    for candidate in [path, *path.parents]:
+        resolved = candidate.resolve()
+        if resolved == base_root:
+            return base_root
+        if candidate.name == "tests":
+            parent = candidate.parent.resolve()
+            if parent == base_root:
+                return base_root
+            if _is_project_root(parent):
+                return parent
+        if _is_project_root(resolved):
+            return resolved
+    return None
+
+
+def _build_execution_plan(
+    base_root: Path, raw_args: Sequence[Path], *, root_explicit: bool
+) -> ExecutionPlan:
+    root_selectors: list[Path] = []
+    run_root_all = not raw_args
+
+    satellite_order: list[Path] = []
+    satellite_selectors: dict[Path, list[Path]] = {}
+    satellite_run_all: dict[Path, bool] = {}
+
+    for argument in raw_args:
+        resolved = _resolve_cli_path(argument, base_root=base_root)
+        project_root = _find_project_root(resolved, base_root=base_root)
+
+        if project_root is None:
+            if not resolved.exists():
+                raise SystemExit(
+                    f"error: path `{argument}` does not exist (resolved to {resolved})"
+                )
+            # Default to root project for existing paths without project metadata.
+            project_root = base_root
+
+        if project_root == base_root:
+            if resolved == base_root:
+                run_root_all = True
+                continue
+            if not resolved.exists():
+                raise SystemExit(
+                    f"error: test path `{argument}` does not exist (resolved to {resolved})"
+                )
+            root_selectors.append(resolved)
+            continue
+
+        project_root = project_root.resolve()
+        selectors = satellite_selectors.setdefault(project_root, [])
+        if project_root not in satellite_order:
+            satellite_order.append(project_root)
+        if resolved == project_root:
+            satellite_run_all[project_root] = True
+            continue
+        if not resolved.exists():
+            raise SystemExit(
+                f"error: test path `{argument}` does not exist (resolved to {resolved})"
+            )
+        selectors.append(resolved)
+
+    if not run_root_all and not root_selectors and root_explicit:
+        run_root_all = True
+
+    root_selection = ProjectSelection(
+        root=base_root,
+        selectors=[path.resolve() for path in root_selectors],
+        run_all=run_root_all,
+        kind="root",
+    )
+
+    satellites: list[ProjectSelection] = []
+    for project_root in satellite_order:
+        selectors = [path.resolve() for path in satellite_selectors.get(project_root, [])]
+        run_all = satellite_run_all.get(project_root, False) or not selectors
+        satellites.append(
+            ProjectSelection(
+                root=project_root,
+                selectors=selectors,
+                run_all=run_all,
+                kind="satellite",
+            )
+        )
+
+    return ExecutionPlan(root=root_selection, satellites=satellites)
+
+
+def _format_relative_path(path: Path, base: Path) -> str:
+    try:
+        relative = path.relative_to(base)
+    except ValueError:
+        try:
+            relative_str = os.path.relpath(path, base)
+        except ValueError:
+            return path.as_posix()
+        if relative_str == ".":
+            return "."
+        return relative_str.replace(os.sep, "/")
+    if not relative.parts:
+        return "."
+    return relative.as_posix()
+
+
+def _format_project_heading(selection: ProjectSelection, *, base_root: Path) -> str:
+    name = selection.root.name or selection.root.as_posix()
+    relative = _format_relative_path(selection.root, base_root)
+    return f"{name} ({relative})"
+
+
+def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> None:
+    active: list[tuple[str, ProjectSelection]] = []
+    if plan.root.should_run():
+        active.append(("■", plan.root))
+    for satellite in plan.satellites:
+        if satellite.should_run():
+            active.append(("□", satellite))
+
+    if not active:
+        return
+
+    if len(active) == 1:
+        marker, selection = active[0]
+        heading = _format_project_heading(selection, base_root=display_base)
+        print(f"{INFO} executing project: {heading}")
+        return
+
+    print(f"{INFO} executing {len(active)} project(s)")
+    for marker, selection in active:
+        heading = _format_project_heading(selection, base_root=display_base)
+        print(f"{INFO}   {marker} {heading}")
+
+
 _MISSING = object()
 
 
@@ -721,16 +939,12 @@ def _looks_like_project_root(path: Path) -> bool:
 
 
 def apply_settings(settings: Settings) -> None:
-    global TENZIR_BINARY, TENZIR_NODE_BINARY, ROOT, INPUTS_DIR, EXECUTION_MODE
-    global _DETECTED_PACKAGE_ROOT
+    global TENZIR_BINARY, TENZIR_NODE_BINARY
     global _settings
     _settings = settings
     TENZIR_BINARY = settings.tenzir_binary
     TENZIR_NODE_BINARY = settings.tenzir_node_binary
-    ROOT = settings.root
-    INPUTS_DIR = _resolve_inputs_dir(settings.root)
-    EXECUTION_MODE, _DETECTED_PACKAGE_ROOT = detect_execution_mode(ROOT)
-    _clear_directory_config_cache()
+    _set_project_root(settings.root)
 
 
 def _import_module_from_path(module_name: str, path: Path, *, package: bool = False) -> ModuleType:
@@ -751,13 +965,13 @@ def _import_module_from_path(module_name: str, path: Path, *, package: bool = Fa
     return module
 
 
-_PROJECT_FIXTURES_IMPORTED = False
-_PROJECT_RUNNERS_IMPORTED = False
+_FIXTURE_LOAD_ROOTS: set[Path] = set()
+_RUNNER_LOAD_ROOTS: set[Path] = set()
 
 
-def _load_project_fixtures(root: Path) -> None:
-    global _PROJECT_FIXTURES_IMPORTED
-    if _PROJECT_FIXTURES_IMPORTED:
+def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
+    resolved_root = root.resolve()
+    if resolved_root in _FIXTURE_LOAD_ROOTS:
         return
 
     fixtures_package = root / "fixtures"
@@ -778,17 +992,20 @@ def _load_project_fixtures(root: Path) -> None:
                     )
         elif fixtures_file.exists():
             alias_target = _import_module_from_path("_tenzir_project_fixtures", fixtures_file)
-        if alias_target is not None and "fixtures" not in sys.modules:
-            sys.modules["fixtures"] = alias_target
+        if alias_target is not None and expose_namespace:
+            if "fixtures" not in sys.modules:
+                sys.modules["fixtures"] = alias_target
+    except ValueError as exc:  # registration error (e.g., duplicate fixture)
+        raise RuntimeError(f"failed to load fixtures from {resolved_root}: {exc}") from exc
     except Exception as exc:  # pragma: no cover - defensive logging
-        raise RuntimeError(f"failed to load project fixtures: {exc}") from exc
+        raise RuntimeError(f"failed to load fixtures from {resolved_root}: {exc}") from exc
 
-    _PROJECT_FIXTURES_IMPORTED = True
+    _FIXTURE_LOAD_ROOTS.add(resolved_root)
 
 
-def _load_project_runners(root: Path) -> None:
-    global _PROJECT_RUNNERS_IMPORTED
-    if _PROJECT_RUNNERS_IMPORTED:
+def _load_project_runners(root: Path, *, expose_namespace: bool) -> None:
+    resolved_root = root.resolve()
+    if resolved_root in _RUNNER_LOAD_ROOTS:
         return
 
     runners_package = root / "runners"
@@ -807,12 +1024,15 @@ def _load_project_runners(root: Path) -> None:
                     alias_target = _import_module_from_path(
                         f"_tenzir_project_runner_{candidate.stem}", candidate
                     )
-        if alias_target is not None and "runners" not in sys.modules:
-            sys.modules["runners"] = alias_target
+        if alias_target is not None and expose_namespace:
+            if "runners" not in sys.modules:
+                sys.modules["runners"] = alias_target
+    except ValueError as exc:
+        raise RuntimeError(f"failed to load runners from {resolved_root}: {exc}") from exc
     except Exception as exc:  # pragma: no cover - defensive logging
-        raise RuntimeError(f"failed to load project runners: {exc}") from exc
+        raise RuntimeError(f"failed to load runners from {resolved_root}: {exc}") from exc
 
-    _PROJECT_RUNNERS_IMPORTED = True
+    _RUNNER_LOAD_ROOTS.add(resolved_root)
     _refresh_registry()
 
 
@@ -1116,23 +1336,20 @@ def _summarize_runner_plan(
     tenzir_version: str | None,
     runner_versions: Mapping[str, str] | None = None,
 ) -> str:
-    if not queue:
+    breakdown = _runner_breakdown(
+        queue,
+        tenzir_version=tenzir_version,
+        runner_versions=runner_versions,
+    )
+    if not breakdown:
         return "no runners"
-
-    counts: dict[str, int] = {}
-    for runner, _ in queue:
-        counts[runner.name] = counts.get(runner.name, 0) + 1
-
-    def format_runner(name: str, count: int) -> str:
+    parts: list[str] = []
+    for name, count, version in breakdown:
         base = name
-        version = (runner_versions or {}).get(name)
-        if version is None and name == "tenzir":
-            version = tenzir_version
         if version:
             base = f"{base} (v{version})"
-        return f"{count}× {base}"
-
-    return ", ".join(format_runner(name, counts[name]) for name in sorted(counts))
+        parts.append(f"{count}× {base}")
+    return ", ".join(parts)
 
 
 def _collect_runner_versions(
@@ -1149,6 +1366,36 @@ def _collect_runner_versions(
         if isinstance(attr, str) and attr:
             versions.setdefault(runner.name, attr)
     return versions
+
+
+def _runner_breakdown(
+    queue: Sequence[RunnerQueueItem],
+    *,
+    tenzir_version: str | None,
+    runner_versions: Mapping[str, str] | None = None,
+) -> list[tuple[str, int, str | None]]:
+    counts: dict[str, int] = {}
+    for runner, _ in queue:
+        counts[runner.name] = counts.get(runner.name, 0) + 1
+
+    breakdown: list[tuple[str, int, str | None]] = []
+    for name in sorted(counts):
+        version = (runner_versions or {}).get(name)
+        if version is None and name == "tenzir":
+            version = tenzir_version
+        breakdown.append((name, counts[name], version))
+    return breakdown
+
+
+def _print_aggregate_totals(project_count: int, summary: Summary) -> None:
+    total = summary.total
+    failed = summary.failed
+    skipped = summary.skipped
+    passed = total - failed - skipped
+    print(
+        f"{INFO} aggregate totals across {project_count} projects: "
+        f"{total} tests (passed={passed}, failed={failed}, skipped={skipped})"
+    )
 
 
 def _summarize_harness_configuration(
@@ -1844,140 +2091,183 @@ def run_cli(
     )
     apply_settings(settings)
     selected_tests = list(tests)
-    if not selected_tests and not _looks_like_project_root(ROOT):
+    if not _is_project_root(ROOT):
         print(
             f"{INFO} no tenzir-test project detected at {ROOT}.\n"
             f"{INFO} Run from your project root or provide --root."
         )
         sys.exit(1)
-    _load_project_runners(settings.root)
-    _load_project_fixtures(settings.root)
-    refresh_runner_metadata()
+
+    plan = _build_execution_plan(ROOT, selected_tests, root_explicit=root is not None)
+    display_base = Path.cwd().resolve()
+    _print_execution_plan(plan, display_base=display_base)
+
     enable_comparison_logging(log_comparisons or _log_comparisons)
     engine_state.refresh()
 
-    tests_to_run = selected_tests or [ROOT]
+    overall_summary = Summary()
+    overall_queue_count = 0
+    executed_projects: list[ProjectSelection] = []
+
+    for selection in plan.projects():
+        if not selection.should_run():
+            continue
+
+        if executed_projects:
+            print()
+
+        _set_project_root(selection.root)
+        engine_state.refresh()
+        expose_namespace = selection.kind == "root"
+        try:
+            _load_project_runners(selection.root, expose_namespace=expose_namespace)
+            _load_project_fixtures(selection.root, expose_namespace=expose_namespace)
+        except RuntimeError as exc:
+            sys.exit(f"error: {exc}")
+        refresh_runner_metadata()
+
+        tests_to_run = selection.selectors if not selection.run_all else [selection.root]
+
+        if purge:
+            continue
+
+        todo: set[RunnerQueueItem] = set()
+        for test in tests_to_run:
+            if test.resolve() == selection.root.resolve():
+                all_tests = []
+                for tests_dir in _iter_project_test_directories(selection.root):
+                    all_tests.extend(list(collect_all_tests(tests_dir)))
+                for test_path in all_tests:
+                    try:
+                        runner = get_runner_for_test(test_path)
+                        todo.add((runner, test_path))
+                    except ValueError as error:
+                        sys.exit(f"error: {error}")
+                continue
+
+            resolved = test.resolve()
+            if not resolved.exists():
+                sys.exit(f"error: test path `{test}` does not exist")
+
+            if resolved.is_dir():
+                if _is_inputs_path(resolved):
+                    continue
+                tql_files = list(collect_all_tests(resolved))
+                if not tql_files:
+                    sys.exit(f"error: no {_allowed_extensions} files found in {resolved}")
+                for file_path in tql_files:
+                    try:
+                        runner = get_runner_for_test(file_path)
+                        todo.add((runner, file_path))
+                    except ValueError as error:
+                        sys.exit(f"error: {error}")
+            elif resolved.is_file():
+                if _is_inputs_path(resolved):
+                    continue
+                if resolved.suffix[1:] in _allowed_extensions:
+                    try:
+                        runner = get_runner_for_test(resolved)
+                        todo.add((runner, resolved))
+                    except ValueError as error:
+                        sys.exit(f"error: {error}")
+                else:
+                    sys.exit(
+                        f"error: unsupported file type {resolved.suffix} for {resolved} - only {_allowed_extensions} files are supported"
+                    )
+            else:
+                sys.exit(f"error: `{test}` is neither a file nor a directory")
+
+        queue = list(todo)
+        queue.sort(key=lambda tup: str(tup[1]), reverse=True)
+        project_queue_size = len(queue)
+        if not project_queue_size:
+            continue
+
+        os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
+        if not TENZIR_BINARY:
+            sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
+        try:
+            tenzir_version = get_version()
+        except FileNotFoundError:
+            sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
+
+        runner_versions = _collect_runner_versions(queue, tenzir_version=tenzir_version)
+        runner_breakdown = _runner_breakdown(
+            queue,
+            tenzir_version=tenzir_version,
+            runner_versions=runner_versions,
+        )
+        job_count, enabled_flags = _summarize_harness_configuration(
+            jobs=jobs,
+            update=update,
+            coverage=coverage,
+            log_comparisons=bool(log_comparisons or _log_comparisons),
+            runner_summary=runner_summary,
+            fixture_summary=fixture_summary,
+            passthrough=passthrough_mode,
+        )
+
+        jobs_segment = f" ({job_count} jobs)" if job_count else ""
+        toggle_suffix = f"; {enabled_flags}" if enabled_flags else ""
+        relative_path = _format_relative_path(selection.root, display_base)
+        print(
+            f"{INFO} running {project_queue_size} tests{jobs_segment} in project {relative_path}{toggle_suffix}"
+        )
+        for name, count, version in runner_breakdown:
+            version_segment = f" (v{version})" if version else ""
+            print(f"{INFO}   {count}× {name}{version_segment}")
+
+        workers = [
+            Worker(
+                queue,
+                update=update,
+                coverage=coverage,
+                runner_versions=runner_versions,
+            )
+            for _ in range(jobs)
+        ]
+        project_summary = Summary()
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            project_summary += worker.join()
+
+        _print_detailed_summary(project_summary)
+        _print_ascii_summary(
+            project_summary,
+            include_runner=runner_summary,
+            include_fixture=fixture_summary,
+        )
+
+        if coverage:
+            coverage_dir = os.environ.get(
+                "CMAKE_COVERAGE_OUTPUT_DIRECTORY", os.path.join(os.getcwd(), "coverage")
+            )
+            source_dir = str(coverage_source_dir) if coverage_source_dir else os.getcwd()
+            print(f"{INFO} Code coverage data collected in {coverage_dir}")
+            print(f"{INFO} Source directory for coverage mapping: {source_dir}")
+
+        overall_summary += project_summary
+        overall_queue_count += project_queue_size
+        executed_projects.append(selection)
+
+    # Restore root project context for subsequent operations.
+    _set_project_root(settings.root)
+    engine_state.refresh()
+
     if purge:
         for runner in runners_iter_runners():
             runner.purge()
         return
 
-    # TODO Make sure that all tests are located in the `tests` directory.
-    todo = set()
-    for test in tests_to_run:
-        if test.resolve() == ROOT:
-            # Collect all tests in project-specific locations
-            all_tests = []
-            for tests_dir in _iter_project_test_directories(ROOT):
-                all_tests.extend(list(collect_all_tests(tests_dir)))
+    if overall_queue_count == 0:
+        print(f"{INFO} no tests selected")
+        return
 
-            # Process each test file using its configuration
-            for test_path in all_tests:
-                try:
-                    runner = get_runner_for_test(test_path)
-                    todo.add((runner, test_path))
-                except ValueError as e:
-                    # Show the error and exit
-                    sys.exit(f"error: {e}")
-            continue
+    if len(executed_projects) > 1:
+        _print_aggregate_totals(len(executed_projects), overall_summary)
 
-        resolved = test.resolve()
-        if not resolved.exists():
-            sys.exit(f"error: test path `{test}` does not exist")
-
-        # If it's a directory, collect all tests in it
-        if resolved.is_dir():
-            if _is_inputs_path(resolved):
-                continue
-            # Look for TQL files and use their config
-            tql_files = list(collect_all_tests(resolved))
-            if not tql_files:
-                sys.exit(f"error: no {_allowed_extensions} files found in {resolved}")
-
-            for file_path in tql_files:
-                try:
-                    runner = get_runner_for_test(file_path)
-                    todo.add((runner, file_path))
-                except ValueError as e:
-                    sys.exit(f"error: {e}")
-        # If it's a file, determine the runner from its configuration
-        elif resolved.is_file():
-            if _is_inputs_path(resolved):
-                continue
-            if resolved.suffix[1:] in _allowed_extensions:
-                try:
-                    runner = get_runner_for_test(resolved)
-                    todo.add((runner, resolved))
-                except ValueError as e:
-                    sys.exit(f"error: {e}")
-            else:
-                # Error for non-TQL files
-                sys.exit(
-                    f"error: unsupported file type {resolved.suffix} for {resolved} - only {_allowed_extensions} files are supported"
-                )
-        else:
-            sys.exit(f"error: `{test}` is neither a file nor a directory")
-
-    queue = list(todo)
-    # Sort by test path (item[1])
-    queue.sort(key=lambda tup: str(tup[1]), reverse=True)
-    os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
-    if not TENZIR_BINARY:
-        sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
-    try:
-        tenzir_version = get_version()
-    except FileNotFoundError:
-        sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
-
-    runner_versions = _collect_runner_versions(queue, tenzir_version=tenzir_version)
-    runner_plan = _summarize_runner_plan(
-        queue,
-        tenzir_version=tenzir_version,
-        runner_versions=runner_versions,
-    )
-    job_count, enabled_flags = _summarize_harness_configuration(
-        jobs=jobs,
-        update=update,
-        coverage=coverage,
-        log_comparisons=bool(log_comparisons or _log_comparisons),
-        runner_summary=runner_summary,
-        fixture_summary=fixture_summary,
-        passthrough=passthrough_mode,
-    )
-
-    jobs_segment = f" ({job_count} jobs)" if job_count else ""
-    toggle_suffix = f"; {enabled_flags}" if enabled_flags else ""
-    print(f"{INFO} running {len(queue)} tests{jobs_segment} using {runner_plan}{toggle_suffix}")
-
-    # Pass coverage flag to workers
-    workers = [
-        Worker(
-            queue,
-            update=update,
-            coverage=coverage,
-            runner_versions=runner_versions,
-        )
-        for _ in range(jobs)
-    ]
-    summary = Summary()
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        summary += worker.join()
-    _print_detailed_summary(summary)
-    _print_ascii_summary(
-        summary,
-        include_runner=runner_summary,
-        include_fixture=fixture_summary,
-    )
-    if coverage:
-        coverage_dir = os.environ.get(
-            "CMAKE_COVERAGE_OUTPUT_DIRECTORY", os.path.join(os.getcwd(), "coverage")
-        )
-        source_dir = str(coverage_source_dir) if coverage_source_dir else os.getcwd()
-        print(f"{INFO} Code coverage data collected in {coverage_dir}")
-        print(f"{INFO} Source directory for coverage mapping: {source_dir}")
-    if summary.failed > 0:
+    if overall_summary.failed > 0:
         sys.exit(1)
 
 

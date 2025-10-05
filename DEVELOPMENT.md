@@ -71,6 +71,9 @@ locally helps catch packaging issues early.
 - We group core runners under `src/tenzir_test/runners/`. To introduce
   additional runners, add a class there and call `tenzir_test.runners.register`
   so CLI discovery picks it up automatically.
+- `example-satellite/` showcases the new satellite project support; run it
+  alongside the root example with
+  `uv run tenzir-test --root example-project example-satellite`.
 
 ## Releasing
 

@@ -82,8 +82,8 @@ runners.register(FancyRunner())
                 tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
-        run._PROJECT_RUNNERS_IMPORTED = False  # type: ignore[attr-defined]
-        run._load_project_runners(tmp_path)  # type: ignore[attr-defined]
+        run._RUNNER_LOAD_ROOTS.clear()  # type: ignore[attr-defined]
+        run._load_project_runners(tmp_path, expose_namespace=True)  # type: ignore[attr-defined]
         run.refresh_runner_metadata()
 
         mapping = runners.runner_map()
@@ -94,8 +94,11 @@ runners.register(FancyRunner())
             runners.unregister("fancy")
         run.refresh_runner_metadata()
         run.apply_settings(original_settings)
-        run._PROJECT_RUNNERS_IMPORTED = False  # type: ignore[attr-defined]
+        run._RUNNER_LOAD_ROOTS.clear()  # type: ignore[attr-defined]
         sys.modules.pop("runners", None)
+        for module_name in list(sys.modules):
+            if module_name.startswith("_tenzir_project_runner_"):
+                sys.modules.pop(module_name, None)
 
 
 def test_default_runner_for_registered_extension(tmp_path: Path) -> None:
