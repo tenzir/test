@@ -2242,9 +2242,10 @@ def run_cli(
         print(
             f"{INFO} running {project_queue_size} tests{jobs_segment} in project {relative_path}{toggle_suffix}"
         )
+        count_width = max((len(str(count)) for _, count, _ in runner_breakdown), default=1)
         for name, count, version in runner_breakdown:
             version_segment = f" (v{version})" if version else ""
-            print(f"{INFO}   {count}× {name}{version_segment}")
+            print(f"{INFO}   {count:>{count_width}}× {name}{version_segment}")
 
         workers = [
             Worker(
