@@ -2292,8 +2292,8 @@ def run_cli(
     all_projects: bool = False,
 ) -> None:
     from tenzir_test.engine import state as engine_state
-    try:
 
+    try:
         verbose_enabled = bool(verbose or _verbose_logging)
         debug_enabled = bool(debug or _debug_logging)
 
@@ -2574,6 +2574,7 @@ def run_cli(
 
     finally:
         _cleanup_all_tmp_dirs()
+
 
 def main(argv: Sequence[str] | None = None) -> None:
     import click
