@@ -51,9 +51,15 @@ def _normalize_exit_code(value: object) -> int:
 @click.option("-u", "--update", is_flag=True, help="Update reference outputs.")
 @click.option(
     "-v",
-    "--log-comparisons",
+    "--verbose",
     is_flag=True,
-    help="Log reference comparison activity.",
+    help="Enable verbose logging.",
+)
+@click.option(
+    "-d",
+    "--debug",
+    is_flag=True,
+    help="Enable debug logging.",
 )
 @click.option("--purge", is_flag=True, help="Delete cached runner artifacts and exit.")
 @click.option(
@@ -119,7 +125,8 @@ def cli(
     tenzir_node_binary: Path | None,
     tests: tuple[Path, ...],
     update: bool,
-    log_comparisons: bool,
+    verbose: bool,
+    debug: bool,
     purge: bool,
     coverage: bool,
     coverage_source_dir: Path | None,
@@ -142,7 +149,8 @@ def cli(
         tenzir_node_binary=tenzir_node_binary,
         tests=list(tests),
         update=update,
-        log_comparisons=log_comparisons,
+        verbose=verbose,
+        debug=debug,
         purge=purge,
         coverage=coverage,
         coverage_source_dir=coverage_source_dir,

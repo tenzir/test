@@ -345,6 +345,111 @@ def test_detailed_summary_order(capsys):
     assert skipped_index < failed_index < table_start
 
 
+def test_describe_project_root_detects_standard_project(tmp_path: Path) -> None:
+    project_root = tmp_path / "proj"
+    tests_dir = project_root / "tests"
+    tests_dir.mkdir(parents=True)
+
+    signature = run._describe_project_root(project_root)
+
+    assert signature is not None
+    assert signature.kind == "project"
+    assert signature.has(run.ProjectMarker.TESTS_DIRECTORY)
+
+
+def test_describe_project_root_detects_package_manifest(tmp_path: Path) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "package.yaml").write_text("name: pkg\n", encoding="utf-8")
+
+    signature = run._describe_project_root(package_root)
+
+    assert signature is not None
+    assert signature.kind == "package"
+    assert signature.has(run.ProjectMarker.PACKAGE_MANIFEST)
+
+
+def test_describe_project_root_detects_tests_directory(tmp_path: Path) -> None:
+    tests_dir = tmp_path / "pkg" / "tests"
+    tests_dir.mkdir(parents=True)
+
+    signature = run._describe_project_root(tests_dir)
+
+    assert signature is not None
+    assert signature.kind == "project"
+    assert signature.has(run.ProjectMarker.TEST_SUITE_DIRECTORY)
+
+
+def test_describe_project_root_rejects_inputs_only_directory(tmp_path: Path) -> None:
+    directory = tmp_path / "proj"
+    directory.mkdir()
+    (directory / "inputs").mkdir()
+
+    signature = run._describe_project_root(directory)
+
+    assert signature is None
+
+
+def test_describe_project_root_rejects_fixtures_runners_only(tmp_path: Path) -> None:
+    directory = tmp_path / "proj"
+    directory.mkdir()
+    (directory / "fixtures").mkdir()
+    (directory / "runners").mkdir()
+    (directory / "inputs").mkdir()
+
+    signature = run._describe_project_root(directory)
+
+    assert signature is None
+
+
+def test_build_execution_plan_discovers_nested_projects(tmp_path: Path, monkeypatch):
+    root = tmp_path / "main" / "test"
+    (root / "tests").mkdir(parents=True)
+    (root / "tests" / "case.tql").touch()
+
+    extensions = root.parent / "contrib" / "tenzir-plugins"
+    plugin = extensions / "alpha"
+    (plugin / "test" / "tests").mkdir(parents=True)
+    (plugin / "test" / "tests" / "alt.tql").touch()
+
+    monkeypatch.chdir(root)
+
+    plan = run._build_execution_plan(root, [Path("../contrib/tenzir-plugins")], root_explicit=False)
+
+    assert not plan.root.should_run()
+    assert len(plan.satellites) == 1
+    satellite = plan.satellites[0]
+    assert satellite.root == (plugin / "test").resolve()
+    assert satellite.run_all is True
+    assert satellite.selectors == []
+
+
+def test_build_execution_plan_ignores_non_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    root = tmp_path / "main"
+    (root / "tests").mkdir(parents=True)
+    (root / "tests" / "case.tql").touch()
+
+    stray_dir = tmp_path / "assets"
+    stray_dir.mkdir()
+    stray_file = stray_dir / "README.md"
+    stray_file.write_text("ignored\n", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+
+    run._set_discovery_logging(True)
+    try:
+        plan = run._build_execution_plan(root, [Path("assets/README.md")], root_explicit=False)
+    finally:
+        run._set_discovery_logging(False)
+
+    capture = capsys.readouterr()
+    assert "ignoring `assets/README.md`" in capture.out
+    assert not plan.root.should_run()
+    assert not plan.satellites
+
+
 def test_build_execution_plan_detects_satellite(tmp_path, monkeypatch):
     root = tmp_path / "main"
     (root / "tests").mkdir(parents=True)
@@ -495,9 +600,22 @@ def test_print_execution_plan_lists_projects(capsys):
     run._print_execution_plan(plan, display_base=root)
 
     output = capsys.readouterr().out
-    assert "executing 2 project(s)" in output
+    assert "executing 2 projects" in output
     assert "■ root-project" in output
     assert "□ satellite-project" in output
+
+
+def test_print_project_start_reports_empty_projects(capsys):
+    run._print_project_start(
+        relative_path="sat-project",
+        queue_size=0,
+        job_count=0,
+        enabled_flags="",
+    )
+
+    output = capsys.readouterr().out
+    assert "running 0 tests" in output
+    assert "sat-project" in output
 
 
 def test_execution_plan_single_project_summary(tmp_path, monkeypatch, capsys):

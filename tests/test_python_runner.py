@@ -174,8 +174,7 @@ def test_python_runner_logs_when_enabled(
         run.enable_comparison_logging(False)
 
     captured = capsys.readouterr()
-    assert "•" in captured.out
-    assert "⇄" in captured.out
+    assert "▶" in captured.out
 
 
 def test_fixture_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -321,7 +320,8 @@ def test_fixture_activation_logs(
             assert env["X_FAKE"] == "ok"
 
     assert "activating fixture 'sink'" in caplog.text
-    assert "fixture 'sink' provided context keys: X_FAKE" in caplog.text
+    assert "fixture 'sink' provided context keys:" in caplog.text
+    assert "  - X_FAKE" in caplog.text
     assert "tearing down fixture 'sink'" in caplog.text
 
 

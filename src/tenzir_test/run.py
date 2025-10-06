@@ -114,6 +114,8 @@ CHECKMARK = "\033[92;1m✔\033[0m"
 CROSS = "\033[31m✘\033[0m"
 INFO = "\033[94;1mi\033[0m"
 SKIP = "\033[90;1m●\033[0m"
+VERBOSE_PREFIX = "\033[94;1m▶\033[0m"
+DEBUG_PREFIX = "\033[95m◆\033[0m"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 stdout_lock = threading.RLock()
@@ -329,7 +331,10 @@ def _cleanup_tmp_base_dirs() -> None:
 
 atexit.register(_cleanup_remaining_tmp_dirs)
 
-_log_comparisons = bool(os.environ.get("TENZIR_TEST_LOG_COMPARISONS"))
+_verbose_logging = bool(
+    os.environ.get("TENZIR_TEST_VERBOSE") or os.environ.get("TENZIR_TEST_LOG_COMPARISONS")
+)
+_debug_logging = bool(os.environ.get("TENZIR_TEST_DEBUG"))
 
 _runner_names: set[str] = set()
 _allowed_extensions: set[str] = set()
@@ -348,7 +353,118 @@ if not _CONFIG_LOGGER.handlers:
     handler.setFormatter(logging.Formatter("%(message)s"))
     _CONFIG_LOGGER.addHandler(handler)
     _CONFIG_LOGGER.propagate = False
+
 _DIRECTORY_CONFIG_CACHE: dict[Path, "_DirectoryConfig"] = {}
+
+_DISCOVERY_ENABLED = False
+
+
+def _set_discovery_logging(enabled: bool) -> None:
+    global _DISCOVERY_ENABLED
+    _DISCOVERY_ENABLED = enabled
+
+
+def _print_discovery_message(message: str) -> None:
+    print(f"{DEBUG_PREFIX} {message}")
+
+
+class ProjectMarker(enum.Enum):
+    """Sentinel indicators that describe a project root."""
+
+    PACKAGE_MANIFEST = "package_manifest"
+    TESTS_DIRECTORY = "tests_directory"
+    TEST_CONFIG = "test_config"
+    TEST_SUITE_DIRECTORY = "test_suite_directory"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ProjectSignature:
+    """Description of markers that identify a project root."""
+
+    root: Path
+    markers: frozenset[ProjectMarker]
+
+    @property
+    def kind(self) -> Literal["package", "project"]:
+        return "package" if ProjectMarker.PACKAGE_MANIFEST in self.markers else "project"
+
+    def has(self, marker: ProjectMarker) -> bool:
+        return marker in self.markers
+
+
+_PRIMARY_PROJECT_MARKERS = {
+    ProjectMarker.PACKAGE_MANIFEST,
+    ProjectMarker.TESTS_DIRECTORY,
+    ProjectMarker.TEST_CONFIG,
+    ProjectMarker.TEST_SUITE_DIRECTORY,
+}
+
+
+def _describe_project_root(path: Path) -> ProjectSignature | None:
+    """Return a signature describing why a path qualifies as a project root."""
+
+    try:
+        resolved = path.resolve()
+    except FileNotFoundError:
+        return None
+
+    if not resolved.exists() or not resolved.is_dir():
+        return None
+
+    markers: set[ProjectMarker] = set()
+
+    if packages.is_package_dir(resolved):
+        markers.add(ProjectMarker.PACKAGE_MANIFEST)
+
+    tests_dir = resolved / "tests"
+    if tests_dir.is_dir():
+        markers.add(ProjectMarker.TESTS_DIRECTORY)
+
+    if (resolved / "test.yaml").is_file():
+        markers.add(ProjectMarker.TEST_CONFIG)
+
+    if resolved.name == "tests" and resolved.is_dir():
+        markers.add(ProjectMarker.TEST_SUITE_DIRECTORY)
+
+    if not markers:
+        return None
+
+    if not markers & _PRIMARY_PROJECT_MARKERS:
+        return None
+
+    return ProjectSignature(root=resolved, markers=frozenset(markers))
+
+
+def _discover_enclosed_projects(path: Path, *, base_root: Path) -> list[Path]:
+    """Return project roots discovered directly underneath `path`."""
+
+    try:
+        resolved = path.resolve()
+    except FileNotFoundError:
+        return []
+
+    if not resolved.exists() or not resolved.is_dir():
+        return []
+
+    candidates: list[Path] = []
+    try:
+        entries = sorted(resolved.iterdir())
+    except OSError:
+        return []
+
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        project_root = _find_project_root(entry, base_root=base_root)
+        if project_root is None:
+            continue
+        resolved_root = project_root.resolve()
+        if resolved_root == base_root:
+            continue
+        if resolved_root not in candidates:
+            candidates.append(resolved_root)
+
+    return candidates
 
 
 def _set_project_root(path: Path) -> None:
@@ -364,23 +480,7 @@ def _set_project_root(path: Path) -> None:
 def _is_project_root(path: Path) -> bool:
     """Return True if the directory looks like a tenzir-test project root."""
 
-    if not path.exists() or not path.is_dir():
-        return False
-    if packages.is_package_dir(path):
-        return True
-    if (path / "tests").is_dir():
-        return True
-    if (path / "test.yaml").is_file():
-        return True
-    if (path / "fixtures.py").is_file():
-        return True
-    if (path / "fixtures").is_dir():
-        return True
-    if (path / "runners").is_dir():
-        return True
-    if (path / "inputs").is_dir():
-        return True
-    return False
+    return _describe_project_root(path) is not None
 
 
 def _resolve_cli_path(argument: Path, *, base_root: Path) -> Path:
@@ -429,12 +529,18 @@ def _find_project_root(path: Path, *, base_root: Path) -> Path | None:
             if _is_project_root(parent):
                 return parent
         candidate_test_dir = candidate / "test"
-        if _is_project_root(candidate_test_dir):
+        if (
+            _is_project_root(candidate_test_dir)
+            and candidate_test_dir != base_root
+            and candidate_test_dir.is_relative_to(resolved)
+        ):
             candidate = candidate_test_dir
         if _is_project_root(candidate):
             try:
                 rel = candidate.relative_to(base_root)
             except ValueError:
+                if base_root.is_relative_to(candidate):
+                    continue
                 return candidate
             if rel.parts and rel.parts[0] == "tests":
                 continue
@@ -465,7 +571,25 @@ def _build_execution_plan(
                 raise SystemExit(
                     f"error: path `{argument}` does not exist (resolved to {resolved})"
                 )
-            # Default to root project for existing paths without project metadata.
+            enclosed_projects = _discover_enclosed_projects(resolved, base_root=base_root)
+            if enclosed_projects:
+                for nested_root in enclosed_projects:
+                    selectors = satellite_selectors.setdefault(nested_root, [])
+                    if nested_root not in satellite_order:
+                        satellite_order.append(nested_root)
+                    satellite_run_all[nested_root] = True
+                continue
+
+            try:
+                resolved.relative_to(base_root)
+            except ValueError:
+                if _DISCOVERY_ENABLED:
+                    _print_discovery_message(
+                        f"ignoring `{argument}` (resolved to {resolved}) - no tenzir-test project found"
+                    )
+                continue
+
+            # Default to root project for existing paths inside the main project tree.
             project_root = base_root
 
         if project_root == base_root:
@@ -559,7 +683,7 @@ def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> None:
         print(f"{INFO} executing project: {heading}")
         return
 
-    print(f"{INFO} executing {len(active)} project(s)")
+    print(f"{INFO} executing {len(active)} projects")
     for marker, selection in active:
         heading = _format_project_heading(selection, base_root=display_base)
         print(f"{INFO}   {marker} {heading}")
@@ -1100,18 +1224,16 @@ def _apply_fixture_env(env: dict[str, str], fixtures: tuple[str, ...]) -> None:
 
 
 def enable_comparison_logging(enabled: bool) -> None:
-    global _log_comparisons
-    _log_comparisons = enabled
+    global _verbose_logging
+    _verbose_logging = enabled
 
 
 def log_comparison(test: Path, ref_path: Path, *, mode: str) -> None:
-    if not _log_comparisons:
+    if not _verbose_logging:
         return
     rel_test = _relativize_path(test)
     rel_ref = _relativize_path(ref_path)
-    compare_glyph = "\033[95m⇄\033[0m"
-    verbose_glyph = "\033[37m•\033[0m"
-    print(f"{verbose_glyph} {mode} {rel_test} {compare_glyph} {rel_ref}")
+    print(f"{VERBOSE_PREFIX} {mode} {rel_test} -> {rel_ref}")
 
 
 def report_failure(test: Path, message: str) -> None:
@@ -1426,7 +1548,8 @@ def _summarize_harness_configuration(
     jobs: int,
     update: bool,
     coverage: bool,
-    log_comparisons: bool,
+    verbose: bool,
+    debug: bool,
     runner_summary: bool,
     fixture_summary: bool,
     passthrough: bool,
@@ -1435,7 +1558,8 @@ def _summarize_harness_configuration(
     toggles = (
         ("update", update),
         ("coverage", coverage),
-        ("log-comparisons", log_comparisons),
+        ("verbose", verbose),
+        ("debug", debug),
         ("runner-summary", runner_summary),
         ("fixture-summary", fixture_summary),
         ("keep-tmp-dirs", KEEP_TMP_DIRS),
@@ -2064,7 +2188,8 @@ def run_cli(
     tenzir_node_binary: Path | None,
     tests: Sequence[Path],
     update: bool,
-    log_comparisons: bool,
+    verbose: bool,
+    debug: bool,
     purge: bool,
     coverage: bool,
     coverage_source_dir: Path | None,
@@ -2079,16 +2204,35 @@ def run_cli(
 ) -> None:
     from tenzir_test.engine import state as engine_state
 
-    verbosity_enabled = bool(log_comparisons or _log_comparisons)
+    verbose_enabled = bool(verbose or _verbose_logging)
+    debug_enabled = bool(debug or _debug_logging)
+
     fixture_logger = logging.getLogger("tenzir_test.fixtures")
-    if verbosity_enabled:
-        if not logging.getLogger().handlers:
-            logging.basicConfig(level=logging.INFO)
+    root_logger = logging.getLogger()
+
+    _set_discovery_logging(debug_enabled)
+    enable_comparison_logging(verbose_enabled or debug_enabled)
+
+    debug_formatter = logging.Formatter(f"{DEBUG_PREFIX} %(message)s")
+    default_formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+
+    if debug_enabled:
+        if not root_logger.handlers:
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(debug_formatter)
+            root_logger.addHandler(stream_handler)
         else:
-            logging.getLogger().setLevel(logging.INFO)
+            for existing_handler in list(root_logger.handlers):
+                existing_handler.setFormatter(debug_formatter)
+        root_logger.setLevel(logging.INFO)
         fixture_logger.setLevel(logging.INFO)
+        fixture_logger.propagate = True
     else:
+        for existing_handler in list(root_logger.handlers):
+            existing_handler.setFormatter(default_formatter)
+        root_logger.setLevel(logging.WARNING)
         fixture_logger.setLevel(logging.WARNING)
+        fixture_logger.propagate = True
 
     global SHOW_TEST_DETAILS
     set_keep_tmp_dirs(bool(os.environ.get(_TMP_KEEP_ENV_VAR)) or keep_tmp_dirs)
@@ -2132,7 +2276,6 @@ def run_cli(
     display_base = Path.cwd().resolve()
     _print_execution_plan(plan, display_base=display_base)
 
-    enable_comparison_logging(log_comparisons or _log_comparisons)
     engine_state.refresh()
 
     overall_summary = Summary()
@@ -2221,7 +2364,25 @@ def run_cli(
         queue = list(todo)
         queue.sort(key=lambda tup: str(tup[1]), reverse=True)
         project_queue_size = len(queue)
+        job_count, enabled_flags = _summarize_harness_configuration(
+            jobs=jobs,
+            update=update,
+            coverage=coverage,
+            verbose=verbose_enabled,
+            debug=debug_enabled,
+            runner_summary=runner_summary,
+            fixture_summary=fixture_summary,
+            passthrough=passthrough_mode,
+        )
+
+        relative_path = _format_relative_path(selection.root, display_base)
         if not project_queue_size:
+            _print_project_start(
+                relative_path=relative_path,
+                queue_size=project_queue_size,
+                job_count=job_count,
+                enabled_flags=enabled_flags,
+            )
             continue
 
         os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
@@ -2238,21 +2399,12 @@ def run_cli(
             tenzir_version=tenzir_version,
             runner_versions=runner_versions,
         )
-        job_count, enabled_flags = _summarize_harness_configuration(
-            jobs=jobs,
-            update=update,
-            coverage=coverage,
-            log_comparisons=bool(log_comparisons or _log_comparisons),
-            runner_summary=runner_summary,
-            fixture_summary=fixture_summary,
-            passthrough=passthrough_mode,
-        )
 
-        jobs_segment = f" ({job_count} jobs)" if job_count else ""
-        toggle_suffix = f"; {enabled_flags}" if enabled_flags else ""
-        relative_path = _format_relative_path(selection.root, display_base)
-        print(
-            f"{INFO} running {project_queue_size} tests{jobs_segment} in project {relative_path}{toggle_suffix}"
+        _print_project_start(
+            relative_path=relative_path,
+            queue_size=project_queue_size,
+            job_count=job_count,
+            enabled_flags=enabled_flags,
         )
         count_width = max((len(str(count)) for _, count, _ in runner_breakdown), default=1)
         for name, count, version in runner_breakdown:
@@ -2331,3 +2483,15 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def _print_project_start(
+    *,
+    relative_path: str,
+    queue_size: int,
+    job_count: int,
+    enabled_flags: str,
+) -> None:
+    toggles = f"; {enabled_flags}" if enabled_flags else ""
+    jobs_segment = f" ({job_count} jobs)" if job_count else ""
+    print(f"{INFO} running {queue_size} tests{jobs_segment} in project {relative_path}{toggles}")

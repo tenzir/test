@@ -225,8 +225,10 @@ class FixtureController:
         env = context.__enter__()
         env_dict = env or {}
         if env_dict:
-            keys = ", ".join(sorted(env_dict.keys()))
-            logger.info("fixture '%s' provided context keys: %s", self._name, keys)
+            keys = tuple(sorted(env_dict.keys()))
+            logger.info("fixture '%s' provided context keys:", self._name)
+            for key in keys:
+                logger.info("  - %s", key)
             should_log_teardown = True
 
         hooks = getattr(context, _HOOKS_ATTR, {}) or {}
@@ -472,23 +474,13 @@ def activate(names: Iterable[str]) -> Iterator[dict[str, str]]:
     ) -> ContextManager[dict[str, str] | None]:
         @contextmanager
         def _logged_context() -> Iterator[dict[str, str] | None]:
-            logger.info("activating fixture '%s'", name)
-            should_log_teardown = force_teardown_log
-            with factory() as env:
-                keys: tuple[str, ...] = tuple()
-                if env:
-                    keys = tuple(sorted(env.keys()))
-                    logger.info(
-                        "fixture '%s' provided context keys: %s",
-                        name,
-                        ", ".join(keys),
-                    )
-                    should_log_teardown = True
-                try:
-                    yield env
-                finally:
-                    if should_log_teardown:
-                        logger.info("tearing down fixture '%s'", name)
+            if force_teardown_log:
+                setattr(factory, "tenzir_log_teardown", True)
+            controller = FixtureController(name, factory)
+            try:
+                yield controller.start()
+            finally:
+                controller.stop()
 
         return _logged_context()
 
