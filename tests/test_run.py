@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import signal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -400,6 +401,14 @@ def test_describe_project_root_rejects_fixtures_runners_only(tmp_path: Path) -> 
     signature = run._describe_project_root(directory)
 
     assert signature is None
+
+
+def test_is_interrupt_exit_handles_signal_codes() -> None:
+    assert run._is_interrupt_exit(-signal.SIGINT)
+    assert run._is_interrupt_exit(128 + signal.SIGINT)
+    assert run._is_interrupt_exit(-signal.SIGTERM)
+    assert not run._is_interrupt_exit(0)
+    assert not run._is_interrupt_exit(1)
 
 
 def test_build_execution_plan_discovers_nested_projects(tmp_path: Path, monkeypatch):

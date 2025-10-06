@@ -8,6 +8,7 @@ import pytest
 
 import signal
 
+from tenzir_test import _python_runner as python_runner
 from tenzir_test import config, run, fixtures
 
 
@@ -198,6 +199,23 @@ def test_fixture_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(fixtures._FACTORIES, "sink", _fake_fixture)  # type: ignore[attr-defined]
     with fixtures.activate(["sink"]) as env:
         assert env["X_FAKE"] == "ok"
+
+
+def test_python_runner_converts_keyboard_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "script.py"
+    script.write_text("print('hi')\n", encoding="utf-8")
+
+    def _raise_interrupt(*args, **kwargs):  # noqa: ANN001
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(python_runner.runpy, "run_path", _raise_interrupt)
+
+    with pytest.raises(SystemExit) as exc:
+        python_runner._run_script(script, [])
+
+    assert exc.value.code == 130
 
 
 def test_acquire_fixture_controller(monkeypatch: pytest.MonkeyPatch) -> None:

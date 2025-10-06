@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -119,6 +120,64 @@ DEBUG_PREFIX = "\033[95m◆\033[0m"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 stdout_lock = threading.RLock()
+
+_INTERRUPT_EVENT = threading.Event()
+_INTERRUPT_ANNOUNCED = threading.Event()
+_INTERRUPT_SIGNALS = {signal.SIGINT, signal.SIGTERM}
+
+
+def interrupt_requested() -> bool:
+    """Return whether a graceful shutdown was requested."""
+
+    return _INTERRUPT_EVENT.is_set()
+
+
+def _announce_interrupt() -> None:
+    if _INTERRUPT_ANNOUNCED.is_set():
+        return
+    _INTERRUPT_ANNOUNCED.set()
+    with stdout_lock:
+        print(
+            f"{INFO} received interrupt; finishing active tests (press Ctrl+C again to abort)",
+        )
+
+
+def _request_interrupt() -> None:
+    first_interrupt = not _INTERRUPT_EVENT.is_set()
+    _INTERRUPT_EVENT.set()
+    if first_interrupt or not _INTERRUPT_ANNOUNCED.is_set():
+        _announce_interrupt()
+
+
+@contextlib.contextmanager
+def _install_interrupt_handler() -> Iterator[None]:
+    previous = signal.getsignal(signal.SIGINT)
+
+    def _handle_interrupt(
+        signum: int, frame: object | None
+    ) -> None:  # pragma: no cover - signal path
+        if interrupt_requested():
+            signal.signal(signum, signal.SIG_DFL)
+            signal.raise_signal(signum)
+            return
+        _request_interrupt()
+
+    signal.signal(signal.SIGINT, _handle_interrupt)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        _INTERRUPT_EVENT.clear()
+        _INTERRUPT_ANNOUNCED.clear()
+
+
+def _is_interrupt_exit(returncode: int) -> bool:
+    if returncode < 0:
+        return -returncode in _INTERRUPT_SIGNALS
+    return returncode in {128 + sig for sig in _INTERRUPT_SIGNALS}
+
+
+_INTERRUPTED_NOTICE = "└─▶ \033[33mtest interrupted by user\033[0m"
 
 _CURRENT_TEST_CONTEXT = threading.local()
 SHOW_TEST_DETAILS = False
@@ -2020,20 +2079,23 @@ def run_simple_test(
         cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
 
     if expect_error == good:
+        interrupted = _is_interrupt_exit(completed.returncode) or interrupt_requested()
+        if interrupted:
+            _request_interrupt()
+        message = (
+            _INTERRUPTED_NOTICE
+            if interrupted
+            else f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m"
+        )
         if passthrough_mode:
-            report_failure(
-                test,
-                f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m",
-            )
+            report_failure(test, message)
         else:
             with stdout_lock:
-                report_failure(
-                    test,
-                    f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m",
-                )
-                for last, line in last_and(output.split(b"\n")):
-                    prefix = "│ " if not last else "└─"
-                    sys.stdout.buffer.write(prefix.encode() + line + b"\n")
+                report_failure(test, message)
+                if not interrupted:
+                    for last, line in last_and(output.split(b"\n")):
+                        prefix = "│ " if not last else "└─"
+                        sys.stdout.buffer.write(prefix.encode() + line + b"\n")
         return False
     if passthrough_mode:
         success(test)
@@ -2118,12 +2180,16 @@ class Worker:
             self._result = Summary()
             result = self._result
             while True:
+                if interrupt_requested():
+                    break
                 try:
                     item = self._queue.pop()
                 except IndexError:
                     break
 
                 runner, test_path = item
+                if interrupt_requested():
+                    break
                 fixtures = _get_test_fixtures(test_path, coverage=self._coverage)
                 if is_passthrough_enabled():
                     rel_path = _relativize_path(test_path)
@@ -2133,15 +2199,26 @@ class Worker:
                     detail_segment = f" ({', '.join(detail_bits)})" if detail_bits else ""
                     with stdout_lock:
                         print(f"{INFO} running {rel_path}{detail_segment} [passthrough]")
-                if SHOW_TEST_DETAILS:
-                    with _push_test_context(
+                context = (
+                    _push_test_context(
                         runner_name=runner.name,
                         runner_version=self._runner_versions.get(runner.name),
                         fixtures=fixtures,
-                    ):
+                    )
+                    if SHOW_TEST_DETAILS
+                    else contextlib.nullcontext()
+                )
+                interrupted = False
+                try:
+                    with context:
                         outcome = runner.run(test_path, self._update, self._coverage)
-                else:
-                    outcome = runner.run(test_path, self._update, self._coverage)
+                except KeyboardInterrupt:  # pragma: no cover - defensive guard
+                    _request_interrupt()
+                    interrupted = True
+                    outcome = False
+
+                if interrupted:
+                    report_failure(test_path, _INTERRUPTED_NOTICE)
                 result.total += 1
                 result.record_runner_outcome(runner.name, outcome)
                 if fixtures:
@@ -2153,6 +2230,8 @@ class Worker:
                 elif not outcome:
                     result.failed += 1
                     result.failed_paths.append(rel_path)
+                if interrupted or interrupt_requested():
+                    break
             return result
         except Exception as exc:  # pragma: no cover - defensive logging
             self._exception = exc
@@ -2276,193 +2355,211 @@ def run_cli(
     display_base = Path.cwd().resolve()
     _print_execution_plan(plan, display_base=display_base)
 
-    engine_state.refresh()
-
-    overall_summary = Summary()
-    overall_queue_count = 0
-    executed_projects: list[ProjectSelection] = []
-
-    for selection in plan.projects():
-        if not selection.should_run():
-            if selection.kind == "root":
-                _set_project_root(selection.root)
-                engine_state.refresh()
-                try:
-                    _load_project_runners(selection.root, expose_namespace=True)
-                    _load_project_fixtures(selection.root, expose_namespace=True)
-                except RuntimeError as exc:
-                    sys.exit(f"error: {exc}")
-                refresh_runner_metadata()
-                _set_project_root(settings.root)
-                engine_state.refresh()
-            continue
-
-        if executed_projects:
-            print()
-
-        _set_project_root(selection.root)
+    with _install_interrupt_handler():
         engine_state.refresh()
-        expose_namespace = selection.kind == "root"
-        try:
-            _load_project_runners(selection.root, expose_namespace=expose_namespace)
-            _load_project_fixtures(selection.root, expose_namespace=expose_namespace)
-        except RuntimeError as exc:
-            sys.exit(f"error: {exc}")
-        refresh_runner_metadata()
 
-        tests_to_run = selection.selectors if not selection.run_all else [selection.root]
+        overall_summary = Summary()
+        overall_queue_count = 0
+        executed_projects: list[ProjectSelection] = []
 
-        if purge:
-            continue
-
-        todo: set[RunnerQueueItem] = set()
-        for test in tests_to_run:
-            if test.resolve() == selection.root.resolve():
-                all_tests = []
-                for tests_dir in _iter_project_test_directories(selection.root):
-                    all_tests.extend(list(collect_all_tests(tests_dir)))
-                for test_path in all_tests:
+        for selection in plan.projects():
+            if interrupt_requested():
+                break
+            if not selection.should_run():
+                if selection.kind == "root":
+                    _set_project_root(selection.root)
+                    engine_state.refresh()
                     try:
-                        runner = get_runner_for_test(test_path)
-                        todo.add((runner, test_path))
-                    except ValueError as error:
-                        sys.exit(f"error: {error}")
+                        _load_project_runners(selection.root, expose_namespace=True)
+                        _load_project_fixtures(selection.root, expose_namespace=True)
+                    except RuntimeError as exc:
+                        sys.exit(f"error: {exc}")
+                    refresh_runner_metadata()
+                    _set_project_root(settings.root)
+                    engine_state.refresh()
                 continue
 
-            resolved = test.resolve()
-            if not resolved.exists():
-                sys.exit(f"error: test path `{test}` does not exist")
+            if executed_projects:
+                print()
 
-            if resolved.is_dir():
-                if _is_inputs_path(resolved):
+            _set_project_root(selection.root)
+            engine_state.refresh()
+            expose_namespace = selection.kind == "root"
+            try:
+                _load_project_runners(selection.root, expose_namespace=expose_namespace)
+                _load_project_fixtures(selection.root, expose_namespace=expose_namespace)
+            except RuntimeError as exc:
+                sys.exit(f"error: {exc}")
+            refresh_runner_metadata()
+
+            tests_to_run = selection.selectors if not selection.run_all else [selection.root]
+
+            if purge:
+                continue
+
+            todo: set[RunnerQueueItem] = set()
+            for test in tests_to_run:
+                if test.resolve() == selection.root.resolve():
+                    all_tests = []
+                    for tests_dir in _iter_project_test_directories(selection.root):
+                        all_tests.extend(list(collect_all_tests(tests_dir)))
+                    for test_path in all_tests:
+                        try:
+                            runner = get_runner_for_test(test_path)
+                            todo.add((runner, test_path))
+                        except ValueError as error:
+                            sys.exit(f"error: {error}")
                     continue
-                tql_files = list(collect_all_tests(resolved))
-                if not tql_files:
-                    sys.exit(f"error: no {_allowed_extensions} files found in {resolved}")
-                for file_path in tql_files:
-                    try:
-                        runner = get_runner_for_test(file_path)
-                        todo.add((runner, file_path))
-                    except ValueError as error:
-                        sys.exit(f"error: {error}")
-            elif resolved.is_file():
-                if _is_inputs_path(resolved):
-                    continue
-                if resolved.suffix[1:] in _allowed_extensions:
-                    try:
-                        runner = get_runner_for_test(resolved)
-                        todo.add((runner, resolved))
-                    except ValueError as error:
-                        sys.exit(f"error: {error}")
+
+                resolved = test.resolve()
+                if not resolved.exists():
+                    sys.exit(f"error: test path `{test}` does not exist")
+
+                if resolved.is_dir():
+                    if _is_inputs_path(resolved):
+                        continue
+                    tql_files = list(collect_all_tests(resolved))
+                    if not tql_files:
+                        sys.exit(f"error: no {_allowed_extensions} files found in {resolved}")
+                    for file_path in tql_files:
+                        try:
+                            runner = get_runner_for_test(file_path)
+                            todo.add((runner, file_path))
+                        except ValueError as error:
+                            sys.exit(f"error: {error}")
+                elif resolved.is_file():
+                    if _is_inputs_path(resolved):
+                        continue
+                    if resolved.suffix[1:] in _allowed_extensions:
+                        try:
+                            runner = get_runner_for_test(resolved)
+                            todo.add((runner, resolved))
+                        except ValueError as error:
+                            sys.exit(f"error: {error}")
+                    else:
+                        sys.exit(
+                            f"error: unsupported file type {resolved.suffix} for {resolved} - only {_allowed_extensions} files are supported"
+                        )
                 else:
-                    sys.exit(
-                        f"error: unsupported file type {resolved.suffix} for {resolved} - only {_allowed_extensions} files are supported"
-                    )
-            else:
-                sys.exit(f"error: `{test}` is neither a file nor a directory")
+                    sys.exit(f"error: `{test}` is neither a file nor a directory")
 
-        queue = list(todo)
-        queue.sort(key=lambda tup: str(tup[1]), reverse=True)
-        project_queue_size = len(queue)
-        job_count, enabled_flags = _summarize_harness_configuration(
-            jobs=jobs,
-            update=update,
-            coverage=coverage,
-            verbose=verbose_enabled,
-            debug=debug_enabled,
-            runner_summary=runner_summary,
-            fixture_summary=fixture_summary,
-            passthrough=passthrough_mode,
-        )
+            if interrupt_requested():
+                break
 
-        relative_path = _format_relative_path(selection.root, display_base)
-        if not project_queue_size:
+            queue = list(todo)
+            queue.sort(key=lambda tup: str(tup[1]), reverse=True)
+            project_queue_size = len(queue)
+            job_count, enabled_flags = _summarize_harness_configuration(
+                jobs=jobs,
+                update=update,
+                coverage=coverage,
+                verbose=verbose_enabled,
+                debug=debug_enabled,
+                runner_summary=runner_summary,
+                fixture_summary=fixture_summary,
+                passthrough=passthrough_mode,
+            )
+
+            relative_path = _format_relative_path(selection.root, display_base)
+            if not project_queue_size:
+                _print_project_start(
+                    relative_path=relative_path,
+                    queue_size=project_queue_size,
+                    job_count=job_count,
+                    enabled_flags=enabled_flags,
+                )
+                continue
+
+            os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
+            if not TENZIR_BINARY:
+                sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
+            try:
+                tenzir_version = get_version()
+            except FileNotFoundError:
+                sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
+
+            runner_versions = _collect_runner_versions(queue, tenzir_version=tenzir_version)
+            runner_breakdown = _runner_breakdown(
+                queue,
+                tenzir_version=tenzir_version,
+                runner_versions=runner_versions,
+            )
+
             _print_project_start(
                 relative_path=relative_path,
                 queue_size=project_queue_size,
                 job_count=job_count,
                 enabled_flags=enabled_flags,
             )
-            continue
+            count_width = max((len(str(count)) for _, count, _ in runner_breakdown), default=1)
+            for name, count, version in runner_breakdown:
+                version_segment = f" (v{version})" if version else ""
+                print(f"{INFO}   {count:>{count_width}}× {name}{version_segment}")
 
-        os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
-        if not TENZIR_BINARY:
-            sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
-        try:
-            tenzir_version = get_version()
-        except FileNotFoundError:
-            sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
+            workers = [
+                Worker(
+                    queue,
+                    update=update,
+                    coverage=coverage,
+                    runner_versions=runner_versions,
+                )
+                for _ in range(jobs)
+            ]
+            project_summary = Summary()
+            for worker in workers:
+                worker.start()
+            try:
+                for worker in workers:
+                    project_summary += worker.join()
+            except KeyboardInterrupt:  # pragma: no cover - defensive guard
+                _request_interrupt()
+                for worker in workers:
+                    worker.join()
+                break
 
-        runner_versions = _collect_runner_versions(queue, tenzir_version=tenzir_version)
-        runner_breakdown = _runner_breakdown(
-            queue,
-            tenzir_version=tenzir_version,
-            runner_versions=runner_versions,
-        )
-
-        _print_project_start(
-            relative_path=relative_path,
-            queue_size=project_queue_size,
-            job_count=job_count,
-            enabled_flags=enabled_flags,
-        )
-        count_width = max((len(str(count)) for _, count, _ in runner_breakdown), default=1)
-        for name, count, version in runner_breakdown:
-            version_segment = f" (v{version})" if version else ""
-            print(f"{INFO}   {count:>{count_width}}× {name}{version_segment}")
-
-        workers = [
-            Worker(
-                queue,
-                update=update,
-                coverage=coverage,
-                runner_versions=runner_versions,
+            _print_detailed_summary(project_summary)
+            _print_ascii_summary(
+                project_summary,
+                include_runner=runner_summary,
+                include_fixture=fixture_summary,
             )
-            for _ in range(jobs)
-        ]
-        project_summary = Summary()
-        for worker in workers:
-            worker.start()
-        for worker in workers:
-            project_summary += worker.join()
 
-        _print_detailed_summary(project_summary)
-        _print_ascii_summary(
-            project_summary,
-            include_runner=runner_summary,
-            include_fixture=fixture_summary,
-        )
+            if coverage:
+                coverage_dir = os.environ.get(
+                    "CMAKE_COVERAGE_OUTPUT_DIRECTORY", os.path.join(os.getcwd(), "coverage")
+                )
+                source_dir = str(coverage_source_dir) if coverage_source_dir else os.getcwd()
+                print(f"{INFO} Code coverage data collected in {coverage_dir}")
+                print(f"{INFO} Source directory for coverage mapping: {source_dir}")
 
-        if coverage:
-            coverage_dir = os.environ.get(
-                "CMAKE_COVERAGE_OUTPUT_DIRECTORY", os.path.join(os.getcwd(), "coverage")
-            )
-            source_dir = str(coverage_source_dir) if coverage_source_dir else os.getcwd()
-            print(f"{INFO} Code coverage data collected in {coverage_dir}")
-            print(f"{INFO} Source directory for coverage mapping: {source_dir}")
+            overall_summary += project_summary
+            overall_queue_count += project_queue_size
+            executed_projects.append(selection)
 
-        overall_summary += project_summary
-        overall_queue_count += project_queue_size
-        executed_projects.append(selection)
+            if interrupt_requested():
+                break
 
-    # Restore root project context for subsequent operations.
-    _set_project_root(settings.root)
-    engine_state.refresh()
+        # Restore root project context for subsequent operations.
+        _set_project_root(settings.root)
+        engine_state.refresh()
 
-    if purge:
-        for runner in runners_iter_runners():
-            runner.purge()
-        return
+        if purge:
+            for runner in runners_iter_runners():
+                runner.purge()
+            return
 
-    if overall_queue_count == 0:
-        print(f"{INFO} no tests selected")
-        return
+        if overall_queue_count == 0:
+            print(f"{INFO} no tests selected")
+            return
 
-    if len(executed_projects) > 1:
-        _print_aggregate_totals(len(executed_projects), overall_summary)
+        if len(executed_projects) > 1:
+            _print_aggregate_totals(len(executed_projects), overall_summary)
 
-    if overall_summary.failed > 0:
-        sys.exit(1)
+        if interrupt_requested():
+            sys.exit(130)
+
+        if overall_summary.failed > 0:
+            sys.exit(1)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

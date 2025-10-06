@@ -68,6 +68,8 @@ def _run_script(script_path: Path, args: list[str]) -> None:
     token = _push_context_from_env()
     try:
         runpy.run_path(str(script_path), run_name="__main__", init_globals=init_globals)
+    except KeyboardInterrupt as exc:  # pragma: no cover - forwarded to harness
+        raise SystemExit(130) from exc
     finally:
         if token is not None:
             _fixtures.pop_context(token)
