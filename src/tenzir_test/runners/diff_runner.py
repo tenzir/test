@@ -126,8 +126,11 @@ class DiffRunner(TqlRunner):
         else:
             expected = ref_path.read_bytes()
             if diff_bytes != expected:
-                run_mod.report_failure(test, "")
-                run_mod.print_diff(expected, diff_bytes, ref_path)
+                if run_mod.interrupt_requested():
+                    run_mod.report_interrupted_test(test)
+                else:
+                    run_mod.report_failure(test, "")
+                    run_mod.print_diff(expected, diff_bytes, ref_path)
                 return False
         run_mod.success(test)
         return True

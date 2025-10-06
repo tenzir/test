@@ -127,14 +127,20 @@ class ShellRunner(ExtRunner):
             run_mod.log_comparison(test, stdout_path, mode="comparing")
             expected_stdout = stdout_path.read_bytes()
             if expected_stdout != combined_bytes:
-                run_mod.report_failure(test, "")
-                run_mod.print_diff(expected_stdout, combined_bytes, stdout_path)
+                if run_mod.interrupt_requested():
+                    run_mod.report_interrupted_test(test)
+                else:
+                    run_mod.report_failure(test, "")
+                    run_mod.print_diff(expected_stdout, combined_bytes, stdout_path)
                 return False
         elif stdout_path.exists():
             expected_stdout = stdout_path.read_bytes()
             if expected_stdout not in {b"", b"\n"}:
-                run_mod.report_failure(test, "")
-                run_mod.print_diff(expected_stdout, b"", stdout_path)
+                if run_mod.interrupt_requested():
+                    run_mod.report_interrupted_test(test)
+                else:
+                    run_mod.report_failure(test, "")
+                    run_mod.print_diff(expected_stdout, b"", stdout_path)
                 return False
 
         run_mod.success(test)

@@ -133,8 +133,11 @@ class CustomPythonFixture(ExtRunner):
                     run_mod.log_comparison(test, ref_path, mode="comparing")
                     expected = ref_path.read_bytes()
                     if expected != output:
-                        run_mod.report_failure(test, "")
-                        run_mod.print_diff(expected, output, ref_path)
+                        if run_mod.interrupt_requested():
+                            run_mod.report_interrupted_test(test)
+                        else:
+                            run_mod.report_failure(test, "")
+                            run_mod.print_diff(expected, output, ref_path)
                         return False
             finally:
                 fixture_api.pop_context(context_token)

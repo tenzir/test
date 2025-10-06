@@ -506,6 +506,56 @@ def test_run_simple_test_passthrough_streams_output(
     assert captured.get("stdout") is None
 
 
+def test_run_simple_test_suppresses_diff_on_interrupt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    test_file = tmp_path / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    ref_path = test_file.with_suffix(".txt")
+    ref_path.write_text("expected\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=sys.executable,
+            tenzir_node_binary=None,
+        )
+    )
+
+    class FakeCompletedProcess:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = b""
+            self.stderr = b""
+
+    monkeypatch.setattr(run, "run_subprocess", lambda *args, **kwargs: FakeCompletedProcess())
+    monkeypatch.setattr(run, "interrupt_requested", lambda: True)
+
+    calls: dict[str, int] = {"interrupt": 0, "diff": 0}
+
+    def fake_report_interrupted_test(test: Path) -> None:  # noqa: ANN001
+        calls["interrupt"] += 1
+
+    def fake_print_diff(expected: bytes, actual: bytes, path: Path) -> None:  # noqa: ANN001
+        calls["diff"] += 1
+
+    monkeypatch.setattr(run, "report_interrupted_test", fake_report_interrupted_test)
+    monkeypatch.setattr(run, "print_diff", fake_print_diff)
+
+    try:
+        result = run.run_simple_test(test_file, update=False, output_ext="txt")
+    finally:
+        run.apply_settings(original_settings)
+
+    assert result is False
+    assert calls == {"interrupt": 1, "diff": 0}
+
+
 def test_parse_fixture_string(tmp_path: Path, configured_root: Path) -> None:
     test_file = tmp_path / "fixture.tql"
     test_file.write_text(

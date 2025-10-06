@@ -1312,6 +1312,12 @@ def report_failure(test: Path, message: str) -> None:
             print(message)
 
 
+def report_interrupted_test(test: Path) -> None:
+    """Emit a standardized message for user-triggered interrupts."""
+
+    report_failure(test, _INTERRUPTED_NOTICE)
+
+
 def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
     """Parse test configuration from frontmatter at the beginning of the file."""
     config = _default_test_config()
@@ -2123,8 +2129,11 @@ def run_simple_test(
         log_comparison(test, ref_path, mode="comparing")
         expected = ref_path.read_bytes()
         if expected != output:
-            report_failure(test, "")
-            print_diff(expected, output, ref_path)
+            if interrupt_requested():
+                report_interrupted_test(test)
+            else:
+                report_failure(test, "")
+                print_diff(expected, output, ref_path)
             return False
     success(test)
     return True
