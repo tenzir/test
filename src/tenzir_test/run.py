@@ -443,7 +443,11 @@ def _find_project_root(path: Path, *, base_root: Path) -> Path | None:
 
 
 def _build_execution_plan(
-    base_root: Path, raw_args: Sequence[Path], *, root_explicit: bool
+    base_root: Path,
+    raw_args: Sequence[Path],
+    *,
+    root_explicit: bool,
+    all_projects: bool = False,
 ) -> ExecutionPlan:
     root_selectors: list[Path] = []
     run_root_all = not raw_args
@@ -488,7 +492,9 @@ def _build_execution_plan(
             )
         selectors.append(resolved)
 
-    if not run_root_all and not root_selectors and root_explicit:
+    if all_projects:
+        run_root_all = True
+    elif root_explicit and not raw_args:
         run_root_all = True
 
     root_selection = ProjectSelection(
@@ -2069,6 +2075,7 @@ def run_cli(
     show_test_details: bool,
     passthrough: bool,
     jobs_overridden: bool = False,
+    all_projects: bool = False,
 ) -> None:
     from tenzir_test.engine import state as engine_state
 
@@ -2116,7 +2123,12 @@ def run_cli(
         )
         sys.exit(1)
 
-    plan = _build_execution_plan(ROOT, selected_tests, root_explicit=root is not None)
+    plan = _build_execution_plan(
+        ROOT,
+        selected_tests,
+        root_explicit=root is not None,
+        all_projects=all_projects,
+    )
     display_base = Path.cwd().resolve()
     _print_execution_plan(plan, display_base=display_base)
 

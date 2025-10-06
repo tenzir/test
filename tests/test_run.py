@@ -393,7 +393,7 @@ def test_build_execution_plan_tracks_selectors(tmp_path, monkeypatch):
     assert sat.selectors == [selection.resolve()]
 
 
-def test_root_runs_when_only_satellites_requested(tmp_path, monkeypatch):
+def test_root_skipped_when_only_satellites_requested(tmp_path, monkeypatch):
     root = tmp_path / "main"
     (root / "tests").mkdir(parents=True)
     (root / "tests" / "case.tql").touch()
@@ -406,8 +406,33 @@ def test_root_runs_when_only_satellites_requested(tmp_path, monkeypatch):
 
     plan = run._build_execution_plan(root, [Path("satellite")], root_explicit=True)
 
-    assert plan.root.run_all is True
+    assert plan.root.run_all is False
+    assert not plan.root.should_run()
     assert not plan.root.selectors
+    assert len(plan.satellites) == 1
+    assert plan.satellites[0].run_all is True
+
+
+def test_all_projects_runs_root(tmp_path, monkeypatch):
+    root = tmp_path / "main"
+    (root / "tests").mkdir(parents=True)
+    (root / "tests" / "case.tql").touch()
+
+    satellite = tmp_path / "satellite"
+    (satellite / "tests").mkdir(parents=True)
+    (satellite / "tests" / "other.tql").touch()
+
+    monkeypatch.chdir(tmp_path)
+
+    plan = run._build_execution_plan(
+        root,
+        [Path("satellite")],
+        root_explicit=False,
+        all_projects=True,
+    )
+
+    assert plan.root.run_all is True
+    assert plan.root.should_run()
     assert len(plan.satellites) == 1
     assert plan.satellites[0].run_all is True
 

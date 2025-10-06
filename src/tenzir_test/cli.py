@@ -104,6 +104,12 @@ def _normalize_exit_code(value: object) -> int:
     is_flag=True,
     help="Stream raw test output directly to the terminal.",
 )
+@click.option(
+    "-a",
+    "--all-projects",
+    is_flag=True,
+    help="Run the root project alongside any selected satellites.",
+)
 @click.pass_context
 def cli(
     ctx: click.Context,
@@ -123,6 +129,7 @@ def cli(
     jobs: int,
     show_test_details: bool,
     passthrough: bool,
+    all_projects: bool,
 ) -> None:
     """Execute tenzir-test scenarios."""
 
@@ -146,6 +153,7 @@ def cli(
         show_test_details=show_test_details,
         passthrough=passthrough,
         jobs_overridden=jobs_overridden,
+        all_projects=all_projects,
     )
 
 

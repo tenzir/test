@@ -73,7 +73,7 @@ locally helps catch packaging issues early.
   so CLI discovery picks it up automatically.
 - `example-satellite/` showcases the new satellite project support; run it
   alongside the root example with
-  `uv run tenzir-test --root example-project example-satellite`.
+  `uv run tenzir-test --root example-project --all-projects example-satellite`.
 
 ## Releasing
 
