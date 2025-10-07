@@ -203,6 +203,67 @@ def _push_test_context(
             _CURRENT_TEST_CONTEXT.value = previous
 
 
+_CURRENT_RETRY_CONTEXT = threading.local()
+
+
+@contextlib.contextmanager
+def _push_retry_context(*, attempt: int, max_attempts: int) -> Iterator[None]:
+    previous = getattr(_CURRENT_RETRY_CONTEXT, "value", None)
+    _CURRENT_RETRY_CONTEXT.value = (attempt, max_attempts)
+    try:
+        yield
+    finally:
+        setattr(_CURRENT_RETRY_CONTEXT, "last", (attempt, max_attempts))
+        if previous is None:
+            if hasattr(_CURRENT_RETRY_CONTEXT, "value"):
+                delattr(_CURRENT_RETRY_CONTEXT, "value")
+        else:
+            _CURRENT_RETRY_CONTEXT.value = previous
+
+
+def _current_retry_progress() -> tuple[int, int] | None:
+    value = getattr(_CURRENT_RETRY_CONTEXT, "value", None)
+    if (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and isinstance(value[0], int)
+        and isinstance(value[1], int)
+    ):
+        return value
+    fallback = getattr(_CURRENT_RETRY_CONTEXT, "last", None)
+    if (
+        isinstance(fallback, tuple)
+        and len(fallback) == 2
+        and isinstance(fallback[0], int)
+        and isinstance(fallback[1], int)
+    ):
+        return fallback
+    return None
+
+
+def should_suppress_failure_output() -> bool:
+    progress = getattr(_CURRENT_RETRY_CONTEXT, "value", None)
+    if (
+        isinstance(progress, tuple)
+        and len(progress) == 2
+        and isinstance(progress[0], int)
+        and isinstance(progress[1], int)
+    ):
+        attempt, max_attempts = cast(tuple[int, int], progress)
+        return attempt < max_attempts
+    return False
+
+
+def _format_attempt_suffix() -> str:
+    progress = _current_retry_progress()
+    if not progress:
+        return ""
+    attempt, max_attempts = progress
+    if attempt <= 1 or max_attempts <= 1:
+        return ""
+    return f"  \033[2;37mattempts={attempt}/{max_attempts}\033[0m"
+
+
 TEST_TMP_ENV_VAR = "TENZIR_TMP_DIR"
 _TMP_KEEP_ENV_VAR = "TENZIR_KEEP_TMP_DIRS"
 _TMP_ROOT_NAME = ".tenzir-test"
@@ -1319,7 +1380,7 @@ def enable_comparison_logging(enabled: bool) -> None:
 
 
 def log_comparison(test: Path, ref_path: Path, *, mode: str) -> None:
-    if not _verbose_logging:
+    if not _verbose_logging or should_suppress_failure_output():
         return
     rel_test = _relativize_path(test)
     rel_ref = _relativize_path(ref_path)
@@ -1327,6 +1388,8 @@ def log_comparison(test: Path, ref_path: Path, *, mode: str) -> None:
 
 
 def report_failure(test: Path, message: str) -> None:
+    if should_suppress_failure_output():
+        return
     with stdout_lock:
         fail(test)
         if message:
@@ -1952,14 +2015,16 @@ def success(test: Path) -> None:
     with stdout_lock:
         rel_test = _relativize_path(test)
         suffix = _format_run_context_suffix()
-        print(f"{CHECKMARK} {rel_test}{suffix}")
+        attempt_suffix = _format_attempt_suffix()
+        print(f"{CHECKMARK} {rel_test}{suffix}{attempt_suffix}")
 
 
 def fail(test: Path) -> None:
     with stdout_lock:
         rel_test = _relativize_path(test)
         suffix = _format_run_context_suffix()
-        print(f"{CROSS} {rel_test}{suffix}")
+        attempt_suffix = _format_attempt_suffix()
+        print(f"{CROSS} {rel_test}{suffix}{attempt_suffix}")
 
 
 def last_and(items: Iterable[T]) -> Iterator[tuple[bool, T]]:
@@ -1975,6 +2040,8 @@ def last_and(items: Iterable[T]) -> Iterator[tuple[bool, T]]:
 
 
 def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
+    if should_suppress_failure_output():
+        return
     diff = list(
         difflib.diff_bytes(
             difflib.unified_diff,
@@ -2117,6 +2184,8 @@ def run_simple_test(
 
     if expect_error == good:
         interrupted = _is_interrupt_exit(completed.returncode) or interrupt_requested()
+        if should_suppress_failure_output() and not interrupted:
+            return False
         if interrupted:
             _request_interrupt()
         message = (
@@ -2258,38 +2327,37 @@ class Worker:
                     if interrupt_requested():
                         break
                     attempts += 1
-                    context = (
-                        _push_test_context(
-                            runner_name=runner.name,
-                            runner_version=self._runner_versions.get(runner.name),
-                            fixtures=fixtures,
-                        )
-                        if SHOW_TEST_DETAILS
-                        else contextlib.nullcontext()
-                    )
-                    interrupted = False
-                    try:
-                        with context:
-                            outcome = runner.run(test_path, self._update, self._coverage)
-                    except KeyboardInterrupt:  # pragma: no cover - defensive guard
-                        _request_interrupt()
-                        interrupted = True
-                        outcome = False
-
-                    if interrupted:
-                        report_failure(test_path, _INTERRUPTED_NOTICE)
-                        final_interrupted = True
-                    final_outcome = outcome
-                    if final_interrupted or interrupt_requested():
-                        break
-                    if outcome == "skipped" or outcome:
-                        break
-                    if attempts < max_attempts:
-                        with stdout_lock:
-                            print(
-                                f"{INFO} retrying {rel_path} "
-                                f"(attempt {attempts + 1}/{max_attempts})"
+                    with _push_retry_context(attempt=attempts, max_attempts=max_attempts):
+                        context = (
+                            _push_test_context(
+                                runner_name=runner.name,
+                                runner_version=self._runner_versions.get(runner.name),
+                                fixtures=fixtures,
                             )
+                            if SHOW_TEST_DETAILS
+                            else contextlib.nullcontext()
+                        )
+                        interrupted = False
+                        try:
+                            with context:
+                                outcome = runner.run(test_path, self._update, self._coverage)
+                        except KeyboardInterrupt:  # pragma: no cover - defensive guard
+                            _request_interrupt()
+                            interrupted = True
+                            outcome = False
+
+                        if interrupted:
+                            report_failure(test_path, _INTERRUPTED_NOTICE)
+                            final_interrupted = True
+                        final_outcome = outcome
+                        if final_interrupted or interrupt_requested():
+                            break
+                        if outcome == "skipped" or outcome:
+                            break
+                        if attempts < max_attempts:
+                            # keep the loop silent between attempts; only the final
+                            # outcome is reported to avoid noisy logs
+                            continue
                 result.total += 1
                 result.record_runner_outcome(runner.name, final_outcome)
                 if fixtures:
@@ -2300,10 +2368,6 @@ class Worker:
                 elif not final_outcome:
                     result.failed += 1
                     result.failed_paths.append(rel_path)
-                else:
-                    if attempts > 1:
-                        with stdout_lock:
-                            print(f"{INFO} {rel_path} passed after {attempts} attempts")
                 if final_interrupted or interrupt_requested():
                     break
             return result
@@ -2417,7 +2481,7 @@ def run_cli(
         if not _is_project_root(ROOT):
             print(
                 f"{INFO} no tenzir-test project detected at {ROOT}.\n"
-                f"{INFO} Run from your project root or provide --root."
+                f"{INFO} run from your project root or provide --root."
             )
             if selected_tests:
                 sample = ", ".join(str(path) for path in selected_tests[:3])

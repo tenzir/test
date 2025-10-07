@@ -28,7 +28,7 @@ def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
     assert lines[0].startswith(f"{run.INFO} no tenzir-test project detected")
-    assert lines[1] == f"{run.INFO} Run from your project root or provide --root."
+    assert lines[1] == f"{run.INFO} run from your project root or provide --root."
 
 
 def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, capsys):
@@ -47,7 +47,7 @@ def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, c
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
     assert lines[0].startswith(f"{run.INFO} no tenzir-test project detected")
-    assert lines[1] == f"{run.INFO} Run from your project root or provide --root."
+    assert lines[1] == f"{run.INFO} run from your project root or provide --root."
     assert lines[2] == f"{run.INFO} Ignoring provided selection(s): tests/sample.tql"
 
 

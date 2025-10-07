@@ -66,23 +66,27 @@ class ShellRunner(ExtRunner):
 
         good = completed.returncode == 0
         if expect_error == good:
+            suppressed = run_mod.should_suppress_failure_output()
             if passthrough:
-                run_mod.report_failure(
-                    test,
-                    f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m",
-                )
-            else:
-                with run_mod.stdout_lock:
+                if not suppressed:
                     run_mod.report_failure(
                         test,
                         f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m",
                     )
-                    stdout = completed.stdout or b""
-                    for last, line in run_mod.last_and(stdout.split(b"\n")):
-                        prefix = "│ " if not last else "└─"
-                        sys.stdout.buffer.write(prefix.encode() + line + b"\n")
-                    if completed.stderr:
-                        sys.stdout.buffer.write(completed.stderr)
+                return False
+            if suppressed:
+                return False
+            with run_mod.stdout_lock:
+                run_mod.report_failure(
+                    test,
+                    f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m",
+                )
+                stdout = completed.stdout or b""
+                for last, line in run_mod.last_and(stdout.split(b"\n")):
+                    prefix = "│ " if not last else "└─"
+                    sys.stdout.buffer.write(prefix.encode() + line + b"\n")
+                if completed.stderr:
+                    sys.stdout.buffer.write(completed.stderr)
             return False
 
         if passthrough:

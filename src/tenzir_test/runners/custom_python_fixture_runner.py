@@ -148,6 +148,9 @@ class CustomPythonFixture(ExtRunner):
             )
             return False
         except subprocess.CalledProcessError as e:
+            suppressed = run_mod.should_suppress_failure_output()
+            if suppressed:
+                return False
             with run_mod.stdout_lock:
                 run_mod.fail(test)
                 if not passthrough:
