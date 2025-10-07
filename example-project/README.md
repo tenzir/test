@@ -30,7 +30,9 @@ example-project/
     ├── http-fixture-use.{tql,txt}
     ├── node-fixture-use.{tql,txt}
     ├── python/
-    │   ├── pure-python/hello_world.{py,txt}
+    │   ├── pure-python/
+    │   │   ├── flaky_coin.{py,txt}
+    │   │   └── hello_world.{py,txt}
     │   ├── executor-only/sum.{py,txt}
     │   ├── executor-with-http-fixture/request.{py,txt}
     │   ├── executor-with-node-fixture/context-manager.{py,txt}
@@ -52,7 +54,11 @@ example-project/
   runner that transforms `.xxd` inputs and compares the hex dump against a
   captured baseline.
 - **Python basics** (`tests/python/pure-python`): show how the Python runner
-  behaves without invoking Tenzir—handy for script-style checks.
+  behaves without invoking Tenzir—handy for script-style checks such as
+  `hello_world.py`.
+- **Flaky retry demo** (`tests/python/pure-python/flaky_coin.py`): a coin flip
+  capped at five attempts (`retry: 5`) that eventually reports `heads`, showing
+  how the harness refires flaky logic until it stabilizes.
 - **Executor examples** (`tests/python/executor-*`): exercise the `Executor`
   helper against the built-in `node` fixture and the project-defined HTTP
   fixture.

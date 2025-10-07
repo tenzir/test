@@ -31,6 +31,26 @@ def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
     assert lines[1] == f"{run.INFO} Run from your project root or provide --root."
 
 
+def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, capsys):
+    original_settings = run._settings
+    monkeypatch.setenv("TENZIR_TEST_ROOT", str(tmp_path))
+    monkeypatch.delenv("TENZIR_BINARY", raising=False)
+    monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
+
+    with pytest.raises(SystemExit) as exc:
+        try:
+            run.main(["tests/sample.tql"])
+        finally:
+            run.apply_settings(original_settings)
+
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    lines = [line for line in captured.out.splitlines() if line]
+    assert lines[0].startswith(f"{run.INFO} no tenzir-test project detected")
+    assert lines[1] == f"{run.INFO} Run from your project root or provide --root."
+    assert lines[2] == f"{run.INFO} Ignoring provided selection(s): tests/sample.tql"
+
+
 def test_format_summary_reports_counts_and_percentages() -> None:
     summary = run.Summary(failed=1, total=357, skipped=3)
     message = run._format_summary(summary)
@@ -321,6 +341,65 @@ def test_worker_prints_passthrough_header(
 
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
     assert any("running tests/sample.tql" in line and "[passthrough]" in line for line in lines)
+
+
+def test_worker_retries_failed_tests(tmp_path: Path) -> None:
+    test_dir = tmp_path / "tests"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    test_file = test_dir / "flaky.tql"
+    test_file.write_text(
+        """---
+retry: 3
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    class FlakyRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="flaky")
+            self.calls = 0
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            self.calls += 1
+            return self.calls >= 3
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    try:
+        runner = FlakyRunner()
+        queue: list[tuple[run.Runner, Path]] = [(runner, test_file)]
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+    finally:
+        run.apply_settings(original_settings)
+
+    assert runner.calls == 3
+    assert summary.failed == 0
+    assert summary.total == 1
 
 
 def test_detailed_summary_order(capsys):

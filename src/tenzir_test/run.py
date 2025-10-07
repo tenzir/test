@@ -781,6 +781,7 @@ def _default_test_config() -> TestConfig:
         "skip": None,
         "fixtures": tuple(),
         "inputs": None,
+        "retry": 1,
     }
 
 
@@ -894,7 +895,7 @@ def _assign_config_option(
     line_number: int | None = None,
 ) -> None:
     canonical = _canonical_config_key(key)
-    valid_keys: set[str] = {"error", "timeout", "runner", "skip", "fixtures", "inputs"}
+    valid_keys: set[str] = {"error", "timeout", "runner", "skip", "fixtures", "inputs", "retry"}
     if canonical not in valid_keys:
         _raise_config_error(location, f"Unknown configuration key '{key}'", line_number)
 
@@ -955,6 +956,26 @@ def _assign_config_option(
         config[canonical] = _normalize_inputs_value(
             value, location=location, line_number=line_number
         )
+        return
+    if canonical == "retry":
+        if isinstance(value, int):
+            retry_value = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            retry_value = int(value)
+        else:
+            _raise_config_error(
+                location,
+                f"Invalid value for 'retry', expected integer, got '{value}'",
+                line_number,
+            )
+            return
+        if retry_value <= 0:
+            _raise_config_error(
+                location,
+                f"Invalid value for 'retry', expected positive integer, got '{value}'",
+                line_number,
+            )
+        config[canonical] = retry_value
         return
 
     if canonical == "runner":
@@ -2210,6 +2231,16 @@ class Worker:
                 if interrupt_requested():
                     break
                 fixtures = _get_test_fixtures(test_path, coverage=self._coverage)
+                retry_limit = 1
+                retry_config: TestConfig | None = None
+                try:
+                    retry_config = parse_test_config(test_path, coverage=self._coverage)
+                except ValueError:
+                    retry_config = None
+                if retry_config is not None:
+                    raw_retry = retry_config.get("retry", 0)
+                    if isinstance(raw_retry, int):
+                        retry_limit = max(1, raw_retry)
                 if is_passthrough_enabled():
                     rel_path = _relativize_path(test_path)
                     detail_bits = [f"runner={runner.name}"]
@@ -2218,38 +2249,62 @@ class Worker:
                     detail_segment = f" ({', '.join(detail_bits)})" if detail_bits else ""
                     with stdout_lock:
                         print(f"{INFO} running {rel_path}{detail_segment} [passthrough]")
-                context = (
-                    _push_test_context(
-                        runner_name=runner.name,
-                        runner_version=self._runner_versions.get(runner.name),
-                        fixtures=fixtures,
-                    )
-                    if SHOW_TEST_DETAILS
-                    else contextlib.nullcontext()
-                )
-                interrupted = False
-                try:
-                    with context:
-                        outcome = runner.run(test_path, self._update, self._coverage)
-                except KeyboardInterrupt:  # pragma: no cover - defensive guard
-                    _request_interrupt()
-                    interrupted = True
-                    outcome = False
-
-                if interrupted:
-                    report_failure(test_path, _INTERRUPTED_NOTICE)
-                result.total += 1
-                result.record_runner_outcome(runner.name, outcome)
-                if fixtures:
-                    result.record_fixture_outcome(fixtures, outcome)
+                max_attempts = retry_limit
+                attempts = 0
+                final_outcome: bool | str = False
+                final_interrupted = False
                 rel_path = _relativize_path(test_path)
-                if outcome == "skipped":
+                while attempts < max_attempts:
+                    if interrupt_requested():
+                        break
+                    attempts += 1
+                    context = (
+                        _push_test_context(
+                            runner_name=runner.name,
+                            runner_version=self._runner_versions.get(runner.name),
+                            fixtures=fixtures,
+                        )
+                        if SHOW_TEST_DETAILS
+                        else contextlib.nullcontext()
+                    )
+                    interrupted = False
+                    try:
+                        with context:
+                            outcome = runner.run(test_path, self._update, self._coverage)
+                    except KeyboardInterrupt:  # pragma: no cover - defensive guard
+                        _request_interrupt()
+                        interrupted = True
+                        outcome = False
+
+                    if interrupted:
+                        report_failure(test_path, _INTERRUPTED_NOTICE)
+                        final_interrupted = True
+                    final_outcome = outcome
+                    if final_interrupted or interrupt_requested():
+                        break
+                    if outcome == "skipped" or outcome:
+                        break
+                    if attempts < max_attempts:
+                        with stdout_lock:
+                            print(
+                                f"{INFO} retrying {rel_path} "
+                                f"(attempt {attempts + 1}/{max_attempts})"
+                            )
+                result.total += 1
+                result.record_runner_outcome(runner.name, final_outcome)
+                if fixtures:
+                    result.record_fixture_outcome(fixtures, final_outcome)
+                if final_outcome == "skipped":
                     result.skipped += 1
                     result.skipped_paths.append(rel_path)
-                elif not outcome:
+                elif not final_outcome:
                     result.failed += 1
                     result.failed_paths.append(rel_path)
-                if interrupted or interrupt_requested():
+                else:
+                    if attempts > 1:
+                        with stdout_lock:
+                            print(f"{INFO} {rel_path} passed after {attempts} attempts")
+                if final_interrupted or interrupt_requested():
                     break
             return result
         except Exception as exc:  # pragma: no cover - defensive logging
@@ -2364,6 +2419,11 @@ def run_cli(
                 f"{INFO} no tenzir-test project detected at {ROOT}.\n"
                 f"{INFO} Run from your project root or provide --root."
             )
+            if selected_tests:
+                sample = ", ".join(str(path) for path in selected_tests[:3])
+                if len(selected_tests) > 3:
+                    sample += ", ..."
+                print(f"{INFO} Ignoring provided selection(s): {sample}")
             sys.exit(1)
 
         plan = _build_execution_plan(

@@ -41,6 +41,7 @@ def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> No
     assert config["skip"] is None
     assert config["fixtures"] == tuple()
     assert config["inputs"] is None
+    assert config["retry"] == 1
 
 
 def test_parse_test_config_override(tmp_path: Path, configured_root: Path) -> None:
@@ -68,6 +69,7 @@ write_json
         "skip": "reason",
         "fixtures": tuple(),
         "inputs": None,
+        "retry": 1,
     }
 
 
@@ -96,6 +98,7 @@ write_json
         "skip": "maintenance",
         "fixtures": tuple(),
         "inputs": None,
+        "retry": 1,
     }
 
 
@@ -260,6 +263,7 @@ print("ok")
         "skip": None,
         "fixtures": tuple(),
         "inputs": None,
+        "retry": 1,
     }
 
 
@@ -270,6 +274,42 @@ def test_parse_python_default_runner(tmp_path: Path, configured_root: Path) -> N
     config = run.parse_test_config(test_file)
 
     assert config["runner"] == "python"
+    assert config["retry"] == 1
+
+
+def test_parse_test_config_retry_option(tmp_path: Path, configured_root: Path) -> None:
+    test_file = tmp_path / "flaky.tql"
+    test_file.write_text(
+        """---
+retry: 3
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    config = run.parse_test_config(test_file)
+
+    assert config["retry"] == 3
+
+
+def test_parse_test_config_rejects_negative_retry(tmp_path: Path, configured_root: Path) -> None:
+    test_file = tmp_path / "flaky.tql"
+    test_file.write_text(
+        """---
+retry: -1
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid value for 'retry'"):
+        run.parse_test_config(test_file)
 
 
 def test_collect_all_tests_skips_inputs(configured_root: Path) -> None:
