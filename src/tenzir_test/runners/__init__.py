@@ -118,11 +118,19 @@ def allowed_extensions() -> set[str]:
 def get_runner_for_test(test_path: Path) -> Runner:
     from tenzir_test import run as run_module
 
-    config = run_module.parse_test_config(test_path)
-    runner_value = config.get("runner")
-    if not isinstance(runner_value, str):
-        raise ValueError("Runner 'runner' must be a string")
-    runner_name = runner_value
+    try:
+        config = run_module.parse_test_config(test_path)
+    except ValueError:
+        suffix = test_path.suffix.lower()
+        default_name = run_module.default_runner_for_suffix(suffix)
+        if not default_name:
+            raise
+        runner_name = default_name
+    else:
+        runner_value = config.get("runner")
+        if not isinstance(runner_value, str):
+            raise ValueError("Runner 'runner' must be a string")
+        runner_name = runner_value
     if runner_name in RUNNERS_BY_NAME:
         return RUNNERS_BY_NAME[runner_name]
     raise ValueError(f"Runner '{runner_name}' not found - this is a bug")

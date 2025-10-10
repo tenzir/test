@@ -1,6 +1,6 @@
 #!/bin/sh
-# fixtures: [http]
 # timeout: 10
+# fixtures: [http]
 
 set -eu
 

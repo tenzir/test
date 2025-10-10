@@ -45,7 +45,53 @@ from .runners import (
 
 TestConfig = dict[str, object]
 
-RunnerQueueItem = tuple[Runner, Path]
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class TestQueueItem:
+    runner: Runner
+    path: Path
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SuiteInfo:
+    name: str
+    directory: Path
+
+
+@dataclasses.dataclass(slots=True)
+class SuiteQueueItem:
+    suite: SuiteInfo
+    tests: list[TestQueueItem]
+    fixtures: tuple[str, ...]
+
+
+@dataclasses.dataclass(slots=True)
+class SuiteCandidate:
+    tests: list[TestQueueItem]
+    fixtures: tuple[str, ...] | None = None
+    parse_error: bool = False
+    fixture_mismatch: bool = False
+    mismatch_example: tuple[str, ...] | None = None
+    mismatch_path: Path | None = None
+
+    def record_fixtures(self, fixtures: tuple[str, ...]) -> None:
+        if self.fixtures is None:
+            self.fixtures = fixtures
+            return
+        if self.fixtures != fixtures:
+            self.fixture_mismatch = True
+            self.mismatch_example = fixtures
+            if self.tests:
+                self.mismatch_path = self.tests[-1].path
+
+    def mark_parse_error(self) -> None:
+        self.parse_error = True
+
+    def is_valid(self) -> bool:
+        return not self.parse_error and not self.fixture_mismatch
+
+
+RunnerQueueItem = TestQueueItem | SuiteQueueItem
 
 
 @dataclasses.dataclass(slots=True)
@@ -204,6 +250,34 @@ def _push_test_context(
 
 
 _CURRENT_RETRY_CONTEXT = threading.local()
+_CURRENT_SUITE_CONTEXT = threading.local()
+
+
+@contextlib.contextmanager
+def _push_suite_context(*, name: str, index: int, total: int) -> Iterator[None]:
+    previous = getattr(_CURRENT_SUITE_CONTEXT, "value", None)
+    _CURRENT_SUITE_CONTEXT.value = (name, index, total)
+    try:
+        yield
+    finally:
+        if previous is None:
+            if hasattr(_CURRENT_SUITE_CONTEXT, "value"):
+                delattr(_CURRENT_SUITE_CONTEXT, "value")
+        else:
+            _CURRENT_SUITE_CONTEXT.value = previous
+
+
+def _current_suite_progress() -> tuple[str, int, int] | None:
+    value = getattr(_CURRENT_SUITE_CONTEXT, "value", None)
+    if (
+        isinstance(value, tuple)
+        and len(value) == 3
+        and isinstance(value[0], str)
+        and isinstance(value[1], int)
+        and isinstance(value[2], int)
+    ):
+        return value
+    return None
 
 
 @contextlib.contextmanager
@@ -262,6 +336,16 @@ def _format_attempt_suffix() -> str:
     if attempt <= 1 or max_attempts <= 1:
         return ""
     return f"  \033[2;37mattempts={attempt}/{max_attempts}\033[0m"
+
+
+def _format_suite_suffix() -> str:
+    progress = _current_suite_progress()
+    if not progress:
+        return ""
+    name, index, total = progress
+    if not name or total <= 0:
+        return ""
+    return f"  \033[2;37msuite={name} ({index}/{total})\033[0m"
 
 
 TEST_TMP_ENV_VAR = "TENZIR_TMP_DIR"
@@ -843,6 +927,7 @@ def _default_test_config() -> TestConfig:
         "fixtures": tuple(),
         "inputs": None,
         "retry": 1,
+        "suite": None,
     }
 
 
@@ -850,6 +935,9 @@ def _canonical_config_key(key: str) -> str:
     if key == "fixture":
         return "fixtures"
     return key
+
+
+ConfigOrigin = Literal["directory", "frontmatter"]
 
 
 def _raise_config_error(location: Path | str, message: str, line_number: int | None = None) -> None:
@@ -954,11 +1042,30 @@ def _assign_config_option(
     *,
     location: Path | str,
     line_number: int | None = None,
+    origin: ConfigOrigin,
 ) -> None:
     canonical = _canonical_config_key(key)
     valid_keys: set[str] = {"error", "timeout", "runner", "skip", "fixtures", "inputs", "retry"}
+    if origin == "directory":
+        valid_keys.add("suite")
     if canonical not in valid_keys:
         _raise_config_error(location, f"Unknown configuration key '{key}'", line_number)
+
+    if canonical == "suite":
+        if origin != "directory":
+            _raise_config_error(
+                location,
+                "'suite' can only be specified in directory-level test.yaml files",
+                line_number,
+            )
+        if not isinstance(value, str) or not value.strip():
+            _raise_config_error(
+                location,
+                "'suite' value must be a non-empty string",
+                line_number,
+            )
+        config[canonical] = value.strip()
+        return
 
     if canonical == "skip":
         if not isinstance(value, str) or not value.strip():
@@ -1008,6 +1115,13 @@ def _assign_config_option(
         return
 
     if canonical == "fixtures":
+        suite_value = config.get("suite")
+        if origin == "frontmatter" and isinstance(suite_value, str) and suite_value.strip():
+            _raise_config_error(
+                location,
+                "'fixtures' cannot be specified in test frontmatter within a suite; configure fixtures in test.yaml",
+                line_number,
+            )
         config[canonical] = _normalize_fixtures_value(
             value, location=location, line_number=line_number
         )
@@ -1019,6 +1133,12 @@ def _assign_config_option(
         )
         return
     if canonical == "retry":
+        if origin == "frontmatter" and isinstance(config.get("suite"), str):
+            _raise_config_error(
+                location,
+                "'retry' cannot be overridden in test frontmatter within a suite",
+                line_number,
+            )
         if isinstance(value, int):
             retry_value = value
         elif isinstance(value, str) and value.strip().isdigit():
@@ -1109,6 +1229,7 @@ def _load_directory_config(directory: Path) -> _DirectoryConfig:
                 key,
                 raw_value,
                 location=config_path,
+                origin="directory",
             )
             new_value = values.get(key)
             if (
@@ -1133,6 +1254,27 @@ def _load_directory_config(directory: Path) -> _DirectoryConfig:
 def _get_directory_defaults(directory: Path) -> TestConfig:
     config = _load_directory_config(directory).values
     return dict(config)
+
+
+def _resolve_suite_for_test(test: Path) -> SuiteInfo | None:
+    directory_config = _load_directory_config(test.parent)
+    suite_value = directory_config.values.get("suite")
+    if not isinstance(suite_value, str) or not suite_value.strip():
+        return None
+    suite_source = directory_config.sources.get("suite")
+    if suite_source is None:
+        return None
+    suite_dir = suite_source.parent
+    try:
+        resolved_dir = suite_dir.resolve()
+    except OSError:
+        resolved_dir = suite_dir
+    try:
+        test.resolve().relative_to(resolved_dir)
+    except (OSError, ValueError):
+        # Only treat as a suite when the test lives under the suite directory.
+        return None
+    return SuiteInfo(name=suite_value.strip(), directory=resolved_dir)
 
 
 def _clear_directory_config_cache() -> None:
@@ -1211,6 +1353,10 @@ def update_registry_metadata(names: list[str], extensions: list[str]) -> None:
 
 def get_allowed_extensions() -> set[str]:
     return set(_allowed_extensions)
+
+
+def default_runner_for_suffix(suffix: str) -> str | None:
+    return _DEFAULT_RUNNER_BY_SUFFIX.get(suffix)
 
 
 def _resolve_inputs_dir(root: Path) -> Path:
@@ -1443,7 +1589,13 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
             if not isinstance(yaml_data, dict):
                 _error("YAML frontmatter must define a mapping")
             for key, value in yaml_data.items():
-                _assign_config_option(config, str(key), value, location=test_file)
+                _assign_config_option(
+                    config,
+                    str(key),
+                    value,
+                    location=test_file,
+                    origin="frontmatter",
+                )
 
     if not consumed_frontmatter and is_comment_frontmatter:
         line_number = 0
@@ -1469,6 +1621,7 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
                 value,
                 location=test_file,
                 line_number=line_number,
+                origin="frontmatter",
             )
 
     if coverage:
@@ -1492,6 +1645,8 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
                 )
             default_runner = matching_names[0]
         config["runner"] = default_runner
+    if config.get("suite") is None:
+        config.pop("suite", None)
     return config
 
 
@@ -1656,6 +1811,101 @@ def _summarize_runner_plan(
     return ", ".join(parts)
 
 
+def _iter_queue_tests(queue: Sequence[RunnerQueueItem]) -> Iterator[TestQueueItem]:
+    for item in queue:
+        if isinstance(item, SuiteQueueItem):
+            yield from item.tests
+        else:
+            yield item
+
+
+def _suite_test_sort_key(directory: Path, path: Path) -> str:
+    try:
+        relative = path.relative_to(directory)
+    except ValueError:
+        return path.as_posix()
+    return relative.as_posix()
+
+
+def _queue_sort_key(item: RunnerQueueItem) -> str:
+    if isinstance(item, SuiteQueueItem):
+        if item.tests:
+            return str(item.tests[0].path)
+        return str(item.suite.directory)
+    return str(item.path)
+
+
+def _path_is_within(path: Path, directory: Path) -> bool:
+    try:
+        path.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
+def _build_queue_from_paths(
+    paths: Iterable[Path],
+    *,
+    coverage: bool,
+) -> list[RunnerQueueItem]:
+    suite_groups: dict[SuiteInfo, SuiteCandidate] = {}
+    individuals: dict[Path, TestQueueItem] = {}
+
+    for test_path in sorted({path.resolve() for path in paths}, key=lambda p: str(p)):
+        try:
+            runner = get_runner_for_test(test_path)
+        except ValueError as error:
+            sys.exit(f"error: {error}")
+
+        suite_info = _resolve_suite_for_test(test_path)
+        test_item = TestQueueItem(runner=runner, path=test_path)
+        if suite_info is None:
+            individuals[test_path] = test_item
+            continue
+
+        candidate = suite_groups.setdefault(suite_info, SuiteCandidate(tests=[]))
+        candidate.tests.append(test_item)
+        try:
+            config = parse_test_config(test_path, coverage=coverage)
+        except ValueError:
+            candidate.mark_parse_error()
+            continue
+        fixtures = cast(tuple[str, ...], config.get("fixtures", tuple()))
+        candidate.record_fixtures(fixtures)
+
+    queue: list[RunnerQueueItem] = []
+    for suite_info, candidate in suite_groups.items():
+        if candidate.fixture_mismatch:
+            example = candidate.mismatch_example or tuple()
+            expected = candidate.fixtures or tuple()
+            config_path = suite_info.directory / _CONFIG_FILE_NAME
+            expected_list = ", ".join(expected) or "<none>"
+            example_list = ", ".join(example) or "<none>"
+            mismatch_path = candidate.mismatch_path or (
+                candidate.tests[-1].path if candidate.tests else None
+            )
+            location_detail = (
+                f" ({_relativize_path(mismatch_path)})" if mismatch_path is not None else ""
+            )
+            sys.exit(
+                f"error: suite '{suite_info.name}' defined in {config_path} must use identical fixtures "
+                f"across tests (expected: {expected_list}, found: {example_list}{location_detail})"
+            )
+        if not candidate.is_valid() or not candidate.tests:
+            for test_item in candidate.tests:
+                individuals[test_item.path] = test_item
+            continue
+        fixtures = candidate.fixtures or tuple()
+        sorted_tests = sorted(
+            candidate.tests,
+            key=lambda item: _suite_test_sort_key(suite_info.directory, item.path),
+        )
+        queue.append(SuiteQueueItem(suite=suite_info, tests=sorted_tests, fixtures=fixtures))
+
+    queue.extend(individuals.values())
+    return queue
+
+
 def _collect_runner_versions(
     queue: Sequence[RunnerQueueItem],
     *,
@@ -1665,10 +1915,10 @@ def _collect_runner_versions(
     if tenzir_version:
         versions["tenzir"] = tenzir_version
 
-    for runner, _ in queue:
-        attr = getattr(runner, "version", None)
+    for item in _iter_queue_tests(queue):
+        attr = getattr(item.runner, "version", None)
         if isinstance(attr, str) and attr:
-            versions.setdefault(runner.name, attr)
+            versions.setdefault(item.runner.name, attr)
     return versions
 
 
@@ -1679,8 +1929,8 @@ def _runner_breakdown(
     runner_versions: Mapping[str, str] | None = None,
 ) -> list[tuple[str, int, str | None]]:
     counts: dict[str, int] = {}
-    for runner, _ in queue:
-        counts[runner.name] = counts.get(runner.name, 0) + 1
+    for item in _iter_queue_tests(queue):
+        counts[item.runner.name] = counts.get(item.runner.name, 0) + 1
 
     breakdown: list[tuple[str, int, str | None]] = []
     for name in sorted(counts):
@@ -2015,8 +2265,9 @@ def success(test: Path) -> None:
     with stdout_lock:
         rel_test = _relativize_path(test)
         suffix = _format_run_context_suffix()
+        suite_suffix = _format_suite_suffix()
         attempt_suffix = _format_attempt_suffix()
-        print(f"{CHECKMARK} {rel_test}{suffix}{attempt_suffix}")
+        print(f"{CHECKMARK} {rel_test}{suffix}{suite_suffix}{attempt_suffix}")
 
 
 def fail(test: Path) -> None:
@@ -2024,7 +2275,8 @@ def fail(test: Path) -> None:
         rel_test = _relativize_path(test)
         suffix = _format_run_context_suffix()
         attempt_suffix = _format_attempt_suffix()
-        print(f"{CROSS} {rel_test}{suffix}{attempt_suffix}")
+        suite_suffix = _format_suite_suffix()
+        print(f"{CROSS} {rel_test}{suffix}{suite_suffix}{attempt_suffix}")
 
 
 def last_and(items: Iterable[T]) -> Iterator[tuple[bool, T]]:
@@ -2232,7 +2484,8 @@ def run_simple_test(
 def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool | str:
     rel_path = _relativize_path(test)
     suffix = _format_run_context_suffix()
-    print(f"{SKIP} skipped {rel_path}{suffix}: {reason}")
+    suite_suffix = _format_suite_suffix()
+    print(f"{SKIP} skipped {rel_path}{suffix}{suite_suffix}: {reason}")
     ref_path = test.with_suffix(f".{output_ext}")
     if update:
         with ref_path.open("wb") as f:
@@ -2254,6 +2507,27 @@ def refresh_runner_metadata() -> None:
 
 
 refresh_runner_metadata()
+
+
+SUITE_DEBUG_LOGGING = False
+
+
+def set_suite_debug_logging(enabled: bool) -> None:
+    global SUITE_DEBUG_LOGGING
+    SUITE_DEBUG_LOGGING = enabled
+
+
+def _log_suite_event(
+    suite: SuiteInfo,
+    *,
+    event: Literal["setup", "teardown"],
+    total: int,
+) -> None:
+    if not SUITE_DEBUG_LOGGING:
+        return
+    rel_dir = _relativize_path(suite.directory)
+    action = "setting up" if event == "setup" else "tearing down"
+    print(f"{DEBUG_PREFIX} suite {action} {suite.name} ({total} tests) @ {rel_dir}")
 
 
 class Worker:
@@ -2292,83 +2566,15 @@ class Worker:
                 if interrupt_requested():
                     break
                 try:
-                    item = self._queue.pop()
+                    queue_item = self._queue.pop()
                 except IndexError:
                     break
 
-                runner, test_path = item
+                if isinstance(queue_item, SuiteQueueItem):
+                    self._run_suite(queue_item, result)
+                else:
+                    self._run_test_item(queue_item, result)
                 if interrupt_requested():
-                    break
-                fixtures = _get_test_fixtures(test_path, coverage=self._coverage)
-                retry_limit = 1
-                retry_config: TestConfig | None = None
-                try:
-                    retry_config = parse_test_config(test_path, coverage=self._coverage)
-                except ValueError:
-                    retry_config = None
-                if retry_config is not None:
-                    raw_retry = retry_config.get("retry", 0)
-                    if isinstance(raw_retry, int):
-                        retry_limit = max(1, raw_retry)
-                if is_passthrough_enabled():
-                    rel_path = _relativize_path(test_path)
-                    detail_bits = [f"runner={runner.name}"]
-                    if fixtures:
-                        detail_bits.append(f"fixtures={', '.join(fixtures)}")
-                    detail_segment = f" ({', '.join(detail_bits)})" if detail_bits else ""
-                    with stdout_lock:
-                        print(f"{INFO} running {rel_path}{detail_segment} [passthrough]")
-                max_attempts = retry_limit
-                attempts = 0
-                final_outcome: bool | str = False
-                final_interrupted = False
-                rel_path = _relativize_path(test_path)
-                while attempts < max_attempts:
-                    if interrupt_requested():
-                        break
-                    attempts += 1
-                    with _push_retry_context(attempt=attempts, max_attempts=max_attempts):
-                        context = (
-                            _push_test_context(
-                                runner_name=runner.name,
-                                runner_version=self._runner_versions.get(runner.name),
-                                fixtures=fixtures,
-                            )
-                            if SHOW_TEST_DETAILS
-                            else contextlib.nullcontext()
-                        )
-                        interrupted = False
-                        try:
-                            with context:
-                                outcome = runner.run(test_path, self._update, self._coverage)
-                        except KeyboardInterrupt:  # pragma: no cover - defensive guard
-                            _request_interrupt()
-                            interrupted = True
-                            outcome = False
-
-                        if interrupted:
-                            report_failure(test_path, _INTERRUPTED_NOTICE)
-                            final_interrupted = True
-                        final_outcome = outcome
-                        if final_interrupted or interrupt_requested():
-                            break
-                        if outcome == "skipped" or outcome:
-                            break
-                        if attempts < max_attempts:
-                            # keep the loop silent between attempts; only the final
-                            # outcome is reported to avoid noisy logs
-                            continue
-                result.total += 1
-                result.record_runner_outcome(runner.name, final_outcome)
-                if fixtures:
-                    result.record_fixture_outcome(fixtures, final_outcome)
-                if final_outcome == "skipped":
-                    result.skipped += 1
-                    result.skipped_paths.append(rel_path)
-                elif not final_outcome:
-                    result.failed += 1
-                    result.failed_paths.append(rel_path)
-                if final_interrupted or interrupt_requested():
                     break
             return result
         except Exception as exc:  # pragma: no cover - defensive logging
@@ -2376,6 +2582,172 @@ class Worker:
             if self._result is None:
                 self._result = Summary()
             return self._result
+
+    def _run_suite(self, suite_item: SuiteQueueItem, summary: Summary) -> None:
+        tests = suite_item.tests
+        total = len(tests)
+        if total == 0:
+            return
+        primary_test = tests[0].path
+        try:
+            primary_config = parse_test_config(primary_test, coverage=self._coverage)
+        except ValueError as exc:
+            raise RuntimeError(f"failed to parse suite config for {primary_test}: {exc}") from exc
+        inputs_override = typing.cast(str | None, primary_config.get("inputs"))
+        env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
+        _apply_fixture_env(env, suite_item.fixtures)
+        context_token = fixtures_impl.push_context(
+            fixtures_impl.FixtureContext(
+                test=primary_test,
+                config=typing.cast(dict[str, Any], primary_config),
+                coverage=self._coverage,
+                env=env,
+                config_args=tuple(config_args),
+                tenzir_binary=TENZIR_BINARY,
+                tenzir_node_binary=TENZIR_NODE_BINARY,
+            )
+        )
+        _log_suite_event(suite_item.suite, event="setup", total=total)
+        interrupted = False
+        try:
+            with fixtures_impl.suite_scope(suite_item.fixtures):
+                for index, test_item in enumerate(tests, start=1):
+                    if interrupt_requested():
+                        interrupted = True
+                        break
+                    interrupted = self._run_test_item(
+                        test_item,
+                        summary,
+                        suite_progress=(suite_item.suite.name, index, total),
+                        suite_fixtures=suite_item.fixtures,
+                    )
+                    if interrupted:
+                        break
+        finally:
+            _log_suite_event(suite_item.suite, event="teardown", total=total)
+            fixtures_impl.pop_context(context_token)
+            cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
+        if interrupted:
+            _request_interrupt()
+
+    def _run_test_item(
+        self,
+        test_item: TestQueueItem,
+        summary: Summary,
+        *,
+        suite_progress: tuple[str, int, int] | None = None,
+        suite_fixtures: tuple[str, ...] | None = None,
+    ) -> bool:
+        test_path = test_item.path
+        runner = test_item.runner
+        configured_fixtures = suite_fixtures or _get_test_fixtures(
+            test_path, coverage=self._coverage
+        )
+        fixtures = configured_fixtures
+        retry_limit = 1
+        config: TestConfig | None = None
+        parse_error: str | None = None
+        try:
+            config = parse_test_config(test_path, coverage=self._coverage)
+        except ValueError as exc:
+            parse_error = str(exc)
+            config = None
+        if config is not None:
+            raw_retry = config.get("retry", 0)
+            if isinstance(raw_retry, int):
+                retry_limit = max(1, raw_retry)
+            config_fixtures = cast(tuple[str, ...], config.get("fixtures", tuple()))
+            if suite_fixtures is not None and config_fixtures != suite_fixtures:
+                raise RuntimeError(
+                    f"fixture mismatch for suite test {test_path}: "
+                    f"expected {suite_fixtures}, got {config_fixtures}"
+                )
+            if suite_fixtures is None:
+                configured_fixtures = config_fixtures
+        if parse_error is not None:
+            message = f"└─▶ \033[31m{parse_error}\033[0m"
+            report_failure(test_path, message)
+            rel_path = _relativize_path(test_path)
+            summary.total += 1
+            summary.record_runner_outcome(runner.name, False)
+            if fixtures:
+                summary.record_fixture_outcome(fixtures, False)
+            summary.failed += 1
+            summary.failed_paths.append(rel_path)
+            return False
+        if is_passthrough_enabled():
+            rel_path = _relativize_path(test_path)
+            detail_bits = [f"runner={runner.name}"]
+            if fixtures:
+                detail_bits.append(f"fixtures={', '.join(fixtures)}")
+            if suite_progress:
+                name, index, total = suite_progress
+                detail_bits.append(f"suite={name} ({index}/{total})")
+            detail_segment = f" ({', '.join(detail_bits)})" if detail_bits else ""
+            with stdout_lock:
+                print(f"{INFO} running {rel_path}{detail_segment} [passthrough]")
+        max_attempts = retry_limit
+        attempts = 0
+        final_outcome: bool | str = False
+        final_interrupted = False
+        rel_path = _relativize_path(test_path)
+        while attempts < max_attempts:
+            if interrupt_requested():
+                final_interrupted = True
+                break
+            attempts += 1
+            with _push_retry_context(attempt=attempts, max_attempts=max_attempts):
+                attempt_context = contextlib.ExitStack()
+                if suite_progress is not None:
+                    name, index, total = suite_progress
+                    attempt_context.enter_context(
+                        _push_suite_context(name=name, index=index, total=total)
+                    )
+                if SHOW_TEST_DETAILS:
+                    attempt_context.enter_context(
+                        _push_test_context(
+                            runner_name=runner.name,
+                            runner_version=self._runner_versions.get(runner.name),
+                            fixtures=fixtures,
+                        )
+                    )
+                interrupted = False
+                try:
+                    with attempt_context:
+                        outcome = runner.run(test_path, self._update, self._coverage)
+                except KeyboardInterrupt:  # pragma: no cover - defensive guard
+                    _request_interrupt()
+                    interrupted = True
+                    outcome = False
+                except Exception as exc:
+                    error_message = f"└─▶ \033[31m{exc}\033[0m"
+                    report_failure(test_path, error_message)
+                    outcome = False
+                    final_interrupted = False
+                    final_outcome = outcome
+                    break
+
+                if interrupted:
+                    report_failure(test_path, _INTERRUPTED_NOTICE)
+                    final_interrupted = True
+                final_outcome = outcome
+                if final_interrupted or interrupt_requested():
+                    break
+                if outcome == "skipped" or outcome:
+                    break
+                if attempts < max_attempts:
+                    continue
+        summary.total += 1
+        summary.record_runner_outcome(runner.name, final_outcome)
+        if fixtures:
+            summary.record_fixture_outcome(fixtures, final_outcome)
+        if final_outcome == "skipped":
+            summary.skipped += 1
+            summary.skipped_paths.append(rel_path)
+        elif not final_outcome:
+            summary.failed += 1
+            summary.failed_paths.append(rel_path)
+        return final_interrupted or interrupt_requested()
 
 
 def get_runner_for_test(test_path: Path) -> Runner:
@@ -2430,6 +2802,7 @@ def run_cli(
 
         _set_discovery_logging(debug_enabled)
         enable_comparison_logging(verbose_enabled or debug_enabled)
+        set_suite_debug_logging(debug_enabled)
 
         debug_formatter = logging.Formatter(f"{DEBUG_PREFIX} %(message)s")
         default_formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
@@ -2541,18 +2914,14 @@ def run_cli(
                 if purge:
                     continue
 
-                todo: set[RunnerQueueItem] = set()
+                collected_paths: set[Path] = set()
                 for test in tests_to_run:
                     if test.resolve() == selection.root.resolve():
                         all_tests = []
                         for tests_dir in _iter_project_test_directories(selection.root):
                             all_tests.extend(list(collect_all_tests(tests_dir)))
                         for test_path in all_tests:
-                            try:
-                                runner = get_runner_for_test(test_path)
-                                todo.add((runner, test_path))
-                            except ValueError as error:
-                                sys.exit(f"error: {error}")
+                            collected_paths.add(test_path.resolve())
                         continue
 
                     resolved = test.resolve()
@@ -2566,20 +2935,48 @@ def run_cli(
                         if not tql_files:
                             sys.exit(f"error: no {_allowed_extensions} files found in {resolved}")
                         for file_path in tql_files:
-                            try:
-                                runner = get_runner_for_test(file_path)
-                                todo.add((runner, file_path))
-                            except ValueError as error:
-                                sys.exit(f"error: {error}")
+                            suite_info = _resolve_suite_for_test(file_path)
+                            if suite_info is None:
+                                continue
+                            suite_dir = suite_info.directory
+                            if resolved == suite_dir:
+                                continue
+                            if _path_is_within(resolved, suite_dir):
+                                rel_target = _relativize_path(resolved)
+                                rel_suite = _relativize_path(suite_dir)
+                                detail = (
+                                    f"cannot select {rel_target} directly because it is inside the suite "
+                                    f"'{suite_info.name}' defined in {rel_suite / _CONFIG_FILE_NAME}."
+                                )
+                                print(f"{CROSS} {detail}", file=sys.stderr)
+                                print(
+                                    f"{INFO} select the suite directory instead",
+                                    file=sys.stderr,
+                                )
+                                sys.exit(1)
+                        for file_path in tql_files:
+                            collected_paths.add(file_path.resolve())
                     elif resolved.is_file():
                         if _is_inputs_path(resolved):
                             continue
                         if resolved.suffix[1:] in _allowed_extensions:
-                            try:
-                                runner = get_runner_for_test(resolved)
-                                todo.add((runner, resolved))
-                            except ValueError as error:
-                                sys.exit(f"error: {error}")
+                            suite_info = _resolve_suite_for_test(resolved)
+                            if suite_info is not None and _path_is_within(
+                                resolved, suite_info.directory
+                            ):
+                                rel_file = _relativize_path(resolved)
+                                rel_suite = _relativize_path(suite_info.directory)
+                                detail = (
+                                    f"cannot select {rel_file} directly because it belongs to the suite "
+                                    f"'{suite_info.name}' defined in {rel_suite / _CONFIG_FILE_NAME}."
+                                )
+                                print(f"{CROSS} {detail}", file=sys.stderr)
+                                print(
+                                    f"{INFO} select the suite directory instead",
+                                    file=sys.stderr,
+                                )
+                                sys.exit(1)
+                            collected_paths.add(resolved.resolve())
                         else:
                             sys.exit(
                                 f"error: unsupported file type {resolved.suffix} for {resolved} - only {_allowed_extensions} files are supported"
@@ -2590,8 +2987,8 @@ def run_cli(
                 if interrupt_requested():
                     break
 
-                queue = list(todo)
-                queue.sort(key=lambda tup: str(tup[1]), reverse=True)
+                queue = _build_queue_from_paths(collected_paths, coverage=coverage)
+                queue.sort(key=_queue_sort_key, reverse=True)
                 project_queue_size = len(queue)
                 job_count, enabled_flags = _summarize_harness_configuration(
                     jobs=jobs,

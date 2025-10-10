@@ -4,12 +4,14 @@ import io
 import signal
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from tenzir_test import config, run
 from tenzir_test import fixtures as fixture_api
 from tenzir_test.fixtures import node as node_fixture
+from tenzir_test.runners.runner import Runner
 
 
 def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
@@ -185,6 +187,112 @@ def test_handle_skip_uses_skip_glyph(tmp_path, capsys):
         run.ROOT = original_root
 
 
+def test_success_includes_suite_suffix(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    original_root = run.ROOT
+    try:
+        run.ROOT = tmp_path
+        test_path = tmp_path / "tests" / "example.tql"
+        test_path.parent.mkdir(parents=True)
+        test_path.touch()
+        with run._push_suite_context(name="alpha", index=2, total=3):
+            run.success(test_path)
+        output = capsys.readouterr().out.strip()
+        assert "suite=alpha (2/3)" in output
+    finally:
+        run.ROOT = original_root
+
+
+def test_worker_runs_suite_sequentially(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "sub").mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite: context\nretry: 2\nfixtures:\n  - suite_scope_fixture\n", encoding="utf-8"
+    )
+    run._clear_directory_config_cache()
+    tests = [
+        suite_dir / "01-first.tql",
+        suite_dir / "02-second.tql",
+        suite_dir / "sub" / "03-third.tql",
+    ]
+    for path in tests:
+        path.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    executed: list[Path] = []
+    env_values: list[str | None] = []
+    counts = {"start": 0, "stop": 0}
+    previous_factory = fixture_api._FACTORIES.get("suite_scope_fixture")
+
+    @fixture_api.fixture(name="suite_scope_fixture", replace=True)
+    def suite_scope_fixture():
+        counts["start"] += 1
+        try:
+            yield {"COUNT": str(counts["start"])}
+        finally:
+            counts["stop"] += 1
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:
+            config = run.parse_test_config(test, coverage=coverage)
+            fixtures = cast(tuple[str, ...], config.get("fixtures", tuple()))
+            with fixture_api.activate(fixtures) as env:
+                env_values.append(env.get("COUNT"))
+            executed.append(test.relative_to(suite_dir))
+            return True
+
+    runner_instance = RecordingRunner()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner_instance)
+    try:
+        run._clear_directory_config_cache()
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        assert len(queue) == 1
+        suite_item = queue[0]
+        assert isinstance(suite_item, run.SuiteQueueItem)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 3
+        assert summary.failed == 0
+        assert counts["start"] == 1
+        assert counts["stop"] == 1
+        assert env_values == ["1", "1", "1"]
+        assert executed == [
+            Path("01-first.tql"),
+            Path("02-second.tql"),
+            Path("sub/03-third.tql"),
+        ]
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("suite_scope_fixture", None)
+        else:
+            fixture_api._FACTORIES["suite_scope_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
 def test_node_fixture_uses_explicit_node_config(tmp_path, monkeypatch):
     test_path = tmp_path / "suite" / "case.tql"
     test_path.parent.mkdir(parents=True)
@@ -331,7 +439,8 @@ def test_worker_prints_passthrough_header(
     previous_passthrough = run.is_passthrough_enabled()
     run.set_passthrough_enabled(True)
     try:
-        queue: list[tuple[run.Runner, Path]] = [(StubRunner(), test_file)]
+        runner = StubRunner()
+        queue: list[run.RunnerQueueItem] = [run.TestQueueItem(runner=runner, path=test_file)]
         worker = run.Worker(queue, update=False, coverage=False)
         worker.start()
         worker.join()
@@ -390,7 +499,7 @@ write_json
 
     try:
         runner = FlakyRunner()
-        queue: list[tuple[run.Runner, Path]] = [(runner, test_file)]
+        queue: list[run.RunnerQueueItem] = [run.TestQueueItem(runner=runner, path=test_file)]
         worker = run.Worker(queue, update=False, coverage=False)
         worker.start()
         summary = worker.join()
@@ -400,6 +509,92 @@ write_json
     assert runner.calls == 3
     assert summary.failed == 0
     assert summary.total == 1
+
+
+def test_cli_rejects_partial_suite_selection(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project_root = tmp_path / "project"
+    suite_dir = project_root / "tests" / "suite"
+    suite_subdir = suite_dir / "nested"
+    suite_subdir.mkdir(parents=True, exist_ok=True)
+
+    (project_root / "fixtures").mkdir(parents=True, exist_ok=True)
+    (project_root / "fixtures" / "__init__.py").write_text("", encoding="utf-8")
+    (project_root / "runners").mkdir(parents=True, exist_ok=True)
+    (project_root / "runners" / "__init__.py").write_text("", encoding="utf-8")
+    (project_root / "inputs").mkdir(parents=True, exist_ok=True)
+
+    (suite_dir / "test.yaml").write_text("suite: demo\n", encoding="utf-8")
+    test_file = suite_dir / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    nested_file = suite_subdir / "nested-case.tql"
+    nested_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=project_root,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    run.refresh_runner_metadata()
+    try:
+        with pytest.raises(SystemExit):
+            run.run_cli(
+                root=project_root,
+                tenzir_binary=None,
+                tenzir_node_binary=None,
+                tests=[test_file],
+                update=False,
+                verbose=False,
+                debug=False,
+                purge=False,
+                coverage=False,
+                coverage_source_dir=None,
+                runner_summary=False,
+                fixture_summary=False,
+                jobs=1,
+                keep_tmp_dirs=False,
+                show_test_details=False,
+                passthrough=False,
+                jobs_overridden=False,
+                all_projects=False,
+            )
+
+        first_err = capsys.readouterr().err
+        assert "belongs to the suite" in first_err
+
+        with pytest.raises(SystemExit):
+            run.run_cli(
+                root=project_root,
+                tenzir_binary=None,
+                tenzir_node_binary=None,
+                tests=[suite_subdir],
+                update=False,
+                verbose=False,
+                debug=False,
+                purge=False,
+                coverage=False,
+                coverage_source_dir=None,
+                runner_summary=False,
+                fixture_summary=False,
+                jobs=1,
+                keep_tmp_dirs=False,
+                show_test_details=False,
+                passthrough=False,
+                jobs_overridden=False,
+                all_projects=False,
+            )
+        second_err = capsys.readouterr().err
+        assert "inside the suite" in second_err
+    finally:
+        run.apply_settings(original_settings)
 
 
 def test_detailed_summary_order(capsys):

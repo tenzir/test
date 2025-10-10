@@ -1,0 +1,9 @@
+---
+fixtures: [http]
+timeout: 30
+---
+
+from {x: 42, y: "foo"}
+http env("HTTP_FIXTURE_URL"), body=this {
+  read_json
+}

@@ -102,6 +102,79 @@ write_json
     }
 
 
+def test_parse_test_config_allows_fixtures_frontmatter_without_suite(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    test_file = tmp_path / "fixtures.tql"
+    test_file.write_text(
+        """---
+fixtures:
+  - shared
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    config = run.parse_test_config(test_file)
+
+    assert config["fixtures"] == ("shared",)
+
+
+def test_parse_test_config_forbids_fixtures_frontmatter_with_suite(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite: shared-suite\nfixtures:\n  - shared\n", encoding="utf-8"
+    )
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "member.tql"
+    test_file.write_text(
+        """---
+fixtures:
+  - override
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        run.parse_test_config(test_file)
+
+    assert "'fixtures' cannot be specified in test frontmatter within a suite" in str(exc.value)
+
+
+def test_parse_test_config_forbids_retry_frontmatter_with_suite(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text("suite: shared-suite\nretry: 2\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "suite_case.tql"
+    test_file.write_text(
+        """---
+retry: 3
+---
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        run.parse_test_config(test_file)
+
+    assert "'retry' cannot be overridden in test frontmatter" in str(exc.value)
+
+
 def test_get_test_env_and_config_args(configured_root: Path) -> None:
     test_dir = configured_root / "suite"
     test_dir.mkdir()
@@ -630,4 +703,3 @@ write_json
     config = run.parse_test_config(test_file)
 
     assert config["fixtures"] == ("node", "sink")
-    assert "node" not in config

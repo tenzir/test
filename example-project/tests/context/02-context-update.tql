@@ -1,0 +1,4 @@
+from {x: 42, y: "foo"},
+     {x: 43, y: "bar"},
+     {x: 44, y: "baz"}
+context::update "table", key=x, value=y

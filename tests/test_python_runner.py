@@ -35,13 +35,14 @@ def python_fixture_root(tmp_path: Path) -> Path:
 def _fixture_script(path: Path) -> None:
     path.write_text(
         """#!/usr/bin/env python3
-# runner: python
-# timeout: 30
-# fixtures: sink
 from __future__ import annotations
 
 print("ok")
 """,
+        encoding="utf-8",
+    )
+    path.parent.joinpath("test.yaml").write_text(
+        "timeout: 30\nfixtures:\n  - sink\n",
         encoding="utf-8",
     )
 

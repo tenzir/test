@@ -1,0 +1,12 @@
+{
+  key: 42,
+  value: "foo",
+}
+{
+  key: 44,
+  value: "baz",
+}
+{
+  key: 43,
+  value: "bar",
+}

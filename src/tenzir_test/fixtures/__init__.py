@@ -339,6 +339,19 @@ class _FactoryCallable(Protocol):
 _FACTORIES: dict[str, FixtureFactory] = {}
 
 
+@dataclass(slots=True)
+class _SuiteScope:
+    fixtures: tuple[str, ...]
+    stack: ExitStack
+    env: dict[str, str]
+    depth: int = 0
+
+
+_SUITE_SCOPE: ContextVar[_SuiteScope | None] = ContextVar(
+    "tenzir_test_fixture_suite_scope", default=None
+)
+
+
 def _attach_hooks(
     manager: ContextManager[dict[str, str] | None],
     hooks: Mapping[str, Callable[..., Any]] | None = None,
@@ -403,6 +416,44 @@ def _normalize_factory(factory: _FactoryCallable) -> FixtureFactory:
     return _as_context_manager
 
 
+def _wrap_factory(
+    factory: FixtureFactory,
+    *,
+    name: str,
+    force_teardown_log: bool,
+) -> ContextManager[dict[str, str] | None]:
+    @contextmanager
+    def _logged_context() -> Iterator[dict[str, str] | None]:
+        if force_teardown_log:
+            setattr(factory, "tenzir_log_teardown", True)
+        controller = FixtureController(name, factory)
+        try:
+            yield controller.start()
+        finally:
+            controller.stop()
+
+    return _logged_context()
+
+
+def _activate_into_stack(
+    names: tuple[str, ...],
+    stack: ExitStack,
+) -> dict[str, str]:
+    combined: dict[str, str] = {}
+    for name in names:
+        factory = _FACTORIES.get(name)
+        if not factory:
+            logger.debug("requested fixture '%s' has no registered factory", name)
+            continue
+        force_teardown_log = bool(getattr(factory, "tenzir_log_teardown", False))
+        env: dict[str, str] | None = stack.enter_context(
+            _wrap_factory(factory, name=name, force_teardown_log=force_teardown_log)
+        )
+        if env:
+            combined.update(env)
+    return combined
+
+
 def _infer_name(func: Callable[..., object], explicit: str | None) -> str:
     if explicit:
         return explicit
@@ -463,41 +514,39 @@ def fixture(
 
 @contextmanager
 def activate(names: Iterable[str]) -> Iterator[dict[str, str]]:
+    normalized = tuple(names)
+    scope = _SUITE_SCOPE.get()
+    if scope is not None and scope.fixtures == normalized:
+        scope.depth += 1
+        try:
+            yield scope.env
+        finally:
+            scope.depth -= 1
+        return
+
     stack = ExitStack()
-    combined: dict[str, str] = {}
-
-    def _wrap_factory(
-        factory: FixtureFactory,
-        *,
-        name: str,
-        force_teardown_log: bool,
-    ) -> ContextManager[dict[str, str] | None]:
-        @contextmanager
-        def _logged_context() -> Iterator[dict[str, str] | None]:
-            if force_teardown_log:
-                setattr(factory, "tenzir_log_teardown", True)
-            controller = FixtureController(name, factory)
-            try:
-                yield controller.start()
-            finally:
-                controller.stop()
-
-        return _logged_context()
-
     try:
-        for name in names:
-            factory = _FACTORIES.get(name)
-            if not factory:
-                logger.debug("requested fixture '%s' has no registered factory", name)
-                continue
-            force_teardown_log = bool(getattr(factory, "tenzir_log_teardown", False))
-            env: dict[str, str] | None = stack.enter_context(
-                _wrap_factory(factory, name=name, force_teardown_log=force_teardown_log)
-            )
-            if env:
-                combined.update(env)
+        combined = _activate_into_stack(normalized, stack)
         yield combined
     finally:
+        stack.close()
+
+
+@contextmanager
+def suite_scope(names: Iterable[str]) -> Iterator[dict[str, str]]:
+    normalized = tuple(names)
+    existing = _SUITE_SCOPE.get()
+    if existing is not None:
+        raise RuntimeError("nested fixture suite scopes are not supported")
+
+    stack = ExitStack()
+    combined = _activate_into_stack(normalized, stack)
+    scope = _SuiteScope(fixtures=normalized, stack=stack, env=combined)
+    token = _SUITE_SCOPE.set(scope)
+    try:
+        yield combined
+    finally:
+        _SUITE_SCOPE.reset(token)
         stack.close()
 
 
@@ -517,6 +566,7 @@ __all__ = [
     "fixture",
     "fixtures",
     "fixtures_api",
+    "suite_scope",
     "has",
     "register",
     "require",

@@ -45,10 +45,14 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
     script_dir.mkdir(parents=True, exist_ok=True)
     script = script_dir / "env-check.sh"
     script.write_text(
-        """# fixtures: [demo]\n\nset -eu\n\ndir="$(dirname "$0")"\nhelper > "$dir/helper.txt"\nprintf %s "$DEMO_SHELL_FIXTURE" > "$dir/fixture.txt"\nprintf %s "$TENZIR_TMP_DIR" > "$dir/tmp-dir.txt"\n""",
+        """set -eu\n\ndir="$(dirname "$0")"\nhelper > "$dir/helper.txt"\nprintf %s "$DEMO_SHELL_FIXTURE" > "$dir/fixture.txt"\nprintf %s "$TENZIR_TMP_DIR" > "$dir/tmp-dir.txt"\n""",
         encoding="utf-8",
     )
     script.chmod(0o755)
+    script_dir.joinpath("test.yaml").write_text(
+        "timeout: 10\nfixtures:\n  - demo\n",
+        encoding="utf-8",
+    )
 
     @fixtures.fixture(name="demo", replace=True)
     def _demo_fixture():
