@@ -78,6 +78,8 @@ example-project/
   calls.
 - **Shell scenarios** (`tests/shell/http-fixture-check.sh`): show how inline
   frontmatter can request fixtures directly from shell scripts.
+- **Skip demo** (`tests/lazy.tql`): uses `skip:` frontmatter to illustrate how
+  the harness reports intentionally skipped tests along with custom messages.
 - **Satellite demo** (`../example-satellite/`): a self-contained project that
   reuses the root fixtures **and** the `xxd` runner while adding its own
   `satellite_marker` fixture. Invoke `uvx tenzir-test --root example-project
