@@ -2791,7 +2791,6 @@ def run_cli(
     fixture_summary: bool,
     jobs: int,
     keep_tmp_dirs: bool,
-    show_test_details: bool,
     passthrough: bool,
     jobs_overridden: bool = False,
     all_projects: bool = False,
@@ -2832,7 +2831,7 @@ def run_cli(
 
         global SHOW_TEST_DETAILS
         set_keep_tmp_dirs(bool(os.environ.get(_TMP_KEEP_ENV_VAR)) or keep_tmp_dirs)
-        SHOW_TEST_DETAILS = show_test_details
+        SHOW_TEST_DETAILS = verbose_enabled
         if passthrough:
             harness_mode = HarnessMode.PASSTHROUGH
         elif update:

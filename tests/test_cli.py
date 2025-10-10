@@ -103,3 +103,11 @@ def test_cli_debug_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cli.main(["--debug"]) == 0
     assert captured["debug"] is True
     assert captured["verbose"] is False
+
+
+def test_cli_unknown_option(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli.main(["--details"])
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "No such option" in captured.err
+    assert "Traceback" not in captured.err

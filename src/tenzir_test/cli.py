@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+import sys
 
 import click
 
@@ -99,12 +100,6 @@ def _normalize_exit_code(value: object) -> int:
     help="Number of parallel worker threads.",
 )
 @click.option(
-    "--details",
-    "show_test_details",
-    is_flag=True,
-    help="Show runner and fixture details alongside test outcomes.",
-)
-@click.option(
     "-p",
     "--passthrough",
     is_flag=True,
@@ -134,7 +129,6 @@ def cli(
     fixture_summary: bool,
     keep_tmp_dirs: bool,
     jobs: int,
-    show_test_details: bool,
     passthrough: bool,
     all_projects: bool,
 ) -> None:
@@ -158,7 +152,6 @@ def cli(
         fixture_summary=fixture_summary,
         keep_tmp_dirs=keep_tmp_dirs,
         jobs=jobs,
-        show_test_details=show_test_details,
         passthrough=passthrough,
         jobs_overridden=jobs_overridden,
         all_projects=all_projects,
@@ -176,10 +169,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except click.exceptions.Exit as exc:  # pragma: no cover - passthrough CLI termination
         return _normalize_exit_code(exc.exit_code)
+    except click.exceptions.ClickException as exc:
+        exc.show(file=sys.stderr)
+        exit_code = getattr(exc, "exit_code", None)
+        return _normalize_exit_code(exit_code)
     except SystemExit as exc:  # pragma: no cover - propagate runner exits
         return _normalize_exit_code(exc.code)
-    except click.exceptions.Abort:  # pragma: no cover - propagate Ctrl+C
-        return 1
     return 0
 
 
