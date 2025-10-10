@@ -525,10 +525,8 @@ def _cleanup_tmp_base_dirs() -> None:
 
 atexit.register(_cleanup_remaining_tmp_dirs)
 
-_verbose_logging = bool(
-    os.environ.get("TENZIR_TEST_VERBOSE") or os.environ.get("TENZIR_TEST_LOG_COMPARISONS")
-)
-_debug_logging = bool(os.environ.get("TENZIR_TEST_DEBUG"))
+_default_debug_logging = bool(os.environ.get("TENZIR_TEST_DEBUG"))
+_debug_logging = _default_debug_logging
 
 _runner_names: set[str] = set()
 _allowed_extensions: set[str] = set()
@@ -1501,13 +1499,17 @@ def _apply_fixture_env(env: dict[str, str], fixtures: tuple[str, ...]) -> None:
         env.pop("TENZIR_TEST_FIXTURES", None)
 
 
-def enable_comparison_logging(enabled: bool) -> None:
-    global _verbose_logging
-    _verbose_logging = enabled
+def set_debug_logging(enabled: bool) -> None:
+    global _debug_logging
+    _debug_logging = enabled
+
+
+def is_debug_logging_enabled() -> bool:
+    return _debug_logging
 
 
 def log_comparison(test: Path, ref_path: Path, *, mode: str) -> None:
-    if not _verbose_logging or should_suppress_failure_output():
+    if not _debug_logging or should_suppress_failure_output():
         return
     rel_test = _relativize_path(test)
     rel_ref = _relativize_path(ref_path)
@@ -2769,14 +2771,13 @@ def run_cli(
     from tenzir_test.engine import state as engine_state
 
     try:
-        debug_enabled = bool(debug or _debug_logging)
-        comparison_logging_enabled = bool(_verbose_logging or debug_enabled)
+        debug_enabled = bool(debug or _default_debug_logging)
+        set_debug_logging(debug_enabled)
 
         fixture_logger = logging.getLogger("tenzir_test.fixtures")
         root_logger = logging.getLogger()
 
         _set_discovery_logging(debug_enabled)
-        enable_comparison_logging(comparison_logging_enabled)
         set_suite_debug_logging(debug_enabled)
 
         debug_formatter = logging.Formatter(f"{DEBUG_PREFIX} %(message)s")

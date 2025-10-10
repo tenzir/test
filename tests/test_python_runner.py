@@ -168,12 +168,13 @@ def test_python_runner_logs_when_enabled(
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
 
-    run.enable_comparison_logging(True)
+    original_debug = run.is_debug_logging_enabled()
+    run.set_debug_logging(True)
     try:
         runner = run.CustomPythonFixture()
         assert runner.run(script, update=False, coverage=False)
     finally:
-        run.enable_comparison_logging(False)
+        run.set_debug_logging(original_debug)
 
     captured = capsys.readouterr()
     assert "◆" in captured.out
