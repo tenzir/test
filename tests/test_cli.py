@@ -83,20 +83,6 @@ def test_cli_all_projects_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["show_summary"] is False
 
 
-def test_cli_verbose_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_run_cli(**kwargs: object) -> None:
-        captured.update(kwargs)
-
-    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
-
-    assert cli.main(["--verbose"]) == 0
-    assert captured["verbose"] is True
-    assert captured["debug"] is False
-    assert captured["show_summary"] is False
-
-
 def test_cli_debug_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -107,7 +93,6 @@ def test_cli_debug_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert cli.main(["--debug"]) == 0
     assert captured["debug"] is True
-    assert captured["verbose"] is False
     assert captured["show_summary"] is False
 
 

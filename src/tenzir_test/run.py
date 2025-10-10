@@ -161,7 +161,6 @@ CHECKMARK = "\033[92;1m✔\033[0m"
 CROSS = "\033[31m✘\033[0m"
 INFO = "\033[94;1mi\033[0m"
 SKIP = "\033[90;1m●\033[0m"
-VERBOSE_PREFIX = "\033[94;1m▶\033[0m"
 DEBUG_PREFIX = "\033[95m◆\033[0m"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -224,30 +223,6 @@ def _is_interrupt_exit(returncode: int) -> bool:
 
 
 _INTERRUPTED_NOTICE = "└─▶ \033[33mtest interrupted by user\033[0m"
-
-_CURRENT_TEST_CONTEXT = threading.local()
-SHOW_TEST_DETAILS = False
-
-
-@contextlib.contextmanager
-def _push_test_context(
-    *, runner_name: str | None, runner_version: str | None, fixtures: tuple[str, ...]
-) -> Iterator[None]:
-    previous = getattr(_CURRENT_TEST_CONTEXT, "value", None)
-    _CURRENT_TEST_CONTEXT.value = {
-        "runner_name": runner_name,
-        "runner_version": runner_version,
-        "fixtures": fixtures,
-    }
-    try:
-        yield
-    finally:
-        if previous is None:
-            if hasattr(_CURRENT_TEST_CONTEXT, "value"):
-                delattr(_CURRENT_TEST_CONTEXT, "value")
-        else:
-            _CURRENT_TEST_CONTEXT.value = previous
-
 
 _CURRENT_RETRY_CONTEXT = threading.local()
 _CURRENT_SUITE_CONTEXT = threading.local()
@@ -1536,7 +1511,7 @@ def log_comparison(test: Path, ref_path: Path, *, mode: str) -> None:
         return
     rel_test = _relativize_path(test)
     rel_ref = _relativize_path(ref_path)
-    print(f"{VERBOSE_PREFIX} {mode} {rel_test} -> {rel_ref}")
+    print(f"{DEBUG_PREFIX} {mode} {rel_test} -> {rel_ref}")
 
 
 def report_failure(test: Path, message: str) -> None:
@@ -1775,26 +1750,6 @@ def _format_summary(summary: Summary) -> str:
     return f"Test summary: {passed_segment} • {failed_segment} • {skipped_segment}"
 
 
-def _format_run_context_suffix() -> str:
-    if not SHOW_TEST_DETAILS:
-        return ""
-    context = getattr(_CURRENT_TEST_CONTEXT, "value", None)
-    if not isinstance(context, dict):
-        return ""
-
-    runner_name = context.get("runner_name")
-    fixtures = context.get("fixtures") or tuple()
-    parts: list[str] = []
-    if isinstance(runner_name, str) and runner_name:
-        parts.append(f"runner={runner_name}")
-    if isinstance(fixtures, tuple) and fixtures:
-        parts.append(f"fixtures={', '.join(fixtures)}")
-    if not parts:
-        return ""
-    details = ", ".join(parts)
-    return f"  \033[2;37m{details}\033[0m"
-
-
 def _summarize_runner_plan(
     queue: Sequence[RunnerQueueItem],
     *,
@@ -1963,9 +1918,7 @@ def _print_aggregate_totals(project_count: int, summary: Summary) -> None:
         f"{failed} failed ({_format_percentage(failed, total)})",
     ]
     detail = ", ".join(parts)
-    print(
-        f"{INFO} ran {total} {test_noun} across {project_count} {project_noun}: {detail}"
-    )
+    print(f"{INFO} ran {total} {test_noun} across {project_count} {project_noun}: {detail}")
 
 
 def _summarize_harness_configuration(
@@ -1973,7 +1926,6 @@ def _summarize_harness_configuration(
     jobs: int,
     update: bool,
     coverage: bool,
-    verbose: bool,
     debug: bool,
     show_summary: bool,
     runner_summary: bool,
@@ -1984,7 +1936,6 @@ def _summarize_harness_configuration(
     toggles = (
         ("update", update),
         ("coverage", coverage),
-        ("verbose", verbose),
         ("debug", debug),
         ("summary", show_summary),
         ("runner-summary", runner_summary),
@@ -2259,6 +2210,7 @@ def _print_compact_summary(summary: Summary) -> None:
     else:
         print(f"{INFO} ran 0 tests")
 
+
 def _print_detailed_summary(summary: Summary) -> None:
     if not summary.failed_paths and not summary.skipped_paths:
         return
@@ -2296,19 +2248,17 @@ def get_version() -> str:
 def success(test: Path) -> None:
     with stdout_lock:
         rel_test = _relativize_path(test)
-        suffix = _format_run_context_suffix()
         suite_suffix = _format_suite_suffix()
         attempt_suffix = _format_attempt_suffix()
-        print(f"{CHECKMARK} {rel_test}{suffix}{suite_suffix}{attempt_suffix}")
+        print(f"{CHECKMARK} {rel_test}{suite_suffix}{attempt_suffix}")
 
 
 def fail(test: Path) -> None:
     with stdout_lock:
         rel_test = _relativize_path(test)
-        suffix = _format_run_context_suffix()
         attempt_suffix = _format_attempt_suffix()
         suite_suffix = _format_suite_suffix()
-        print(f"{CROSS} {rel_test}{suffix}{suite_suffix}{attempt_suffix}")
+        print(f"{CROSS} {rel_test}{suite_suffix}{attempt_suffix}")
 
 
 def last_and(items: Iterable[T]) -> Iterator[tuple[bool, T]]:
@@ -2515,9 +2465,8 @@ def run_simple_test(
 
 def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool | str:
     rel_path = _relativize_path(test)
-    suffix = _format_run_context_suffix()
     suite_suffix = _format_suite_suffix()
-    print(f"{SKIP} skipped {rel_path}{suffix}{suite_suffix}: {reason}")
+    print(f"{SKIP} skipped {rel_path}{suite_suffix}: {reason}")
     ref_path = test.with_suffix(f".{output_ext}")
     if update:
         with ref_path.open("wb") as f:
@@ -2570,6 +2519,7 @@ class Worker:
         update: bool,
         coverage: bool = False,
         runner_versions: Mapping[str, str] | None = None,
+        debug: bool = False,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -2577,6 +2527,7 @@ class Worker:
         self._update = update
         self._coverage = coverage
         self._runner_versions = dict(runner_versions or {})
+        self._debug = debug
         self._thread = threading.Thread(target=self._work)
 
     def start(self) -> None:
@@ -2672,6 +2623,7 @@ class Worker:
     ) -> bool:
         test_path = test_item.path
         runner = test_item.runner
+        rel_path = _relativize_path(test_path)
         configured_fixtures = suite_fixtures or _get_test_fixtures(
             test_path, coverage=self._coverage
         )
@@ -2699,7 +2651,6 @@ class Worker:
         if parse_error is not None:
             message = f"└─▶ \033[31m{parse_error}\033[0m"
             report_failure(test_path, message)
-            rel_path = _relativize_path(test_path)
             summary.total += 1
             summary.record_runner_outcome(runner.name, False)
             if fixtures:
@@ -2707,22 +2658,23 @@ class Worker:
             summary.failed += 1
             summary.failed_paths.append(rel_path)
             return False
+        detail_bits = [f"runner={runner.name}"]
+        if fixtures:
+            detail_bits.append(f"fixtures={', '.join(fixtures)}")
+        if suite_progress:
+            name, index, total = suite_progress
+            detail_bits.append(f"suite={name} ({index}/{total})")
+        detail_segment = f" ({', '.join(detail_bits)})" if detail_bits else ""
         if is_passthrough_enabled():
-            rel_path = _relativize_path(test_path)
-            detail_bits = [f"runner={runner.name}"]
-            if fixtures:
-                detail_bits.append(f"fixtures={', '.join(fixtures)}")
-            if suite_progress:
-                name, index, total = suite_progress
-                detail_bits.append(f"suite={name} ({index}/{total})")
-            detail_segment = f" ({', '.join(detail_bits)})" if detail_bits else ""
             with stdout_lock:
                 print(f"{INFO} running {rel_path}{detail_segment} [passthrough]")
+        elif self._debug:
+            with stdout_lock:
+                print(f"{DEBUG_PREFIX} running {rel_path}{detail_segment}")
         max_attempts = retry_limit
         attempts = 0
         final_outcome: bool | str = False
         final_interrupted = False
-        rel_path = _relativize_path(test_path)
         while attempts < max_attempts:
             if interrupt_requested():
                 final_interrupted = True
@@ -2734,14 +2686,6 @@ class Worker:
                     name, index, total = suite_progress
                     attempt_context.enter_context(
                         _push_suite_context(name=name, index=index, total=total)
-                    )
-                if SHOW_TEST_DETAILS:
-                    attempt_context.enter_context(
-                        _push_test_context(
-                            runner_name=runner.name,
-                            runner_version=self._runner_versions.get(runner.name),
-                            fixtures=fixtures,
-                        )
                     )
                 interrupted = False
                 try:
@@ -2809,7 +2753,6 @@ def run_cli(
     tenzir_node_binary: Path | None,
     tests: Sequence[Path],
     update: bool,
-    verbose: bool,
     debug: bool,
     purge: bool,
     coverage: bool,
@@ -2826,14 +2769,14 @@ def run_cli(
     from tenzir_test.engine import state as engine_state
 
     try:
-        verbose_enabled = bool(verbose or _verbose_logging)
         debug_enabled = bool(debug or _debug_logging)
+        comparison_logging_enabled = bool(_verbose_logging or debug_enabled)
 
         fixture_logger = logging.getLogger("tenzir_test.fixtures")
         root_logger = logging.getLogger()
 
         _set_discovery_logging(debug_enabled)
-        enable_comparison_logging(verbose_enabled or debug_enabled)
+        enable_comparison_logging(comparison_logging_enabled)
         set_suite_debug_logging(debug_enabled)
 
         debug_formatter = logging.Formatter(f"{DEBUG_PREFIX} %(message)s")
@@ -2857,9 +2800,7 @@ def run_cli(
             fixture_logger.setLevel(logging.WARNING)
             fixture_logger.propagate = True
 
-        global SHOW_TEST_DETAILS
         set_keep_tmp_dirs(bool(os.environ.get(_TMP_KEEP_ENV_VAR)) or keep_tmp_dirs)
-        SHOW_TEST_DETAILS = verbose_enabled
         if passthrough:
             harness_mode = HarnessMode.PASSTHROUGH
         elif update:
@@ -3028,7 +2969,6 @@ def run_cli(
                     jobs=jobs,
                     update=update,
                     coverage=coverage,
-                    verbose=verbose_enabled,
                     debug=debug_enabled,
                     show_summary=show_summary,
                     runner_summary=runner_summary,
@@ -3078,6 +3018,7 @@ def run_cli(
                         update=update,
                         coverage=coverage,
                         runner_versions=runner_versions,
+                        debug=debug_enabled,
                     )
                     for _ in range(jobs)
                 ]

@@ -51,12 +51,6 @@ def _normalize_exit_code(value: object) -> int:
 )
 @click.option("-u", "--update", is_flag=True, help="Update reference outputs.")
 @click.option(
-    "-v",
-    "--verbose",
-    is_flag=True,
-    help="Enable verbose logging.",
-)
-@click.option(
     "-d",
     "--debug",
     is_flag=True,
@@ -126,7 +120,6 @@ def cli(
     tenzir_node_binary: Path | None,
     tests: tuple[Path, ...],
     update: bool,
-    verbose: bool,
     debug: bool,
     purge: bool,
     coverage: bool,
@@ -150,7 +143,6 @@ def cli(
         tenzir_node_binary=tenzir_node_binary,
         tests=list(tests),
         update=update,
-        verbose=verbose,
         debug=debug,
         purge=purge,
         coverage=coverage,
