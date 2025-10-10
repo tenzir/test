@@ -885,7 +885,7 @@ def _format_project_heading(selection: ProjectSelection, *, base_root: Path) -> 
     return f"{name} ({relative})"
 
 
-def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> None:
+def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> int:
     active: list[tuple[str, ProjectSelection]] = []
     if plan.root.should_run():
         active.append(("■", plan.root))
@@ -894,18 +894,19 @@ def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> None:
             active.append(("□", satellite))
 
     if not active:
-        return
+        return 0
 
     if len(active) == 1:
         marker, selection = active[0]
         heading = _format_project_heading(selection, base_root=display_base)
         print(f"{INFO} executing project: {heading}")
-        return
+        return 1
 
     print(f"{INFO} executing {len(active)} projects")
     for marker, selection in active:
         heading = _format_project_heading(selection, base_root=display_base)
         print(f"{INFO}   {marker} {heading}")
+    return len(active)
 
 
 _MISSING = object()
@@ -1951,9 +1952,19 @@ def _print_aggregate_totals(project_count: int, summary: Summary) -> None:
     failed = summary.failed
     skipped = summary.skipped
     passed = total - failed - skipped
+    project_noun = "project" if project_count == 1 else "projects"
+    test_noun = "test" if total == 1 else "tests"
+    if total <= 0:
+        print(f"{INFO} ran 0 tests across {project_count} {project_noun}")
+        return
+    parts = [
+        f"{passed} passed ({_format_percentage(passed, total)})",
+        f"{skipped} skipped ({_format_percentage(skipped, total)})",
+        f"{failed} failed ({_format_percentage(failed, total)})",
+    ]
+    detail = ", ".join(parts)
     print(
-        f"{INFO} aggregate totals across {project_count} projects: "
-        f"{total} tests (passed={passed}, failed={failed}, skipped={skipped})"
+        f"{INFO} ran {total} {test_noun} across {project_count} {project_noun}: {detail}"
     )
 
 
@@ -1964,6 +1975,7 @@ def _summarize_harness_configuration(
     coverage: bool,
     verbose: bool,
     debug: bool,
+    show_summary: bool,
     runner_summary: bool,
     fixture_summary: bool,
     passthrough: bool,
@@ -1974,6 +1986,7 @@ def _summarize_harness_configuration(
         ("coverage", coverage),
         ("verbose", verbose),
         ("debug", debug),
+        ("summary", show_summary),
         ("runner-summary", runner_summary),
         ("fixture-summary", fixture_summary),
         ("keep-tmp-dirs", KEEP_TMP_DIRS),
@@ -2231,6 +2244,20 @@ def _print_ascii_summary(summary: Summary, *, include_runner: bool, include_fixt
         if index < len(segments) - 1:
             print()
 
+
+def _print_compact_summary(summary: Summary) -> None:
+    total = summary.total
+    passed = max(0, total - summary.failed - summary.skipped)
+    parts: list[str] = []
+    if total > 0:
+        parts.append(f"{passed} passed ({_format_percentage(passed, total)})")
+        parts.append(f"{summary.skipped} skipped ({_format_percentage(summary.skipped, total)})")
+        parts.append(f"{summary.failed} failed ({_format_percentage(summary.failed, total)})")
+        detail = ", ".join(parts)
+        noun = "test" if total == 1 else "tests"
+        print(f"{INFO} ran {total} {noun}: {detail}")
+    else:
+        print(f"{INFO} ran 0 tests")
 
 def _print_detailed_summary(summary: Summary) -> None:
     if not summary.failed_paths and not summary.skipped_paths:
@@ -2789,6 +2816,7 @@ def run_cli(
     coverage_source_dir: Path | None,
     runner_summary: bool,
     fixture_summary: bool,
+    show_summary: bool,
     jobs: int,
     keep_tmp_dirs: bool,
     passthrough: bool,
@@ -2874,7 +2902,9 @@ def run_cli(
             all_projects=all_projects,
         )
         display_base = Path.cwd().resolve()
-        _print_execution_plan(plan, display_base=display_base)
+        project_count = _print_execution_plan(plan, display_base=display_base)
+        if project_count > 1:
+            print()
 
         with _install_interrupt_handler():
             engine_state.refresh()
@@ -3000,6 +3030,7 @@ def run_cli(
                     coverage=coverage,
                     verbose=verbose_enabled,
                     debug=debug_enabled,
+                    show_summary=show_summary,
                     runner_summary=runner_summary,
                     fixture_summary=fixture_summary,
                     passthrough=passthrough_mode,
@@ -3062,12 +3093,15 @@ def run_cli(
                         worker.join()
                     break
 
-                _print_detailed_summary(project_summary)
-                _print_ascii_summary(
-                    project_summary,
-                    include_runner=runner_summary,
-                    include_fixture=fixture_summary,
-                )
+                _print_compact_summary(project_summary)
+                summary_enabled = show_summary or runner_summary or fixture_summary
+                if summary_enabled:
+                    _print_detailed_summary(project_summary)
+                    _print_ascii_summary(
+                        project_summary,
+                        include_runner=runner_summary,
+                        include_fixture=fixture_summary,
+                    )
 
                 if coverage:
                     coverage_dir = os.environ.get(
@@ -3098,6 +3132,7 @@ def run_cli(
                 return
 
             if len(executed_projects) > 1:
+                print()
                 _print_aggregate_totals(len(executed_projects), overall_summary)
 
             if interrupt_requested():

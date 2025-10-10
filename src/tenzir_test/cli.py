@@ -84,6 +84,12 @@ def _normalize_exit_code(value: object) -> int:
     help="Include per-fixture statistics in the summary table.",
 )
 @click.option(
+    "--summary",
+    "show_summary",
+    is_flag=True,
+    help="Show an aggregate table and detailed failure summary after execution.",
+)
+@click.option(
     "-k",
     "--keep",
     "keep_tmp_dirs",
@@ -127,6 +133,7 @@ def cli(
     coverage_source_dir: Path | None,
     runner_summary: bool,
     fixture_summary: bool,
+    show_summary: bool,
     keep_tmp_dirs: bool,
     jobs: int,
     passthrough: bool,
@@ -150,6 +157,7 @@ def cli(
         coverage_source_dir=coverage_source_dir,
         runner_summary=runner_summary,
         fixture_summary=fixture_summary,
+        show_summary=show_summary,
         keep_tmp_dirs=keep_tmp_dirs,
         jobs=jobs,
         passthrough=passthrough,

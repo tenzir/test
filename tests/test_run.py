@@ -66,6 +66,27 @@ def test_format_summary_handles_zero_total() -> None:
     assert run._format_summary(summary) == "Test summary: No tests were discovered."
 
 
+def test_print_compact_summary(capsys: pytest.CaptureFixture[str]) -> None:
+    summary = run.Summary(failed=0, total=3, skipped=0)
+
+    run._print_compact_summary(summary)
+
+    output = capsys.readouterr().out.strip()
+    assert output.startswith(f"{run.INFO} ran 3 tests: ")
+    assert "3 passed (100.0%)" in output
+    assert "0 skipped (0.0%)" in output
+    assert "0 failed (0.0%)" in output
+
+
+def test_print_compact_summary_handles_zero_total(capsys: pytest.CaptureFixture[str]) -> None:
+    summary = run.Summary(failed=0, total=0, skipped=0)
+
+    run._print_compact_summary(summary)
+
+    output = capsys.readouterr().out.strip()
+    assert output == f"{run.INFO} ran 0 tests"
+
+
 def test_print_ascii_summary_outputs_table(capsys):
     summary = run.Summary(failed=1, total=357, skipped=3)
 
@@ -559,6 +580,7 @@ def test_cli_rejects_partial_suite_selection(
                 coverage_source_dir=None,
                 runner_summary=False,
                 fixture_summary=False,
+                show_summary=False,
                 jobs=1,
                 keep_tmp_dirs=False,
                 passthrough=False,
@@ -583,6 +605,7 @@ def test_cli_rejects_partial_suite_selection(
                 coverage_source_dir=None,
                 runner_summary=False,
                 fixture_summary=False,
+                show_summary=False,
                 jobs=1,
                 keep_tmp_dirs=False,
                 passthrough=False,
@@ -952,11 +975,10 @@ def test_print_aggregate_totals(capsys):
     run._print_aggregate_totals(3, summary)
 
     output = capsys.readouterr().out
-    assert "aggregate totals across 3 projects" in output
-    assert "10 tests" in output
-    assert "passed=7" in output
-    assert "failed=2" in output
-    assert "skipped=1" in output
+    assert output.strip().startswith(f"{run.INFO} ran 10 tests across 3 projects:")
+    assert "7 passed (70.0%)" in output
+    assert "1 skipped (10.0%)" in output
+    assert "2 failed (20.0%)" in output
 
 
 def test_directory_with_test_yaml_inside_root_is_selector(tmp_path, monkeypatch):
