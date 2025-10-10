@@ -495,9 +495,14 @@ def cleanup_test_tmp_dir(path: str | os.PathLike[str] | None) -> None:
         return
     tmp_path = Path(path)
     _ACTIVE_TMP_DIRS.discard(tmp_path)
+    try:
+        fixtures_impl.invoke_tmp_dir_cleanup(tmp_path)
+    except Exception:  # pragma: no cover - defensive logging
+        pass
     if KEEP_TMP_DIRS:
         return
-    shutil.rmtree(tmp_path, ignore_errors=True)
+    if tmp_path.exists():
+        shutil.rmtree(tmp_path, ignore_errors=True)
     _cleanup_tmp_base_dirs()
 
 

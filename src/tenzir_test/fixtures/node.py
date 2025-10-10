@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import atexit
+import functools
+import logging
 import os
 import subprocess
 import tempfile
@@ -12,7 +15,12 @@ from dataclasses import dataclass
 from typing import Iterator, TYPE_CHECKING
 import weakref
 
-from . import current_context, register
+from . import (
+    current_context,
+    register,
+    register_tmp_dir_cleanup,
+    unregister_tmp_dir_cleanup,
+)
 
 if TYPE_CHECKING:
     from . import FixtureContext
@@ -46,36 +54,74 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
 class _TempDirRecord:
     temp_dir: tempfile.TemporaryDirectory[str]
     ref: weakref.ref["FixtureContext"]
+    path: Path
+    process: subprocess.Popen[str] | None = None
 
 
 _TEMP_DIRS: dict[int, _TempDirRecord] = {}
 _TEMP_DIR_LOCK = threading.Lock()
+_LOGGER = logging.getLogger(__name__)
+
+
+def _stop_process(record: _TempDirRecord) -> None:
+    process = record.process
+    if process is None:
+        return
+    record.process = None
+    try:
+        _terminate_process(process)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        _LOGGER.warning("failed to terminate tenzir-node process: %s", exc)
+
+
+def _cleanup_record(record: _TempDirRecord) -> None:
+    _stop_process(record)
+    try:
+        record.temp_dir.cleanup()
+    except Exception as exc:  # pragma: no cover - defensive logging
+        _LOGGER.debug("failed to remove temporary directory %s: %s", record.path, exc)
+
+
+def _cleanup_record_by_key(key: int) -> None:
+    with _TEMP_DIR_LOCK:
+        record = _TEMP_DIRS.pop(key, None)
+    if record is None:
+        return
+    unregister_tmp_dir_cleanup(record.path)
+    _cleanup_record(record)
 
 
 def _ensure_temp_dir(context: "FixtureContext") -> Path:
     key = id(context)
+    stale_record: _TempDirRecord | None = None
     with _TEMP_DIR_LOCK:
         record = _TEMP_DIRS.get(key)
         if record is not None:
             current = record.ref()
             if current is context:
-                return Path(record.temp_dir.name)
-            record.temp_dir.cleanup()
+                return record.path
             _TEMP_DIRS.pop(key, None)
+            stale_record = record
+    if stale_record is not None:
+        unregister_tmp_dir_cleanup(stale_record.path)
+        _cleanup_record(stale_record)
 
-        tmp_root = context.env.get("TENZIR_TMP_DIR") or None
-        temp_dir = tempfile.TemporaryDirectory(prefix="tenzir-node-", dir=tmp_root)
+    tmp_root = context.env.get("TENZIR_TMP_DIR") or None
+    temp_dir = tempfile.TemporaryDirectory(prefix="tenzir-node-", dir=tmp_root)
+    path = Path(temp_dir.name)
 
-        def _cleanup(dead_ref: weakref.ref["FixtureContext"]) -> None:
-            with _TEMP_DIR_LOCK:
-                existing = _TEMP_DIRS.get(key)
-                if existing is not None and existing.ref is dead_ref:
-                    existing.temp_dir.cleanup()
-                    _TEMP_DIRS.pop(key, None)
+    def _cleanup(dead_ref: weakref.ref["FixtureContext"]) -> None:
+        with _TEMP_DIR_LOCK:
+            existing = _TEMP_DIRS.get(key)
+        if existing is not None and existing.ref is dead_ref:
+            _cleanup_record_by_key(key)
 
-        ctx_ref = weakref.ref(context, _cleanup)
-        _TEMP_DIRS[key] = _TempDirRecord(temp_dir=temp_dir, ref=ctx_ref)
-        return Path(temp_dir.name)
+    ctx_ref = weakref.ref(context, _cleanup)
+    record = _TempDirRecord(temp_dir=temp_dir, ref=ctx_ref, path=path)
+    with _TEMP_DIR_LOCK:
+        _TEMP_DIRS[key] = record
+    register_tmp_dir_cleanup(path, functools.partial(_cleanup_record_by_key, key))
+    return path
 
 
 @contextmanager
@@ -96,6 +142,7 @@ def node() -> Iterator[dict[str, str]]:
     if node_config:
         config_args.append(f"--config={node_config}")
     temp_dir = _ensure_temp_dir(context)
+    key = id(context)
 
     configured_state = env.get("TENZIR_NODE_STATE_DIRECTORY")
     state_dir = Path(configured_state) if configured_state else temp_dir / "state"
@@ -143,6 +190,10 @@ def node() -> Iterator[dict[str, str]]:
         start_new_session=True,
         cwd=test_root,
     )
+    with _TEMP_DIR_LOCK:
+        record = _TEMP_DIRS.get(key)
+        if record is not None:
+            record.process = process
 
     endpoint: str | None = None
     try:
@@ -167,9 +218,28 @@ def node() -> Iterator[dict[str, str]]:
             process.stdout.close()
         if process.stderr:
             process.stderr.close()
-        _terminate_process(process)
+        with _TEMP_DIR_LOCK:
+            record = _TEMP_DIRS.get(key)
+        if record is not None:
+            _stop_process(record)
+        else:  # pragma: no cover - defensive logging
+            _LOGGER.debug("node fixture context missing record for key %s", key)
+            try:
+                _terminate_process(process)
+            except Exception as exc:
+                _LOGGER.warning("failed to terminate leaked tenzir-node (key=%s): %s", key, exc)
 
 
 register("node", node, replace=True)
+
+
+@atexit.register
+def _cleanup_all_node_temp_dirs() -> None:  # pragma: no cover - interpreter shutdown
+    keys: list[int]
+    with _TEMP_DIR_LOCK:
+        keys = list(_TEMP_DIRS.keys())
+    for key in keys:
+        _cleanup_record_by_key(key)
+
 
 __all__ = ["node"]

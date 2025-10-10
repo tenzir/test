@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from contextlib import ExitStack, AbstractContextManager, contextmanager
 from contextvars import ContextVar, Token
@@ -26,6 +27,9 @@ from typing import (
 
 _FIXTURES_ENV = "TENZIR_TEST_FIXTURES"
 _HOOKS_ATTR = "__tenzir_fixture_hooks__"
+
+_TMP_DIR_CLEANUP: dict[Path, Callable[[], None]] = {}
+_TMP_DIR_CLEANUP_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -306,6 +310,36 @@ def pop_context(token: Token) -> None:
     _CONTEXT.reset(token)
 
 
+def register_tmp_dir_cleanup(path: str | os.PathLike[str], callback: Callable[[], None]) -> None:
+    """Register a cleanup callback for a temporary directory."""
+
+    normalized = Path(path).resolve()
+    with _TMP_DIR_CLEANUP_LOCK:
+        _TMP_DIR_CLEANUP[normalized] = callback
+
+
+def unregister_tmp_dir_cleanup(path: str | os.PathLike[str]) -> None:
+    """Remove a previously registered cleanup callback, if any."""
+
+    normalized = Path(path).resolve()
+    with _TMP_DIR_CLEANUP_LOCK:
+        _TMP_DIR_CLEANUP.pop(normalized, None)
+
+
+def invoke_tmp_dir_cleanup(path: str | os.PathLike[str]) -> None:
+    """Execute and discard the cleanup callback registered for `path`, if present."""
+
+    normalized = Path(path).resolve()
+    with _TMP_DIR_CLEANUP_LOCK:
+        targets = [
+            _TMP_DIR_CLEANUP.pop(candidate)
+            for candidate in tuple(_TMP_DIR_CLEANUP)
+            if candidate == normalized or candidate.is_relative_to(normalized)
+        ]
+    for callback in targets:
+        callback()
+
+
 def current_context() -> FixtureContext | None:
     """Return the active fixture context, if any."""
 
@@ -570,4 +604,7 @@ __all__ = [
     "has",
     "register",
     "require",
+    "register_tmp_dir_cleanup",
+    "unregister_tmp_dir_cleanup",
+    "invoke_tmp_dir_cleanup",
 ]
