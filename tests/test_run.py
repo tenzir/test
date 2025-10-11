@@ -56,9 +56,9 @@ def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, c
 def test_format_summary_reports_counts_and_percentages() -> None:
     summary = run.Summary(failed=1, total=357, skipped=3)
     message = run._format_summary(summary)
-    assert message.startswith(f"Test summary: {run.CHECKMARK} Passed 353/357 (98.9%)")
-    assert f"{run.CROSS} Failed 1 (0.3%)" in message
-    assert f"{run.SKIP} Skipped 3 (0.8%)" in message
+    assert message.startswith(f"Test summary: {run.CHECKMARK} Passed 353/357 (99%)")
+    assert f"{run.CROSS} Failed 1 (0%)" in message
+    assert f"{run.SKIP} Skipped 3 (1%)" in message
 
 
 def test_format_summary_handles_zero_total() -> None:
@@ -72,10 +72,11 @@ def test_print_compact_summary(capsys: pytest.CaptureFixture[str]) -> None:
     run._print_compact_summary(summary)
 
     output = capsys.readouterr().out.strip()
-    assert output.startswith(f"{run.INFO} ran 3 tests: ")
-    assert "3 passed (100.0%)" in output
-    assert "0 skipped (0.0%)" in output
-    assert "0 failed (0.0%)" in output
+    expected = (
+        f"{run.INFO} ran 3 tests: "
+        f"3 passed ({run.PASS_SPECTRUM[10]}100%{run.RESET_COLOR}) / 0 failed (0%)"
+    )
+    assert output == expected
 
 
 def test_print_compact_summary_handles_zero_total(capsys: pytest.CaptureFixture[str]) -> None:
@@ -139,8 +140,8 @@ def test_print_ascii_summary_with_runner_and_fixture_tables(capsys):
     joined_runners = "\n".join(runner_table)
     assert "python" in joined_runners
     assert "tenzir" in joined_runners
-    assert "16.0%" in joined_runners
-    assert "84.0%" in joined_runners
+    assert "16%" in joined_runners
+    assert "84%" in joined_runners
 
     assert fixture_table[0].startswith("┌")
     assert "Fixture" in fixture_table[1]
@@ -148,8 +149,8 @@ def test_print_ascii_summary_with_runner_and_fixture_tables(capsys):
     joined_fixtures = "\n".join(fixture_table)
     assert "mini-cluster" in joined_fixtures
     assert "node" in joined_fixtures
-    assert "2.8%" in joined_fixtures
-    assert "1.4%" in joined_fixtures
+    assert "3%" in joined_fixtures
+    assert "1%" in joined_fixtures
 
     assert outcome_table[0].startswith("┌")
     joined_outcome = "\n".join(outcome_table)
@@ -474,7 +475,7 @@ def test_node_fixture_adds_package_dirs_from_env(monkeypatch):
 
 
 def test_node_fixture_in_suite_receives_package_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
-    package_root = Path(__file__).resolve().parent.parent / "example_package"
+    package_root = Path(__file__).resolve().parent.parent / "example-package"
     suite_dir = package_root / "tests" / "node"
     original_settings = config.Settings(
         root=run.ROOT,
@@ -509,7 +510,7 @@ def test_node_fixture_in_suite_receives_package_dirs(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("TENZIR_TEST_DEBUG", "1")
 
     try:
-        suite_tests = sorted((suite_dir).glob('*.tql'))
+        suite_tests = sorted((suite_dir).glob("*.tql"))
         queue = run._build_queue_from_paths(suite_tests, coverage=False)
         worker = run.Worker(queue, update=False, coverage=False)
         worker.start()
@@ -1077,10 +1078,12 @@ def test_print_aggregate_totals(capsys):
     run._print_aggregate_totals(3, summary)
 
     output = capsys.readouterr().out
-    assert output.strip().startswith(f"{run.INFO} ran 10 tests across 3 projects:")
-    assert "7 passed (70.0%)" in output
-    assert "1 skipped (10.0%)" in output
-    assert "2 failed (20.0%)" in output
+    expected = (
+        f"{run.INFO} ran 10 tests across 3 projects: "
+        f"7 passed ({run.PASS_SPECTRUM[7]}78%{run.RESET_COLOR}) / "
+        f"2 failed ({run.FAIL_COLOR}22%{run.RESET_COLOR}) • 1 skipped"
+    )
+    assert output.strip() == expected
 
 
 def test_directory_with_test_yaml_inside_root_is_selector(tmp_path, monkeypatch):

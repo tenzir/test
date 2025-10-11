@@ -163,6 +163,23 @@ CROSS = "\033[31m✘\033[0m"
 INFO = "\033[94;1mi\033[0m"
 SKIP = "\033[90;1m●\033[0m"
 DEBUG_PREFIX = "\033[95m◆\033[0m"
+CHECK_COLOR = "\033[92;1m"
+FAIL_COLOR = "\033[31m"
+SKIP_COLOR = "\033[90;1m"
+RESET_COLOR = "\033[0m"
+PASS_SPECTRUM = [
+    "\033[38;5;52m",   # 0-9%   deep red
+    "\033[38;5;88m",   # 10-19% red
+    "\033[38;5;124m",  # 20-29% dark orange
+    "\033[38;5;166m",  # 30-39% orange
+    "\033[38;5;202m",  # 40-49% amber
+    "\033[38;5;214m",  # 50-59% golden
+    "\033[38;5;184m",  # 60-69% yellow-green
+    "\033[38;5;148m",  # 70-79% spring green
+    "\033[38;5;112m",  # 80-89% medium green
+    "\033[38;5;28m",   # 90-99% deep forest green
+    CHECK_COLOR,       # 100% bright bold green
+]
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 stdout_lock = threading.RLock()
@@ -586,7 +603,11 @@ def _set_discovery_logging(enabled: bool) -> None:
 
 
 def _print_discovery_message(message: str) -> None:
-    _CLI_LOGGER.debug(message)
+    if _CLI_LOGGER.isEnabledFor(logging.DEBUG):
+        _CLI_LOGGER.debug(message)
+    else:
+        with stdout_lock:
+            builtins.print(f"{DEBUG_PREFIX} {message}", flush=True)
 
 
 class ProjectMarker(enum.Enum):
@@ -1760,9 +1781,13 @@ class Summary:
 
 
 def _format_percentage(count: int, total: int) -> str:
+    return f"{_percentage_value(count, total)}%"
+
+
+def _percentage_value(count: int, total: int) -> int:
     if total <= 0:
-        return "0.0%"
-    return f"{(count / total) * 100:.1f}%"
+        return 0
+    return int(round((count / total) * 100))
 
 
 def _format_summary(summary: Summary) -> str:
@@ -1939,17 +1964,25 @@ def _print_aggregate_totals(project_count: int, summary: Summary) -> None:
     failed = summary.failed
     skipped = summary.skipped
     passed = total - failed - skipped
+    executed = max(total - skipped, 0)
     project_noun = "project" if project_count == 1 else "projects"
     test_noun = "test" if total == 1 else "tests"
     if total <= 0:
         print(f"{INFO} ran 0 tests across {project_count} {project_noun}")
         return
-    parts = [
-        f"{passed} passed ({_format_percentage(passed, total)})",
-        f"{skipped} skipped ({_format_percentage(skipped, total)})",
-        f"{failed} failed ({_format_percentage(failed, total)})",
-    ]
-    detail = ", ".join(parts)
+    pass_rate = _percentage_value(passed, executed) if executed > 0 else 0
+    fail_rate = _percentage_value(failed, executed) if executed > 0 else 0
+    pass_index = min(pass_rate // 10, len(PASS_SPECTRUM) - 1)
+    passed_percentage = f"{PASS_SPECTRUM[pass_index]}{pass_rate}%{RESET_COLOR}"
+    if fail_rate > 0:
+        failed_percentage = f"{FAIL_COLOR}{fail_rate}%{RESET_COLOR}"
+    else:
+        failed_percentage = f"{fail_rate}%"
+    pass_segment = f"{passed} passed ({passed_percentage})"
+    fail_segment = f"{failed} failed ({failed_percentage})"
+    detail = f"{pass_segment} / {fail_segment}"
+    if skipped:
+        detail = f"{detail} • {skipped} skipped"
     print(f"{INFO} ran {total} {test_noun} across {project_count} {project_noun}: {detail}")
 
 
@@ -2182,7 +2215,7 @@ def _render_summary_box(summary: Summary) -> list[str]:
         (f"{CHECKMARK} Passed", str(passed), _format_percentage(passed, total)),
         (f"{SKIP} Skipped", str(summary.skipped), _format_percentage(summary.skipped, total)),
         (f"{CROSS} Failed", str(summary.failed), _format_percentage(summary.failed, total)),
-        ("Total tests", str(total), "100.0%"),
+        ("Total tests", str(total), "100%"),
     ]
     headers = ("Outcome", "Count", "Share")
     label_width = max(len(headers[0]), *(len(_strip_ansi(row[0])) for row in rows))
@@ -2231,12 +2264,21 @@ def _print_ascii_summary(summary: Summary, *, include_runner: bool, include_fixt
 def _print_compact_summary(summary: Summary) -> None:
     total = summary.total
     passed = max(0, total - summary.failed - summary.skipped)
-    parts: list[str] = []
+    executed = max(total - summary.skipped, 0)
     if total > 0:
-        parts.append(f"{passed} passed ({_format_percentage(passed, total)})")
-        parts.append(f"{summary.skipped} skipped ({_format_percentage(summary.skipped, total)})")
-        parts.append(f"{summary.failed} failed ({_format_percentage(summary.failed, total)})")
-        detail = ", ".join(parts)
+        pass_rate = _percentage_value(passed, executed) if executed > 0 else 0
+        fail_rate = _percentage_value(summary.failed, executed) if executed > 0 else 0
+        pass_index = min(pass_rate // 10, len(PASS_SPECTRUM) - 1)
+        pass_percentage = f"{PASS_SPECTRUM[pass_index]}{pass_rate}%{RESET_COLOR}"
+        if fail_rate > 0:
+            fail_percentage = f"{FAIL_COLOR}{fail_rate}%{RESET_COLOR}"
+        else:
+            fail_percentage = f"{fail_rate}%"
+        pass_segment = f"{passed} passed ({pass_percentage})"
+        fail_segment = f"{summary.failed} failed ({fail_percentage})"
+        detail = f"{pass_segment} / {fail_segment}"
+        if summary.skipped:
+            detail = f"{detail} • {summary.skipped} skipped"
         noun = "test" if total == 1 else "tests"
         print(f"{INFO} ran {total} {noun}: {detail}")
     else:
