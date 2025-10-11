@@ -418,15 +418,14 @@ def run_subprocess(
     stdout = subprocess.PIPE if capture_output and not stream_output else None
     stderr = subprocess.PIPE if capture_output and not stream_output else None
 
-    if _debug_logging:
+    if _CLI_LOGGER.isEnabledFor(logging.DEBUG):
         cmd_display = shlex.join(str(arg) for arg in args)
         cwd_value = kwargs.get("cwd")
         if cwd_value:
             cwd_segment = f" (cwd={cwd_value if isinstance(cwd_value, str) else str(cwd_value)})"
         else:
             cwd_segment = ""
-        with stdout_lock:
-            print(f"{DEBUG_PREFIX} exec {cmd_display}{cwd_segment}")
+        _CLI_LOGGER.debug("exec %s%s", cmd_display, cwd_segment)
 
     return subprocess.run(
         args,
@@ -557,6 +556,25 @@ if not _CONFIG_LOGGER.handlers:
     _CONFIG_LOGGER.addHandler(handler)
     _CONFIG_LOGGER.propagate = False
 
+
+class _CliDebugHandler(logging.Handler):
+    """Stream debug messages through stdout using the CLI formatting."""
+
+    def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - thin wrapper
+        message = self.format(record)
+        with stdout_lock:
+            builtins.print(f"{DEBUG_PREFIX} {message}", flush=True)
+
+
+_CLI_LOGGER = logging.getLogger("tenzir_test.cli")
+if not _CLI_LOGGER.handlers:
+    cli_handler = _CliDebugHandler()
+    cli_handler.setLevel(logging.DEBUG)
+    cli_handler.setFormatter(logging.Formatter("%(message)s"))
+    _CLI_LOGGER.addHandler(cli_handler)
+    _CLI_LOGGER.propagate = False
+_CLI_LOGGER.setLevel(logging.DEBUG if _debug_logging else logging.WARNING)
+
 _DIRECTORY_CONFIG_CACHE: dict[Path, "_DirectoryConfig"] = {}
 
 _DISCOVERY_ENABLED = False
@@ -568,7 +586,7 @@ def _set_discovery_logging(enabled: bool) -> None:
 
 
 def _print_discovery_message(message: str) -> None:
-    print(f"{DEBUG_PREFIX} {message}")
+    _CLI_LOGGER.debug(message)
 
 
 class ProjectMarker(enum.Enum):
@@ -1513,6 +1531,7 @@ def _apply_fixture_env(env: dict[str, str], fixtures: tuple[str, ...]) -> None:
 def set_debug_logging(enabled: bool) -> None:
     global _debug_logging
     _debug_logging = enabled
+    _CLI_LOGGER.setLevel(logging.DEBUG if enabled else logging.WARNING)
 
 
 def is_debug_logging_enabled() -> bool:
@@ -1524,7 +1543,7 @@ def log_comparison(test: Path, ref_path: Path, *, mode: str) -> None:
         return
     rel_test = _relativize_path(test)
     rel_ref = _relativize_path(ref_path)
-    print(f"{DEBUG_PREFIX} {mode} {rel_test} -> {rel_ref}")
+    _CLI_LOGGER.debug("%s %s -> %s", mode, rel_test, rel_ref)
 
 
 def report_failure(test: Path, message: str) -> None:
@@ -2521,7 +2540,7 @@ def _log_suite_event(
         return
     rel_dir = _relativize_path(suite.directory)
     action = "setting up" if event == "setup" else "tearing down"
-    print(f"{DEBUG_PREFIX} suite {action} {suite.name} ({total} tests) @ {rel_dir}")
+    _CLI_LOGGER.debug("suite %s %s (%d tests) @ %s", action, suite.name, total, rel_dir)
 
 
 class Worker:
@@ -2687,8 +2706,7 @@ class Worker:
             with stdout_lock:
                 print(f"{INFO} running {rel_path}{detail_segment} [passthrough]")
         elif self._debug:
-            with stdout_lock:
-                print(f"{DEBUG_PREFIX} running {rel_path}{detail_segment}")
+            _CLI_LOGGER.debug("running %s%s", rel_path, detail_segment)
         max_attempts = retry_limit
         attempts = 0
         final_outcome: bool | str = False
