@@ -1,3 +1,29 @@
-name: Example package
+# The package ID defines the top-level module name. For example, placing a
+# user-defined operator `foo` in operators/foo.tql makes it callable via
+# `example::foo`.
+#
+# If you do not specify an ID, the directory name of this package.yaml will be
+# used as the ID. Package installation fails if the ID or directory name
+# contains invalid characters. Allowed characters are alphanumeric and
+# underscore, e.g., `my-package` is invalid but `my_package` is okay.
+id: example
+
+# The name should be a short, human-readable description of the package.
+name: Example Package
+
+# The description should provide a brief overview of the package's purpose and
+# functionality. Markdown is supported.
 description: |
-  This is an example package that demonstrates how to write tests for Tenzir packages.
+  This is an example package that demonstrates how to write tests for Tenzir
+  packages.
+
+# Contexts live inside a node. The test harness passes --package-dirs to the node
+# fixture, making contexts also available in the fixture. The harness also
+# passes --package-dirs to the Tenzir running that invokes the the `tenzir`
+# binary. In this case the context configuration gets ignored.
+contexts:
+  ctx:
+    type: lookup-table
+    description: |
+      An example context that gets installed by the test framework when the
+      harness passes --package-dirs to the node fixture.

@@ -1,9 +1,7 @@
 ---
-name: Example Operator
 description: |
   This operator performs a simple transformation on the input data.
 ---
 
 where x > 0
-set y = x + 1
-drop z
+set x = x + 1

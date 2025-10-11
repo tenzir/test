@@ -1,0 +1,15 @@
+{
+  timestamp: 2025-09-25T00:00:00Z,
+  actor: "admin",
+  message: "Security breach detected in main database",
+}
+{
+  timestamp: 2025-09-30T00:00:00Z,
+  actor: "admin",
+  message: "Emergency protocols activated",
+}
+{
+  timestamp: 2025-10-04T00:00:00Z,
+  actor: "admin",
+  message: "System shutdown imminent",
+}

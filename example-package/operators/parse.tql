@@ -1,0 +1,2 @@
+// Parse our sample.log.
+read_grok r"(?<timestamp>\d{4}-\d{2}-\d{2}) \[(?<actor>\w+)\] %{GREEDYDATA:message}"
