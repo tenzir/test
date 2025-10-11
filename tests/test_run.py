@@ -423,6 +423,110 @@ def test_node_fixture_skips_config_when_unset(monkeypatch):
     assert "--package-dirs=/pkg" in cmd
 
 
+def test_node_fixture_adds_package_dirs_from_env(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return SimpleNamespace(
+            stdout=io.StringIO("localhost:20000\n"),
+            stderr=io.StringIO(""),
+            pid=44,
+            terminate=lambda: None,
+            wait=lambda timeout=None: None,
+            kill=lambda: None,
+        )
+
+    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(node_fixture.os, "getpgid", lambda pid: 100)
+
+    def fake_killpg(_pgid, _sig):
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(node_fixture.os, "killpg", fake_killpg)
+
+    env = {
+        "TENZIR_NODE_BINARY": "/usr/bin/tenzir-node",
+        "TENZIR_BINARY": "/usr/bin/tenzir",
+        "TENZIR_PACKAGE_ROOT": "/pkg",
+    }
+    context = fixture_api.FixtureContext(
+        test=Path("/tmp/package-test.tql"),
+        config={"timeout": 30},
+        coverage=False,
+        env=env,
+        config_args=("--config=/default/tenzir.yaml",),
+        tenzir_binary="/usr/bin/tenzir",
+        tenzir_node_binary="/usr/bin/tenzir-node",
+    )
+
+    token = fixture_api.push_context(context)
+    try:
+        with node_fixture.node():
+            pass
+    finally:
+        fixture_api.pop_context(token)
+
+    cmd = captured["cmd"]
+    assert all(not arg.startswith("--config=") for arg in cmd)
+    package_flags = [arg for arg in cmd if arg.startswith("--package-dirs=")]
+    assert package_flags == ["--package-dirs=/pkg"]
+
+
+def test_node_fixture_in_suite_receives_package_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
+    package_root = Path(__file__).resolve().parent.parent / "example_package"
+    suite_dir = package_root / "tests" / "node"
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=package_root,
+            tenzir_binary="tenzir",
+            tenzir_node_binary="tenzir-node",
+        )
+    )
+    run._clear_directory_config_cache()
+
+    captured: dict[str, object] = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["node_cmd"] = list(cmd)
+        captured["node_kwargs"] = kwargs
+        return SimpleNamespace(
+            stdout=io.StringIO("localhost:10000\n"),
+            stderr=io.StringIO(""),
+            pid=101,
+            terminate=lambda: None,
+            wait=lambda timeout=None: None,
+            kill=lambda: None,
+        )
+
+    monkeypatch.setattr(run, "run_simple_test", lambda *args, **kwargs: True)
+    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("TENZIR_TEST_DEBUG", "1")
+
+    try:
+        suite_tests = sorted((suite_dir).glob('*.tql'))
+        queue = run._build_queue_from_paths(suite_tests, coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 3
+    finally:
+        run.apply_settings(original_settings)
+        run._clear_directory_config_cache()
+
+    node_cmd = captured.get("node_cmd")
+    assert isinstance(node_cmd, list)
+    assert any(
+        arg == f"--package-dirs={package_root}"
+        for arg in node_cmd  # type: ignore[no-untyped-call]
+    )
+
+
 def test_worker_prints_passthrough_header(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

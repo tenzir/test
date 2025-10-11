@@ -141,6 +141,12 @@ def node() -> Iterator[dict[str, str]]:
     node_config = env.get("TENZIR_NODE_CONFIG")
     if node_config:
         config_args.append(f"--config={node_config}")
+    package_root = env.get("TENZIR_PACKAGE_ROOT")
+    package_args: list[str] = []
+    if package_root:
+        package_arg = f"--package-dirs={package_root}"
+        if package_arg not in config_args:
+            package_args.append(package_arg)
     temp_dir = _ensure_temp_dir(context)
     key = id(context)
 
@@ -178,6 +184,7 @@ def node() -> Iterator[dict[str, str]]:
         "--endpoint=localhost:0",
         "--print-endpoint",
         *config_args,
+        *package_args,
     ]
 
     process = subprocess.Popen(

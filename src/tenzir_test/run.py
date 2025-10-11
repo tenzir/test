@@ -2334,6 +2334,15 @@ def run_simple_test(
     expect_error = bool(test_config.get("error", False))
     passthrough_mode = is_passthrough_enabled()
 
+    package_root = packages.find_package_root(test)
+    package_args: list[str] = []
+    if package_root is not None:
+        env["TENZIR_PACKAGE_ROOT"] = str(package_root)
+        package_tests_root = package_root / "tests"
+        if inputs_override is None:
+            env["TENZIR_INPUTS"] = str(package_tests_root / "inputs")
+        package_args.append(f"--package-dirs={package_root}")
+
     context_token = fixtures_impl.push_context(
         fixtures_impl.FixtureContext(
             test=test,
@@ -2349,15 +2358,6 @@ def run_simple_test(
         with fixtures_impl.activate(fixtures) as fixture_env:
             env.update(fixture_env)
             _apply_fixture_env(env, fixtures)
-
-            package_root = packages.find_package_root(test)
-            package_args: list[str] = []
-            if package_root is not None:
-                env["TENZIR_PACKAGE_ROOT"] = str(package_root)
-                package_tests_root = package_root / "tests"
-                if inputs_override is None:
-                    env["TENZIR_INPUTS"] = str(package_tests_root / "inputs")
-                package_args.append(f"--package-dirs={package_root}")
 
             # Set up environment for code coverage if enabled
             if coverage:
@@ -2580,6 +2580,11 @@ class Worker:
             raise RuntimeError(f"failed to parse suite config for {primary_test}: {exc}") from exc
         inputs_override = typing.cast(str | None, primary_config.get("inputs"))
         env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
+        package_root = packages.find_package_root(primary_test)
+        if package_root is not None:
+            env["TENZIR_PACKAGE_ROOT"] = str(package_root)
+            if inputs_override is None:
+                env["TENZIR_INPUTS"] = str((package_root / "tests" / "inputs"))
         _apply_fixture_env(env, suite_item.fixtures)
         context_token = fixtures_impl.push_context(
             fixtures_impl.FixtureContext(
