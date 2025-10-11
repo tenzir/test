@@ -6,6 +6,7 @@ import atexit
 import functools
 import logging
 import os
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -186,6 +187,10 @@ def node() -> Iterator[dict[str, str]]:
         *config_args,
         *package_args,
     ]
+
+    if _LOGGER.isEnabledFor(logging.DEBUG):
+        command_line = shlex.join(node_cmd)
+        _LOGGER.debug("spawning tenzir-node: %s (cwd=%s)", command_line, test_root)
 
     process = subprocess.Popen(
         node_cmd,

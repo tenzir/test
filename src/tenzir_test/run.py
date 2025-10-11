@@ -13,6 +13,7 @@ import importlib.util
 import logging
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -416,6 +417,16 @@ def run_subprocess(
     stream_output = passthrough and not force_capture
     stdout = subprocess.PIPE if capture_output and not stream_output else None
     stderr = subprocess.PIPE if capture_output and not stream_output else None
+
+    if _debug_logging:
+        cmd_display = shlex.join(str(arg) for arg in args)
+        cwd_value = kwargs.get("cwd")
+        if cwd_value:
+            cwd_segment = f" (cwd={cwd_value if isinstance(cwd_value, str) else str(cwd_value)})"
+        else:
+            cwd_segment = ""
+        with stdout_lock:
+            print(f"{DEBUG_PREFIX} exec {cmd_display}{cwd_segment}")
 
     return subprocess.run(
         args,
@@ -2797,12 +2808,20 @@ def run_cli(
                 for existing_handler in list(root_logger.handlers):
                     existing_handler.setFormatter(debug_formatter)
             root_logger.setLevel(logging.INFO)
-            fixture_logger.setLevel(logging.INFO)
-            fixture_logger.propagate = True
+            if not fixture_logger.handlers:
+                fixture_logger.addHandler(logging.StreamHandler())
+            for handler in list(fixture_logger.handlers):
+                handler.setLevel(logging.DEBUG)
+                handler.setFormatter(debug_formatter)
+            fixture_logger.setLevel(logging.DEBUG)
+            fixture_logger.propagate = False
         else:
             for existing_handler in list(root_logger.handlers):
                 existing_handler.setFormatter(default_formatter)
             root_logger.setLevel(logging.WARNING)
+            for handler in list(fixture_logger.handlers):
+                handler.setLevel(logging.INFO)
+                handler.setFormatter(default_formatter)
             fixture_logger.setLevel(logging.WARNING)
             fixture_logger.propagate = True
 

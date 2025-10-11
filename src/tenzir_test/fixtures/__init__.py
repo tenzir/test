@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -84,6 +85,9 @@ class Executor:
             desired_timeout if desired_timeout is not None else self.remaining_timeout
         )
         timeout = min(self.remaining_timeout, requested_timeout)
+        if logger.isEnabledFor(logging.DEBUG):
+            command_line = shlex.join(str(part) for part in cmd)
+            logger.debug("executing fixture command: %s", command_line)
         res = subprocess.run(cmd, timeout=timeout, capture_output=True)
         end = time.process_time()
         used_time = end - start
