@@ -168,8 +168,8 @@ FAIL_COLOR = "\033[31m"
 SKIP_COLOR = "\033[90;1m"
 RESET_COLOR = "\033[0m"
 PASS_SPECTRUM = [
-    "\033[38;5;52m",   # 0-9%   deep red
-    "\033[38;5;88m",   # 10-19% red
+    "\033[38;5;52m",  # 0-9%   deep red
+    "\033[38;5;88m",  # 10-19% red
     "\033[38;5;124m",  # 20-29% dark orange
     "\033[38;5;166m",  # 30-39% orange
     "\033[38;5;202m",  # 40-49% amber
@@ -177,8 +177,8 @@ PASS_SPECTRUM = [
     "\033[38;5;184m",  # 60-69% yellow-green
     "\033[38;5;148m",  # 70-79% spring green
     "\033[38;5;112m",  # 80-89% medium green
-    "\033[38;5;28m",   # 90-99% deep forest green
-    CHECK_COLOR,       # 100% bright bold green
+    "\033[38;5;28m",  # 90-99% deep forest green
+    CHECK_COLOR,  # 100% bright bold green
 ]
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -2237,9 +2237,7 @@ def _render_summary_box(summary: Summary) -> list[str]:
         return char * (width + 2)
 
     top = f"┌{frame('─', label_width)}┬{frame('─', column_width)}┐"
-    header = (
-        f"│ {_ljust_visible(headers[0], label_width)} │ {_ljust_visible(headers[1], column_width)} │"
-    )
+    header = f"│ {_ljust_visible(headers[0], label_width)} │ {_ljust_visible(headers[1], column_width)} │"
     separator = f"├{frame('─', label_width)}┼{frame('─', column_width)}┤"
     executed_lines = [
         f"│ {_ljust_visible(label, label_width)} │ "

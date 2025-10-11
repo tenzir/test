@@ -477,7 +477,7 @@ def test_node_fixture_adds_package_dirs_from_env(monkeypatch):
 
 def test_node_fixture_in_suite_receives_package_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
     package_root = Path(__file__).resolve().parent.parent / "example-package"
-    suite_dir = package_root / "tests" / "node"
+    suite_dir = package_root / "tests" / "context"
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
