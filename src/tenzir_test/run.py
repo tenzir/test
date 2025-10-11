@@ -2211,33 +2211,67 @@ def _render_summary_box(summary: Summary) -> list[str]:
         ]
 
     passed = max(0, total - summary.failed - summary.skipped)
-    rows = [
-        (f"{CHECKMARK} Passed", str(passed), _format_percentage(passed, total)),
-        (f"{SKIP} Skipped", str(summary.skipped), _format_percentage(summary.skipped, total)),
-        (f"{CROSS} Failed", str(summary.failed), _format_percentage(summary.failed, total)),
-        ("Total tests", str(total), "100%"),
+    executed = max(total - summary.skipped, 0)
+    pass_share = _percentage_value(passed, executed) if executed > 0 else 0
+    fail_share = _percentage_value(summary.failed, executed) if executed > 0 else 0
+    skip_share = _percentage_value(summary.skipped, total)
+
+    executed_rows = [
+        (f"{CHECKMARK} Passed", str(passed), f"{pass_share}%"),
+        (f"{CROSS} Failed", str(summary.failed), f"{fail_share}%"),
     ]
-    headers = ("Outcome", "Count", "Share")
-    label_width = max(len(headers[0]), *(len(_strip_ansi(row[0])) for row in rows))
-    count_width = max(len(headers[1]), *(len(row[1]) for row in rows))
-    share_width = max(len(headers[2]), *(len(row[2]) for row in rows))
+    skipped_row = (f"{SKIP} Skipped", str(summary.skipped), f"{skip_share}%")
+    total_row = ("∑ Total", str(total), "")
+
+    all_rows = [*executed_rows, skipped_row, total_row]
+    headers = ("Outcome", "Count")
+    label_width = max(len(headers[0]), *(len(_strip_ansi(row[0])) for row in all_rows))
+    count_lengths = [len(_strip_ansi(row[1])) for row in all_rows]
+    count_width = max(count_lengths, default=0)
+    share_lengths = [len(row[2]) for row in all_rows if row[2]]
+    percent_width = max(share_lengths, default=0)
+    spacing = 2 if percent_width else 0
+    column_width = count_width + spacing + percent_width
 
     def frame(char: str, width: int) -> str:
         return char * (width + 2)
 
-    top = f"┌{frame('─', label_width)}┬{frame('─', count_width)}┬{frame('─', share_width)}┐"
+    top = f"┌{frame('─', label_width)}┬{frame('─', column_width)}┐"
     header = (
-        f"│ {_ljust_visible(headers[0], label_width)} │ {headers[1].rjust(count_width)} │ "
-        f"{headers[2].rjust(share_width)} │"
+        f"│ {_ljust_visible(headers[0], label_width)} │ {_ljust_visible(headers[1], column_width)} │"
     )
-    separator = f"├{frame('─', label_width)}┼{frame('─', count_width)}┼{frame('─', share_width)}┤"
-    body = [
-        f"│ {_ljust_visible(label, label_width)} │ {_rjust_visible(count, count_width)} │ "
-        f"{_rjust_visible(share, share_width)} │"
-        for label, count, share in rows
+    separator = f"├{frame('─', label_width)}┼{frame('─', column_width)}┤"
+    executed_lines = [
+        f"│ {_ljust_visible(label, label_width)} │ "
+        f"{_rjust_visible(count, count_width)}"
+        f"{' ' * spacing if percent_width else ''}"
+        f"{_rjust_visible(percent, percent_width) if percent_width else ''} │"
+        for label, count, percent in executed_rows
     ]
-    bottom = f"└{frame('─', label_width)}┴{frame('─', count_width)}┴{frame('─', share_width)}┘"
-    return [top, header, separator, *body, bottom]
+    group_separator = f"├{frame('─', label_width)}┼{frame('─', column_width)}┤"
+    skipped_line = (
+        f"│ {_ljust_visible(skipped_row[0], label_width)} │ "
+        f"{_rjust_visible(skipped_row[1], count_width)}"
+        f"{' ' * spacing if percent_width else ''}"
+        f"{_rjust_visible(skipped_row[2], percent_width) if percent_width else ''} │"
+    )
+    summary_separator = f"├{frame('─', label_width)}┼{frame('─', column_width)}┤"
+    total_line = (
+        f"│ {_ljust_visible(total_row[0], label_width)} │ "
+        f"{_ljust_visible(total_row[1], column_width)} │"
+    )
+    bottom = f"└{frame('─', label_width)}┴{frame('─', column_width)}┘"
+    return [
+        top,
+        header,
+        separator,
+        *executed_lines,
+        group_separator,
+        skipped_line,
+        summary_separator,
+        total_line,
+        bottom,
+    ]
 
 
 def _print_ascii_summary(summary: Summary, *, include_runner: bool, include_fixture: bool) -> None:

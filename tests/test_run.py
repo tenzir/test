@@ -100,12 +100,13 @@ def test_print_ascii_summary_outputs_table(capsys):
     assert table[0].startswith("┌")
     assert "Outcome" in table[1]
     assert "Count" in table[1]
-    assert "Share" in table[1]
     joined = "\n".join(table)
     assert f"{run.CHECKMARK} Passed" in joined
-    assert f"{run.SKIP} Skipped" in joined
     assert f"{run.CROSS} Failed" in joined
-    assert "Total tests" in joined
+    assert f"{run.SKIP} Skipped" in joined
+    assert "100%" in joined
+    assert "0%" in joined
+    assert "∑ Total" in joined
 
 
 def test_print_ascii_summary_with_runner_and_fixture_tables(capsys):
@@ -157,7 +158,7 @@ def test_print_ascii_summary_with_runner_and_fixture_tables(capsys):
     assert f"{run.CHECKMARK} Passed" in joined_outcome
     assert f"{run.SKIP} Skipped" in joined_outcome
     assert f"{run.CROSS} Failed" in joined_outcome
-    assert "Total tests" in joined_outcome
+    assert "∑ Total" in joined_outcome
 
 
 def test_print_detailed_summary_outputs_tree(capsys):
