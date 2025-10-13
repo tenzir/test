@@ -2950,7 +2950,7 @@ def run_cli(
                 sample = ", ".join(str(path) for path in selected_tests[:3])
                 if len(selected_tests) > 3:
                     sample += ", ..."
-                print(f"{INFO} Ignoring provided selection(s): {sample}")
+                print(f"{INFO} ignoring provided selection(s): {sample}")
             sys.exit(1)
 
         plan = _build_execution_plan(

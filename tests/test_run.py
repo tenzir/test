@@ -50,7 +50,7 @@ def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, c
     lines = [line for line in captured.out.splitlines() if line]
     assert lines[0].startswith(f"{run.INFO} no tenzir-test project detected")
     assert lines[1] == f"{run.INFO} run from your project root or provide --root."
-    assert lines[2] == f"{run.INFO} Ignoring provided selection(s): tests/sample.tql"
+    assert lines[2] == f"{run.INFO} ignoring provided selection(s): tests/sample.tql"
 
 
 def test_format_summary_reports_counts_and_percentages() -> None:
