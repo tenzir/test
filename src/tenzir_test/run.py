@@ -920,13 +920,21 @@ def _format_project_heading(selection: ProjectSelection, *, base_root: Path) -> 
     return f"{name} ({relative})"
 
 
+def _marker_for_selection(selection: ProjectSelection) -> str:
+    if selection.kind == "root":
+        return "■"
+    if packages.is_package_dir(selection.root):
+        return "○"
+    return "□"
+
+
 def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> int:
     active: list[tuple[str, ProjectSelection]] = []
     if plan.root.should_run():
-        active.append(("■", plan.root))
+        active.append((_marker_for_selection(plan.root), plan.root))
     for satellite in plan.satellites:
         if satellite.should_run():
-            active.append(("□", satellite))
+            active.append((_marker_for_selection(satellite), satellite))
 
     if not active:
         return 0

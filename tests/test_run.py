@@ -1070,6 +1070,37 @@ def test_print_execution_plan_lists_projects(capsys):
     assert "□ satellite-project" in output
 
 
+def test_print_execution_plan_marks_packages(tmp_path, capsys):
+    root_dir = tmp_path / "root"
+    root_dir.mkdir()
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "package.yaml").write_text("name: pkg\n")
+    plan = run.ExecutionPlan(
+        root=run.ProjectSelection(
+            root=root_dir,
+            selectors=[],
+            run_all=True,
+            kind="root",
+        ),
+        satellites=[
+            run.ProjectSelection(
+                root=package_root,
+                selectors=[],
+                run_all=True,
+                kind="satellite",
+            )
+        ],
+    )
+
+    run._print_execution_plan(plan, display_base=root_dir)
+
+    output = capsys.readouterr().out
+    assert "executing 2 projects" in output
+    assert "■ root" in output
+    assert "○ pkg" in output
+
+
 def test_print_project_start_reports_empty_projects(capsys):
     run._print_project_start(
         relative_path="sat-project",
