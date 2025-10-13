@@ -45,12 +45,69 @@ def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, c
         finally:
             run.apply_settings(original_settings)
 
-    assert exc.value.code == 1
+    assert str(exc.value).startswith("error: test path `tests/sample.tql` does not exist")
+    captured = capsys.readouterr()
+    assert captured.out.strip() == ""
+
+
+def test_main_accepts_satellite_selection_without_project_root(tmp_path, monkeypatch, capsys):
+    original_settings = run._settings
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    package_dir = library_root / "pkg"
+    package_dir.mkdir()
+    (package_dir / "package.yaml").write_text("name: pkg\nversion: 0.0.1\n")
+    (package_dir / "tests").mkdir()
+
+    monkeypatch.setenv("TENZIR_TEST_ROOT", str(library_root))
+    monkeypatch.delenv("TENZIR_BINARY", raising=False)
+    monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
+    monkeypatch.chdir(library_root)
+
+    try:
+        run.main(["pkg"])
+    finally:
+        run.apply_settings(original_settings)
+
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
-    assert lines[0].startswith(f"{run.INFO} no tenzir-test project detected")
-    assert lines[1] == f"{run.INFO} run from your project root or provide --root."
-    assert lines[2] == f"{run.INFO} ignoring provided selection(s): tests/sample.tql"
+    assert (
+        lines[0]
+        == f"{run.INFO} no tenzir-test project detected at {library_root}; continuing with provided selection(s)."
+    )
+    assert "pkg" in lines[1]
+    assert lines[-1] == f"{run.INFO} no tests selected"
+
+
+def test_main_accepts_current_directory_selection_without_project_root(
+    tmp_path, monkeypatch, capsys
+):
+    original_settings = run._settings
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    package_dir = library_root / "pkg"
+    package_dir.mkdir()
+    (package_dir / "package.yaml").write_text("name: pkg\nversion: 0.0.1\n")
+    (package_dir / "tests").mkdir()
+
+    monkeypatch.setenv("TENZIR_TEST_ROOT", str(library_root))
+    monkeypatch.delenv("TENZIR_BINARY", raising=False)
+    monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
+    monkeypatch.chdir(library_root)
+
+    try:
+        run.main(["."])
+    finally:
+        run.apply_settings(original_settings)
+
+    captured = capsys.readouterr()
+    lines = [line for line in captured.out.splitlines() if line]
+    assert (
+        lines[0]
+        == f"{run.INFO} no tenzir-test project detected at {library_root}; continuing with provided selection(s)."
+    )
+    assert "pkg" in lines[1]
+    assert lines[-1] == f"{run.INFO} no tests selected"
 
 
 def test_format_summary_reports_counts_and_percentages() -> None:

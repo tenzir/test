@@ -797,6 +797,7 @@ def _build_execution_plan(
     root_explicit: bool,
     all_projects: bool = False,
 ) -> ExecutionPlan:
+    base_root_is_project = _is_project_root(base_root)
     root_selectors: list[Path] = []
     run_root_all = not raw_args
 
@@ -835,6 +836,15 @@ def _build_execution_plan(
             project_root = base_root
 
         if project_root == base_root:
+            if not base_root_is_project:
+                enclosed_projects = _discover_enclosed_projects(resolved, base_root=base_root)
+                if enclosed_projects:
+                    for nested_root in enclosed_projects:
+                        selectors = satellite_selectors.setdefault(nested_root, [])
+                        if nested_root not in satellite_order:
+                            satellite_order.append(nested_root)
+                        satellite_run_all[nested_root] = True
+                    continue
             if resolved == base_root:
                 run_root_all = True
                 continue
@@ -905,6 +915,8 @@ def _format_relative_path(path: Path, base: Path) -> str:
 def _format_project_heading(selection: ProjectSelection, *, base_root: Path) -> str:
     name = selection.root.name or selection.root.as_posix()
     relative = _format_relative_path(selection.root, base_root)
+    if relative == name:
+        return name
     return f"{name} ({relative})"
 
 
@@ -2941,27 +2953,52 @@ def run_cli(
         )
         apply_settings(settings)
         selected_tests = list(tests)
-        if not _is_project_root(ROOT):
-            print(
-                f"{INFO} no tenzir-test project detected at {ROOT}.\n"
-                f"{INFO} run from your project root or provide --root."
+
+        plan: ExecutionPlan | None = None
+        if selected_tests:
+            plan = _build_execution_plan(
+                ROOT,
+                selected_tests,
+                root_explicit=root is not None,
+                all_projects=all_projects,
             )
-            if selected_tests:
+
+        if not _is_project_root(ROOT):
+            if all_projects:
+                sys.exit("error: --all-projects requires a project root; specify one with --root")
+            if not selected_tests:
+                print(
+                    f"{INFO} no tenzir-test project detected at {ROOT}.\n"
+                    f"{INFO} run from your project root or provide --root."
+                )
+                sys.exit(1)
+            assert plan is not None
+            runnable_satellites = [item for item in plan.satellites if item.should_run()]
+            if not runnable_satellites:
+                print(
+                    f"{INFO} no tenzir-test project detected at {ROOT}.\n"
+                    f"{INFO} run from your project root or provide --root."
+                )
                 sample = ", ".join(str(path) for path in selected_tests[:3])
                 if len(selected_tests) > 3:
                     sample += ", ..."
                 print(f"{INFO} ignoring provided selection(s): {sample}")
-            sys.exit(1)
+                sys.exit(1)
+            print(
+                f"{INFO} no tenzir-test project detected at {ROOT}; "
+                "continuing with provided selection(s)."
+            )
 
-        plan = _build_execution_plan(
-            ROOT,
-            selected_tests,
-            root_explicit=root is not None,
-            all_projects=all_projects,
-        )
+        if plan is None:
+            plan = _build_execution_plan(
+                ROOT,
+                selected_tests,
+                root_explicit=root is not None,
+                all_projects=all_projects,
+            )
         display_base = Path.cwd().resolve()
         project_count = _print_execution_plan(plan, display_base=display_base)
-        if project_count > 1:
+        if project_count:
             print()
 
         with _install_interrupt_handler():
