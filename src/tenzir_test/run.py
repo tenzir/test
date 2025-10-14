@@ -943,7 +943,7 @@ def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> int:
     if len(active) == 1:
         marker, selection = active[0]
         heading = _format_project_heading(selection, base_root=display_base)
-        print(f"{INFO} executing project: {heading}")
+        print(f"{INFO} executing project: {marker} {heading}")
         return 1
 
     print(f"{INFO} executing {len(active)} projects")
