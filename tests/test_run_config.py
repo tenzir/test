@@ -412,6 +412,21 @@ def test_iter_project_test_directories_prefers_package_tests(configured_root: Pa
     assert discovered == [tests_dir]
 
 
+def test_iter_project_test_directories_ignores_package_without_tests(
+    configured_root: Path,
+) -> None:
+    package = configured_root / "satellite"
+    package.mkdir()
+    (package / "package.yaml").write_text("name: satellite\n", encoding="utf-8")
+    run._set_project_root(package)
+    try:
+        discovered = list(run._iter_project_test_directories(package))
+    finally:
+        run._set_project_root(configured_root)
+
+    assert discovered == []
+
+
 def test_detect_execution_mode_for_package_root(tmp_path: Path) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()

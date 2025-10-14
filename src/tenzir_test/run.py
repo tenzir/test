@@ -1329,13 +1329,11 @@ def _iter_project_test_directories(root: Path) -> Iterator[Path]:
             yield root
             return
         package_root = _DETECTED_PACKAGE_ROOT
-        if package_root is not None:
-            tests_dir = package_root / "tests"
-            if tests_dir.is_dir():
-                yield tests_dir
-                return
-        if root.is_dir():
-            yield root
+        if package_root is None:
+            return
+        tests_dir = package_root / "tests"
+        if tests_dir.is_dir():
+            yield tests_dir
         return
 
     package_dirs = list(packages.iter_package_dirs(root))
