@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import tenzir_test
 
 from tenzir_test import cli
 
@@ -106,6 +107,14 @@ def test_cli_summary_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert cli.main(["--summary"]) == 0
     assert captured["show_summary"] is True
+
+
+def test_cli_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli.main(["--version"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == f"tenzir-test {tenzir_test.__version__}"
+    assert captured.err == ""
 
 
 def test_cli_unknown_option(capsys: pytest.CaptureFixture[str]) -> None:

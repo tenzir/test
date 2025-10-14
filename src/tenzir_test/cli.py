@@ -8,7 +8,7 @@ import sys
 
 import click
 
-from . import run as runtime
+from . import __version__, run as runtime
 
 
 def _normalize_exit_code(value: object) -> int:
@@ -23,6 +23,13 @@ def _normalize_exit_code(value: object) -> int:
 
 @click.command(
     context_settings={"help_option_names": ["-h", "--help"]},
+)
+@click.version_option(
+    __version__,
+    "-V",
+    "--version",
+    prog_name="tenzir-test",
+    message="%(prog)s %(version)s",
 )
 @click.option(
     "root",
