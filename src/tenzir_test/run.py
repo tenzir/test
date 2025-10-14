@@ -2993,11 +2993,6 @@ def run_cli(
                     sample += ", ..."
                 print(f"{INFO} ignoring provided selection(s): {sample}")
                 sys.exit(1)
-            print(
-                f"{INFO} no tenzir-test project detected at {ROOT}; "
-                "continuing with provided selection(s)."
-            )
-
         if plan is None:
             plan = _build_execution_plan(
                 ROOT,

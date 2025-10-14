@@ -71,11 +71,8 @@ def test_main_accepts_satellite_selection_without_project_root(tmp_path, monkeyp
 
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
-    assert (
-        lines[0]
-        == f"{run.INFO} no tenzir-test project detected at {library_root}; continuing with provided selection(s)."
-    )
-    assert "pkg" in lines[1]
+    assert lines[0] == f"{run.INFO} executing project: pkg"
+    assert any(line.startswith(f"{run.INFO} running 0 tests") for line in lines)
     assert lines[-1] == f"{run.INFO} no tests selected"
 
 
@@ -102,11 +99,8 @@ def test_main_accepts_current_directory_selection_without_project_root(
 
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
-    assert (
-        lines[0]
-        == f"{run.INFO} no tenzir-test project detected at {library_root}; continuing with provided selection(s)."
-    )
-    assert "pkg" in lines[1]
+    assert lines[0] == f"{run.INFO} executing project: pkg"
+    assert any(line.startswith(f"{run.INFO} running 0 tests") for line in lines)
     assert lines[-1] == f"{run.INFO} no tests selected"
 
 
