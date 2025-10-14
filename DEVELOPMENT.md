@@ -48,14 +48,22 @@ expects.
   uv build
   ```
 
-- Run the full pre-release check suite:
+- Run the full pre-release check suite (formatter, lint, types, tests, build):
   ```sh
   uv run check-release
   ```
 
 ## Quality Gates
 
-Before you open a pull request, make sure the full toolchain passes:
+Before you open a pull request, make sure the full toolchain passes. The
+simplest way is to execute the aggregated workflow:
+
+```sh
+uv run check-release
+```
+
+The helper sequentially executes `ruff check`, `ruff format --check`, `mypy`,
+`pytest`, and `uv build`. If you prefer to run them individually:
 
 ```sh
 uv run ruff check
@@ -82,27 +90,35 @@ locally helps catch packaging issues early.
 
 ## Releasing
 
-Releases use GitHub Actions with trusted publishing. When you are ready to cut
-a new version:
+Releases are published via GitHub Actions with trusted publishing. When you are
+ready to cut a new version:
 
-1. Run the formatters so `ruff format` applies any outstanding style changes:
+1. Make sure the tree is clean and all checks pass:
    ```sh
-   uv run ruff format
+   uv run check-release
    ```
-   Commit the resulting edits before continuing if the command touched files.
-2. Bump the version via `uv version --bump <part>` (for example `uv version
-   --bump minor`). This updates `pyproject.toml` and `uv.lock`; avoid sprinkling
-   version literals elsewhere. The runtime exposes `tenzir_test.__version__` via
-   `importlib.metadata`, returning `"0.0.0"` for editable installs so the
-   project has a single source of truth.
-3. Commit the changes and create an annotated tag using
-   `git tag -a vX.Y.Z -m "Release vX.Y.Z"` to keep tag messages consistent.
-4. Push the branch and tag to GitHub.
-5. Draft and publish a GitHub release for the tag.
+2. Bump the version:
+   ```sh
+   uv version --bump <part>  # e.g., uv version --bump patch
+   ```
+   This updates `pyproject.toml` and `uv.lock`.
+3. Commit the bump:
+   ```sh
+   git commit -a -v -m "Bump version to vX.Y.Z"
+   ```
+4. Tag the release:
+   ```sh
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   ```
+5. Push code and tag:
+   ```sh
+   git push && git push --tags
+   ```
+6. Draft and publish a GitHub release referencing the tag.
 
-Publishing the release triggers the **Publish to PyPI** workflow. It builds the
-artifacts, validates metadata, uploads the distributions to PyPI with trusted
-publishing, and runs a post-publish install smoke test.
+Publishing the release triggers the **Publish to PyPI** workflow, which builds
+the distributions, validates metadata, uploads to PyPI, and performs an install
+smoke test.
 
 ## Pull Requests
 
