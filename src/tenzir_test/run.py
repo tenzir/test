@@ -164,6 +164,7 @@ INFO = "\033[94;1mi\033[0m"
 SKIP = "\033[90;1m●\033[0m"
 DEBUG_PREFIX = "\033[95m◆\033[0m"
 CHECK_COLOR = "\033[92;1m"
+PASS_MAX_COLOR = "\033[92m"
 FAIL_COLOR = "\033[31m"
 SKIP_COLOR = "\033[90;1m"
 RESET_COLOR = "\033[0m"
@@ -178,7 +179,7 @@ PASS_SPECTRUM = [
     "\033[38;5;148m",  # 70-79% spring green
     "\033[38;5;112m",  # 80-89% medium green
     "\033[38;5;28m",  # 90-99% deep forest green
-    CHECK_COLOR,  # 100% bright bold green
+    PASS_MAX_COLOR,  # 100% bright green
 ]
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
