@@ -71,11 +71,7 @@ def test_main_accepts_satellite_selection_without_project_root(tmp_path, monkeyp
 
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
-    assert (
-        lines[0]
-        == f"{run.INFO} running 0 tests (80 jobs) in package project ○ pkg"
-    )
-    assert lines[-1] == f"{run.INFO} no tests selected"
+    assert lines == [f"{run.INFO} no tests selected"]
 
 
 def test_main_accepts_current_directory_selection_without_project_root(
@@ -101,11 +97,7 @@ def test_main_accepts_current_directory_selection_without_project_root(
 
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
-    assert (
-        lines[0]
-        == f"{run.INFO} running 0 tests (80 jobs) in package project ○ pkg"
-    )
-    assert lines[-1] == f"{run.INFO} no tests selected"
+    assert lines == [f"{run.INFO} no tests selected"]
 
 
 def test_format_summary_reports_counts_and_percentages() -> None:
@@ -693,6 +685,42 @@ write_json
     assert summary.total == 1
 
 
+def test_count_queue_tests_includes_suite_members(tmp_path: Path) -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = StubRunner()
+    solo_test = tmp_path / "solo.tql"
+    solo_test.write_text("version\n", encoding="utf-8")
+    suite_dir = tmp_path / "suite"
+    suite_dir.mkdir()
+    suite_info = run.SuiteInfo(name="demo", directory=suite_dir)
+    suite_tests: list[run.TestQueueItem] = []
+    for index in range(3):
+        test_path = suite_dir / f"case-{index}.tql"
+        test_path.write_text("version\n", encoding="utf-8")
+        suite_tests.append(run.TestQueueItem(runner=runner, path=test_path))
+
+    queue: list[run.RunnerQueueItem] = [
+        run.TestQueueItem(runner=runner, path=solo_test),
+        run.SuiteQueueItem(suite=suite_info, tests=suite_tests, fixtures=tuple()),
+    ]
+
+    assert run._count_queue_tests(queue) == 4
+
+
 def test_cli_rejects_partial_suite_selection(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1063,9 +1091,9 @@ def test_print_execution_plan_lists_projects(capsys):
     run._print_execution_plan(plan, display_base=root)
 
     output = capsys.readouterr().out
-    assert "executing 2 projects" in output
-    assert "■ root-project" in output
-    assert "□ satellite-project" in output
+    assert "found 2 projects" in output
+    assert f"{run.INFO}   ■ root-project" in output
+    assert f"{run.INFO}   □ satellite-project" in output
 
 
 def test_print_execution_plan_marks_packages(tmp_path, capsys):
@@ -1094,9 +1122,9 @@ def test_print_execution_plan_marks_packages(tmp_path, capsys):
     run._print_execution_plan(plan, display_base=root_dir)
 
     output = capsys.readouterr().out
-    assert "executing 2 projects" in output
-    assert "■ root" in output
-    assert "○ pkg" in output
+    assert "found 2 projects" in output
+    assert f"{run.INFO}   ■ root" in output
+    assert f"{run.INFO}   ○ pkg" in output
 
 
 def test_print_project_start_reports_empty_projects(tmp_path, capsys):
@@ -1118,8 +1146,10 @@ def test_print_project_start_reports_empty_projects(tmp_path, capsys):
     )
 
     output = capsys.readouterr().out
-    assert "running 0 tests" in output
-    assert "satellite project □ satellite" in output
+    assert (
+        output
+        == f"{run.INFO} {run.BOLD}satellite{run.RESET_COLOR}: running 0 tests from satellite project at ./satellite\n"
+    )
 
 
 def test_execution_plan_single_project_summary(tmp_path, monkeypatch, capsys):

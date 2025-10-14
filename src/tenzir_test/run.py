@@ -163,6 +163,7 @@ CROSS = "\033[31m✘\033[0m"
 INFO = "\033[94;1mi\033[0m"
 SKIP = "\033[90;1m●\033[0m"
 DEBUG_PREFIX = "\033[95m◆\033[0m"
+BOLD = "\033[1m"
 CHECK_COLOR = "\033[92;1m"
 PASS_MAX_COLOR = "\033[92m"
 FAIL_COLOR = "\033[31m"
@@ -913,14 +914,6 @@ def _format_relative_path(path: Path, base: Path) -> str:
     return relative.as_posix()
 
 
-def _format_project_heading(selection: ProjectSelection, *, base_root: Path) -> str:
-    name = selection.root.name or selection.root.as_posix()
-    relative = _format_relative_path(selection.root, base_root)
-    if relative == name:
-        return name
-    return f"{name} ({relative})"
-
-
 def _marker_for_selection(selection: ProjectSelection) -> str:
     if selection.kind == "root":
         return "■"
@@ -943,10 +936,10 @@ def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> int:
     if len(active) == 1:
         return 0
 
-    print(f"{INFO} executing {len(active)} projects")
+    print(f"{INFO} found {len(active)} projects")
     for marker, selection in active:
-        heading = _format_project_heading(selection, base_root=display_base)
-        print(f"{INFO}   {marker} {heading}")
+        name = selection.root.name or selection.root.as_posix()
+        print(f"{INFO}   {marker} {name}")
     return len(active)
 
 
@@ -1975,6 +1968,16 @@ def _runner_breakdown(
             version = tenzir_version
         breakdown.append((name, counts[name], version))
     return breakdown
+
+
+def _count_queue_tests(queue: Sequence[RunnerQueueItem]) -> int:
+    total = 0
+    for item in queue:
+        if isinstance(item, SuiteQueueItem):
+            total += len(item.tests)
+        else:
+            total += 1
+    return total
 
 
 def _print_aggregate_totals(project_count: int, summary: Summary) -> None:
@@ -3008,6 +3011,7 @@ def run_cli(
             overall_summary = Summary()
             overall_queue_count = 0
             executed_projects: list[ProjectSelection] = []
+            printed_projects = 0
 
             for selection in plan.projects():
                 if interrupt_requested():
@@ -3026,7 +3030,7 @@ def run_cli(
                         engine_state.refresh()
                     continue
 
-                if executed_projects:
+                if printed_projects:
                     print()
 
                 _set_project_root(selection.root)
@@ -3119,7 +3123,7 @@ def run_cli(
 
                 queue = _build_queue_from_paths(collected_paths, coverage=coverage)
                 queue.sort(key=_queue_sort_key, reverse=True)
-                project_queue_size = len(queue)
+                project_queue_size = _count_queue_tests(queue)
                 job_count, enabled_flags = _summarize_harness_configuration(
                     jobs=jobs,
                     update=update,
@@ -3132,13 +3136,8 @@ def run_cli(
                 )
 
                 if not project_queue_size:
-                    _print_project_start(
-                        selection=selection,
-                        display_base=display_base,
-                        queue_size=project_queue_size,
-                        job_count=job_count,
-                        enabled_flags=enabled_flags,
-                    )
+                    overall_queue_count += project_queue_size
+                    executed_projects.append(selection)
                     continue
 
                 os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
@@ -3167,6 +3166,7 @@ def run_cli(
                 for name, count, version in runner_breakdown:
                     version_segment = f" (v{version})" if version else ""
                     print(f"{INFO}   {count:>{count_width}}× {name}{version_segment}")
+                printed_projects += 1
 
                 workers = [
                     Worker(
@@ -3229,7 +3229,6 @@ def run_cli(
                 return
 
             if len(executed_projects) > 1:
-                print()
                 _print_aggregate_totals(len(executed_projects), overall_summary)
 
             if interrupt_requested():
@@ -3270,6 +3269,7 @@ def _print_project_start(
     job_count: int,
     enabled_flags: str,
 ) -> None:
+    project_name = selection.root.name or selection.root.as_posix()
     if selection.kind == "root":
         project_kind = "root project"
     elif packages.is_package_dir(selection.root):
@@ -3277,10 +3277,14 @@ def _print_project_start(
     else:
         project_kind = "satellite project"
 
-    marker = _marker_for_selection(selection)
-    heading = _format_project_heading(selection, base_root=display_base)
+    location = _format_relative_path(selection.root, display_base)
+    if location != "." and not location.startswith(("./", "../")):
+        location_display = f"./{location}"
+    else:
+        location_display = location
+    project_display = f"{BOLD}{project_name}{RESET_COLOR}"
     toggles = f"; {enabled_flags}" if enabled_flags else ""
     jobs_segment = f" ({job_count} jobs)" if job_count else ""
     print(
-        f"{INFO} running {queue_size} tests{jobs_segment} in {project_kind} {marker} {heading}{toggles}"
+        f"{INFO} {project_display}: running {queue_size} tests{jobs_segment} from {project_kind} at {location_display}{toggles}"
     )
