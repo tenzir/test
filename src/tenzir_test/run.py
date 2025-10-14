@@ -941,10 +941,7 @@ def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> int:
         return 0
 
     if len(active) == 1:
-        marker, selection = active[0]
-        heading = _format_project_heading(selection, base_root=display_base)
-        print(f"{INFO} executing project: {marker} {heading}")
-        return 1
+        return 0
 
     print(f"{INFO} executing {len(active)} projects")
     for marker, selection in active:
@@ -3134,10 +3131,10 @@ def run_cli(
                     passthrough=passthrough_mode,
                 )
 
-                relative_path = _format_relative_path(selection.root, display_base)
                 if not project_queue_size:
                     _print_project_start(
-                        relative_path=relative_path,
+                        selection=selection,
+                        display_base=display_base,
                         queue_size=project_queue_size,
                         job_count=job_count,
                         enabled_flags=enabled_flags,
@@ -3160,7 +3157,8 @@ def run_cli(
                 )
 
                 _print_project_start(
-                    relative_path=relative_path,
+                    selection=selection,
+                    display_base=display_base,
                     queue_size=project_queue_size,
                     job_count=job_count,
                     enabled_flags=enabled_flags,
@@ -3266,11 +3264,23 @@ if __name__ == "__main__":
 
 def _print_project_start(
     *,
-    relative_path: str,
+    selection: ProjectSelection,
+    display_base: Path,
     queue_size: int,
     job_count: int,
     enabled_flags: str,
 ) -> None:
+    if selection.kind == "root":
+        project_kind = "root project"
+    elif packages.is_package_dir(selection.root):
+        project_kind = "package project"
+    else:
+        project_kind = "satellite project"
+
+    marker = _marker_for_selection(selection)
+    heading = _format_project_heading(selection, base_root=display_base)
     toggles = f"; {enabled_flags}" if enabled_flags else ""
     jobs_segment = f" ({job_count} jobs)" if job_count else ""
-    print(f"{INFO} running {queue_size} tests{jobs_segment} in project {relative_path}{toggles}")
+    print(
+        f"{INFO} running {queue_size} tests{jobs_segment} in {project_kind} {marker} {heading}{toggles}"
+    )

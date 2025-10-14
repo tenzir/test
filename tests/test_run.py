@@ -71,8 +71,10 @@ def test_main_accepts_satellite_selection_without_project_root(tmp_path, monkeyp
 
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
-    assert lines[0] == f"{run.INFO} executing project: ○ pkg"
-    assert any(line.startswith(f"{run.INFO} running 0 tests") for line in lines)
+    assert (
+        lines[0]
+        == f"{run.INFO} running 0 tests (80 jobs) in package project ○ pkg"
+    )
     assert lines[-1] == f"{run.INFO} no tests selected"
 
 
@@ -99,8 +101,10 @@ def test_main_accepts_current_directory_selection_without_project_root(
 
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
-    assert lines[0] == f"{run.INFO} executing project: ○ pkg"
-    assert any(line.startswith(f"{run.INFO} running 0 tests") for line in lines)
+    assert (
+        lines[0]
+        == f"{run.INFO} running 0 tests (80 jobs) in package project ○ pkg"
+    )
     assert lines[-1] == f"{run.INFO} no tests selected"
 
 
@@ -1095,9 +1099,19 @@ def test_print_execution_plan_marks_packages(tmp_path, capsys):
     assert "○ pkg" in output
 
 
-def test_print_project_start_reports_empty_projects(capsys):
+def test_print_project_start_reports_empty_projects(tmp_path, capsys):
+    project_root = tmp_path / "satellite"
+    project_root.mkdir()
+    selection = run.ProjectSelection(
+        root=project_root,
+        selectors=[],
+        run_all=True,
+        kind="satellite",
+    )
+
     run._print_project_start(
-        relative_path="sat-project",
+        selection=selection,
+        display_base=tmp_path,
         queue_size=0,
         job_count=0,
         enabled_flags="",
@@ -1105,7 +1119,7 @@ def test_print_project_start_reports_empty_projects(capsys):
 
     output = capsys.readouterr().out
     assert "running 0 tests" in output
-    assert "sat-project" in output
+    assert "satellite project □ satellite" in output
 
 
 def test_execution_plan_single_project_summary(tmp_path, monkeypatch, capsys):
@@ -1123,9 +1137,7 @@ def test_execution_plan_single_project_summary(tmp_path, monkeypatch, capsys):
     run._print_execution_plan(plan, display_base=root)
 
     output = capsys.readouterr().out
-    assert "executing project" in output
-    assert "root:" not in output
-    assert "satellite:" not in output
+    assert output == ""
 
 
 def test_execution_plan_skips_inactive_root(capsys):
@@ -1150,9 +1162,7 @@ def test_execution_plan_skips_inactive_root(capsys):
     run._print_execution_plan(plan, display_base=root)
 
     output = capsys.readouterr().out
-    assert "executing project" in output
-    assert "satellite-project" in output
-    assert "root-project" not in output
+    assert output == ""
 
 
 def test_print_aggregate_totals(capsys):
