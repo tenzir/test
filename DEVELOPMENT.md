@@ -48,6 +48,11 @@ expects.
   uv build
   ```
 
+- Run the full pre-release check suite:
+  ```sh
+  uv run check-release
+  ```
+
 ## Quality Gates
 
 Before you open a pull request, make sure the full toolchain passes:
