@@ -1143,12 +1143,73 @@ def test_print_project_start_reports_empty_projects(tmp_path, capsys):
         queue_size=0,
         job_count=0,
         enabled_flags="",
+        verb="running",
     )
 
     output = capsys.readouterr().out
     assert (
         output
         == f"{run.INFO} {run.BOLD}satellite{run.RESET_COLOR}: running 0 tests from satellite project at ./satellite\n"
+    )
+
+
+def test_summarize_harness_configuration_sets_update_verb() -> None:
+    job_count, enabled_flags, verb = run._summarize_harness_configuration(
+        jobs=1,
+        update=True,
+        coverage=False,
+        debug=False,
+        show_summary=False,
+        runner_summary=False,
+        fixture_summary=False,
+        passthrough=False,
+    )
+
+    assert job_count == 1
+    assert "update" not in enabled_flags
+    assert verb == "updating"
+
+
+def test_summarize_harness_configuration_sets_passthrough_verb() -> None:
+    job_count, enabled_flags, verb = run._summarize_harness_configuration(
+        jobs=2,
+        update=False,
+        coverage=False,
+        debug=False,
+        show_summary=False,
+        runner_summary=False,
+        fixture_summary=False,
+        passthrough=True,
+    )
+
+    assert job_count == 2
+    assert "passthrough" not in enabled_flags
+    assert verb == "showing"
+
+
+def test_print_project_start_uses_custom_verb(tmp_path, capsys):
+    project_root = tmp_path / "example"
+    project_root.mkdir()
+    selection = run.ProjectSelection(
+        root=project_root,
+        selectors=[],
+        run_all=True,
+        kind="root",
+    )
+
+    run._print_project_start(
+        selection=selection,
+        display_base=tmp_path,
+        queue_size=3,
+        job_count=0,
+        enabled_flags="",
+        verb="showing",
+    )
+
+    output = capsys.readouterr().out
+    assert (
+        output
+        == f"{run.INFO} {run.BOLD}example{run.RESET_COLOR}: showing 3 tests from root project at ./example\n"
     )
 
 

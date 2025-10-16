@@ -2015,10 +2015,9 @@ def _summarize_harness_configuration(
     runner_summary: bool,
     fixture_summary: bool,
     passthrough: bool,
-) -> tuple[int, str]:
+) -> tuple[int, str, str]:
     enabled_flags: list[str] = []
     toggles = (
-        ("update", update),
         ("coverage", coverage),
         ("debug", debug),
         ("summary", show_summary),
@@ -2029,9 +2028,13 @@ def _summarize_harness_configuration(
     for name, flag in toggles:
         if flag:
             enabled_flags.append(name)
-    if passthrough:
-        enabled_flags.append("passthrough")
-    return jobs, ", ".join(enabled_flags)
+    if update:
+        verb = "updating"
+    elif passthrough:
+        verb = "showing"
+    else:
+        verb = "running"
+    return jobs, ", ".join(enabled_flags), verb
 
 
 def _relativize_path(path: Path) -> Path:
@@ -3122,7 +3125,7 @@ def run_cli(
                 queue = _build_queue_from_paths(collected_paths, coverage=coverage)
                 queue.sort(key=_queue_sort_key, reverse=True)
                 project_queue_size = _count_queue_tests(queue)
-                job_count, enabled_flags = _summarize_harness_configuration(
+                job_count, enabled_flags, verb = _summarize_harness_configuration(
                     jobs=jobs,
                     update=update,
                     coverage=coverage,
@@ -3159,6 +3162,7 @@ def run_cli(
                     queue_size=project_queue_size,
                     job_count=job_count,
                     enabled_flags=enabled_flags,
+                    verb=verb,
                 )
                 count_width = max((len(str(count)) for _, count, _ in runner_breakdown), default=1)
                 for name, count, version in runner_breakdown:
@@ -3266,6 +3270,7 @@ def _print_project_start(
     queue_size: int,
     job_count: int,
     enabled_flags: str,
+    verb: str,
 ) -> None:
     project_name = selection.root.name or selection.root.as_posix()
     if selection.kind == "root":
@@ -3284,5 +3289,5 @@ def _print_project_start(
     toggles = f"; {enabled_flags}" if enabled_flags else ""
     jobs_segment = f" ({job_count} jobs)" if job_count else ""
     print(
-        f"{INFO} {project_display}: running {queue_size} tests{jobs_segment} from {project_kind} at {location_display}{toggles}"
+        f"{INFO} {project_display}: {verb} {queue_size} tests{jobs_segment} from {project_kind} at {location_display}{toggles}"
     )
