@@ -26,36 +26,6 @@ uvx tenzir-test --help
 `uvx` downloads the newest compatible release, runs it in an isolated
 environment, and caches subsequent invocations for fast reuse.
 
-## 🚀 Quick Start
-
-Create a project skeleton that mirrors the layout the harness expects:
-
-```text
-project-root/
-├── fixtures/
-│   └── http.py
-├── inputs/
-│   └── sample.ndjson
-├── runners/
-│   └── __init__.py
-└── tests/
-    ├── alerts/
-    │   ├── sample.py
-    │   └── sample.txt
-    └── regression/
-        ├── dummy.tql
-        └── dummy.txt
-```
-
-1. Author fixtures in `fixtures/` and register them at import time.
-2. Store reusable datasets in `inputs/`—the harness exposes the path via
-   `TENZIR_INPUTS` and provides a per-test scratch directory through
-   `TENZIR_TMP_DIR` when tests execute.
-   Use `--keep` (or `-k`) to preserve those temporary directories for debugging.
-3. Create tests in `tests/` and pair them with reference artifacts (for example
-   `.txt`) that the harness compares against.
-4. Run `uvx tenzir-test` from the project root to execute the full suite.
-
 ## 📚 Documentation
 
 Consult our [user guide](https://docs.tenzir.com/guides/testing/write-tests)
