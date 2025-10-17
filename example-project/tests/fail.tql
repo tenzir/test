@@ -1,0 +1,3 @@
+from {x: "foo"}
+repeat 10
+enumerate

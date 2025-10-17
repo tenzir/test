@@ -769,6 +769,8 @@ def test_cli_rejects_partial_suite_selection(
                 runner_summary=False,
                 fixture_summary=False,
                 show_summary=False,
+                show_diff_output=True,
+                show_diff_stat=True,
                 jobs=1,
                 keep_tmp_dirs=False,
                 passthrough=False,
@@ -793,6 +795,8 @@ def test_cli_rejects_partial_suite_selection(
                 runner_summary=False,
                 fixture_summary=False,
                 show_summary=False,
+                show_diff_output=True,
+                show_diff_stat=True,
                 jobs=1,
                 keep_tmp_dirs=False,
                 passthrough=False,
@@ -826,6 +830,82 @@ def test_detailed_summary_order(capsys):
     table_start = next(i for i, line in enumerate(non_empty) if line.startswith("┌"))
 
     assert skipped_index < failed_index < table_start
+
+
+def test_print_diff_default_layout(capsys):
+    original_show_diff = run.should_show_diff_output()
+    original_show_stat = run.should_show_diff_stat()
+    try:
+        run.set_show_diff_output(True)
+        run.set_show_diff_stat(True)
+        run.print_diff(b"line\nbeta\n", b"line\ngamma\n", Path("tests/example.txt"))
+    finally:
+        run.set_show_diff_output(original_show_diff)
+        run.set_show_diff_stat(original_show_stat)
+
+    output = capsys.readouterr().out.splitlines()
+    assert output[0].startswith(f"{run._BLOCK_INDENT}┌ tests/example.txt")
+    expected_counter = run._format_diff_counter(1, 1)
+    assert "\033[32m1(+)\033[0m/\033[31m1(-)\033[0m" in output[0]
+    assert output[0].endswith(expected_counter)
+    assert output[1] == f"{run._BLOCK_INDENT}│ @@ -1,2 +1,2 @@"
+    assert output[2] == f"{run._BLOCK_INDENT}│  line"
+    assert output[3].startswith(f"{run._BLOCK_INDENT}│ \033[31m-beta")
+    assert output[4].startswith(f"{run._BLOCK_INDENT}│ \033[32m+gamma")
+    assert output[5] == f"{run._BLOCK_INDENT}└ 2 lines changed"
+
+
+def test_print_diff_no_diff_outputs_stat_only(capsys):
+    original_show_diff = run.should_show_diff_output()
+    original_show_stat = run.should_show_diff_stat()
+    try:
+        run.set_show_diff_output(False)
+        run.set_show_diff_stat(True)
+        run.print_diff(b"line\nbeta\n", b"line\ngamma\n", Path("tests/example.txt"))
+    finally:
+        run.set_show_diff_output(original_show_diff)
+        run.set_show_diff_stat(original_show_stat)
+
+    output = capsys.readouterr().out.splitlines()
+    expected_header = (
+        f"{run._BLOCK_INDENT}┌ tests/example.txt "
+        f"\033[32m1(+)\033[0m/\033[31m1(-)\033[0m {run._format_diff_counter(1, 1)}"
+    )
+    assert output == [
+        expected_header,
+        f"{run._BLOCK_INDENT}└ 2 lines changed",
+    ]
+
+
+def test_print_diff_stat_disabled_shows_only_diff(capsys):
+    original_show_diff = run.should_show_diff_output()
+    original_show_stat = run.should_show_diff_stat()
+    try:
+        run.set_show_diff_output(True)
+        run.set_show_diff_stat(False)
+        run.print_diff(b"line\nbeta\n", b"line\ngamma\n", Path("tests/example.txt"))
+    finally:
+        run.set_show_diff_output(original_show_diff)
+        run.set_show_diff_stat(original_show_stat)
+
+    output = capsys.readouterr().out.splitlines()
+    assert output[0] == f"{run._BLOCK_INDENT}┌ tests/example.txt"
+    assert output[1] == f"{run._BLOCK_INDENT}│ @@ -1,2 +1,2 @@"
+    assert output[-1] == f"{run._BLOCK_INDENT}└ 2 lines changed"
+
+
+def test_print_diff_disabled_outputs_nothing(capsys):
+    original_show_diff = run.should_show_diff_output()
+    original_show_stat = run.should_show_diff_stat()
+    try:
+        run.set_show_diff_output(False)
+        run.set_show_diff_stat(False)
+        run.print_diff(b"line\nbeta\n", b"line\ngamma\n", Path("tests/example.txt"))
+    finally:
+        run.set_show_diff_output(original_show_diff)
+        run.set_show_diff_stat(original_show_stat)
+
+    assert capsys.readouterr().out.strip() == ""
 
 
 def test_describe_project_root_detects_standard_project(tmp_path: Path) -> None:

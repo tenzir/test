@@ -38,6 +38,7 @@ def test_cli_keep_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["jobs_overridden"] is False
     assert captured["all_projects"] is False
     assert captured["show_summary"] is False
+    assert captured["show_diff_stat"] is True
 
 
 def test_cli_passthrough_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,6 +108,31 @@ def test_cli_summary_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert cli.main(["--summary"]) == 0
     assert captured["show_summary"] is True
+
+
+def test_cli_no_diff_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert cli.main(["--no-diff"]) == 0
+    assert captured["show_diff_output"] is False
+    assert captured["show_diff_stat"] is True
+
+
+def test_cli_no_diff_stat_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert cli.main(["--no-diff-stat"]) == 0
+    assert captured["show_diff_stat"] is False
 
 
 def test_cli_version_flag(capsys: pytest.CaptureFixture[str]) -> None:

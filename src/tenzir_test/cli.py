@@ -91,6 +91,18 @@ def _normalize_exit_code(value: object) -> int:
     help="Show an aggregate table and detailed failure summary after execution.",
 )
 @click.option(
+    "--diff/--no-diff",
+    "show_diff_output",
+    default=True,
+    help="Show unified diffs when expectations differ.",
+)
+@click.option(
+    "--diff-stat/--no-diff-stat",
+    "show_diff_stat",
+    default=True,
+    help="Include per-file diff statistics and change counters when expectations differ.",
+)
+@click.option(
     "-k",
     "--keep",
     "keep_tmp_dirs",
@@ -134,6 +146,8 @@ def cli(
     runner_summary: bool,
     fixture_summary: bool,
     show_summary: bool,
+    show_diff_output: bool,
+    show_diff_stat: bool,
     keep_tmp_dirs: bool,
     jobs: int,
     passthrough: bool,
@@ -157,6 +171,8 @@ def cli(
         runner_summary=runner_summary,
         fixture_summary=fixture_summary,
         show_summary=show_summary,
+        show_diff_output=show_diff_output,
+        show_diff_stat=show_diff_stat,
         keep_tmp_dirs=keep_tmp_dirs,
         jobs=jobs,
         passthrough=passthrough,

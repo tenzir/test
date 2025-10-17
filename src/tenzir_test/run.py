@@ -351,6 +351,30 @@ _TMP_BASE_DIRS: set[Path] = set()
 _ACTIVE_TMP_DIRS: set[Path] = set()
 KEEP_TMP_DIRS = bool(os.environ.get(_TMP_KEEP_ENV_VAR))
 
+SHOW_DIFF_OUTPUT = True
+SHOW_DIFF_STAT = True
+_BLOCK_INDENT = ""
+_PLUS_SYMBOLS = {1: "□", 10: "▣", 100: "■"}
+_MINUS_SYMBOLS = {1: "□", 10: "▣", 100: "■"}
+
+
+def set_show_diff_output(enabled: bool) -> None:
+    global SHOW_DIFF_OUTPUT
+    SHOW_DIFF_OUTPUT = enabled
+
+
+def should_show_diff_output() -> bool:
+    return SHOW_DIFF_OUTPUT
+
+
+def set_show_diff_stat(enabled: bool) -> None:
+    global SHOW_DIFF_STAT
+    SHOW_DIFF_STAT = enabled
+
+
+def should_show_diff_stat() -> bool:
+    return SHOW_DIFF_STAT
+
 
 def set_harness_mode(mode: HarnessMode) -> None:
     """Set the global harness execution mode."""
@@ -2398,7 +2422,46 @@ def last_and(items: Iterable[T]) -> Iterator[tuple[bool, T]]:
     for item in iterator:
         yield (False, previous)
         previous = item
-    yield (True, previous)
+
+
+def _format_unary_symbols(count: int, symbols: dict[int, str]) -> str:
+    if count <= 0:
+        return ""
+    hundreds, remainder = divmod(count, 100)
+    tens, ones = divmod(remainder, 10)
+    parts: list[str] = []
+    if hundreds:
+        parts.append(symbols[100] * hundreds)
+    if tens:
+        parts.append(symbols[10] * tens)
+    if ones:
+        parts.append(symbols[1] * ones)
+    return "".join(parts)
+
+
+def _format_diff_counter(added: int, removed: int) -> str:
+    plus_segment = _format_unary_symbols(added, _PLUS_SYMBOLS)
+    minus_segment = _format_unary_symbols(removed, _MINUS_SYMBOLS)
+    colored_plus = f"\033[32m{plus_segment}\033[0m" if plus_segment else ""
+    colored_minus = f"\033[31m{minus_segment}\033[0m" if minus_segment else ""
+    return f"{colored_plus}{colored_minus}"
+
+
+def _format_stat_header(path: os.PathLike[str] | str, added: int, removed: int) -> str:
+    path_str = os.fspath(path)
+    counter = _format_diff_counter(added, removed)
+    plus_count = f"\033[32m{added}(+)\033[0m"
+    minus_count = f"\033[31m{removed}(-)\033[0m"
+    if counter:
+        counter_segment = f" {counter}"
+    else:
+        counter_segment = ""
+    return f"{_BLOCK_INDENT}┌ {path_str} {plus_count}/{minus_count}{counter_segment}"
+
+
+def _format_lines_changed(total: int) -> str:
+    line = "line" if total == 1 else "lines"
+    return f"{_BLOCK_INDENT}└ {total} {line} changed"
 
 
 def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
@@ -2412,22 +2475,51 @@ def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
             n=2,
         )
     )
-    with stdout_lock:
-        rel_path = _relativize_path(path)
+    added = sum(
+        1
+        for index, line in enumerate(diff)
+        if index >= 2 and line.startswith(b"+") and not line.startswith(b"+++")
+    )
+    removed = sum(
+        1
+        for index, line in enumerate(diff)
+        if index >= 2 and line.startswith(b"-") and not line.startswith(b"---")
+    )
+    show_stat = should_show_diff_stat()
+    show_diff = should_show_diff_output()
+    diff_lines: list[str] = []
+    if should_show_diff_output():
         skip = 2
-        for i, line in enumerate(diff):
+        for raw_line in diff:
             if skip > 0:
                 skip -= 1
                 continue
-            if line.startswith(b"@@"):
-                print(f"┌─▶ \033[31m{rel_path}\033[0m")
-                continue
-            if line.startswith(b"+"):
-                line = b"\033[92m" + line + b"\033[0m"
-            elif line.startswith(b"-"):
-                line = b"\033[31m" + line + b"\033[0m"
-            prefix = ("│ " if i != len(diff) - 1 else "└─").encode()
-            sys.stdout.buffer.write(prefix + line)
+            text = raw_line.decode("utf-8", "replace").rstrip("\r\n")
+            if raw_line.startswith(b"+") and not raw_line.startswith(b"+++"):
+                text = f"\033[32m{text}\033[0m"
+            elif raw_line.startswith(b"-") and not raw_line.startswith(b"---"):
+                text = f"\033[31m{text}\033[0m"
+            diff_lines.append(text)
+    rel_path = _relativize_path(path)
+    rel_path_str = os.fspath(rel_path)
+    lines: list[str] = []
+    total_changed = added + removed
+    if not show_stat and not show_diff:
+        return
+    header = (
+        _format_stat_header(rel_path, added, removed)
+        if show_stat
+        else f"{_BLOCK_INDENT}┌ {rel_path_str}"
+    )
+    lines.append(header)
+    if show_diff and diff_lines:
+        for diff_line in diff_lines:
+            lines.append(f"{_BLOCK_INDENT}│ {diff_line}")
+    if show_stat or (show_diff and total_changed > 0):
+        lines.append(_format_lines_changed(total_changed))
+    with stdout_lock:
+        for output_line in lines:
+            print(output_line)
 
 
 def check_group_is_empty(pgid: int) -> None:
@@ -2892,6 +2984,8 @@ def run_cli(
     runner_summary: bool,
     fixture_summary: bool,
     show_summary: bool,
+    show_diff_output: bool,
+    show_diff_stat: bool,
     jobs: int,
     keep_tmp_dirs: bool,
     passthrough: bool,
@@ -2940,6 +3034,8 @@ def run_cli(
             fixture_logger.propagate = True
 
         set_keep_tmp_dirs(bool(os.environ.get(_TMP_KEEP_ENV_VAR)) or keep_tmp_dirs)
+        set_show_diff_output(show_diff_output)
+        set_show_diff_stat(show_diff_stat)
         if passthrough:
             harness_mode = HarnessMode.PASSTHROUGH
         elif update:
