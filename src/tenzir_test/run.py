@@ -349,6 +349,7 @@ _TMP_ROOT_NAME = ".tenzir-test"
 _TMP_SUBDIR_NAME = "tmp"
 _TMP_BASE_DIRS: set[Path] = set()
 _ACTIVE_TMP_DIRS: set[Path] = set()
+_TMP_DIR_LOCK = threading.Lock()
 KEEP_TMP_DIRS = bool(os.environ.get(_TMP_KEEP_ENV_VAR))
 
 SHOW_DIFF_OUTPUT = True
@@ -506,10 +507,13 @@ def _tmp_prefix_for(test: Path) -> str:
 
 
 def _create_test_tmp_dir(test: Path) -> Path:
-    base = _resolve_tmp_base()
     prefix = f"{_tmp_prefix_for(test)}-"
-    path = Path(tempfile.mkdtemp(prefix=prefix, dir=str(base)))
-    _ACTIVE_TMP_DIRS.add(path)
+    with _TMP_DIR_LOCK:
+        base = _resolve_tmp_base()
+        if not base.exists():
+            base.mkdir(parents=True, exist_ok=True)
+        path = Path(tempfile.mkdtemp(prefix=prefix, dir=str(base)))
+        _ACTIVE_TMP_DIRS.add(path)
     return path
 
 
@@ -522,22 +526,27 @@ def cleanup_test_tmp_dir(path: str | os.PathLike[str] | None) -> None:
     if not path:
         return
     tmp_path = Path(path)
-    _ACTIVE_TMP_DIRS.discard(tmp_path)
+    with _TMP_DIR_LOCK:
+        _ACTIVE_TMP_DIRS.discard(tmp_path)
     try:
         fixtures_impl.invoke_tmp_dir_cleanup(tmp_path)
     except Exception:  # pragma: no cover - defensive logging
         pass
     if KEEP_TMP_DIRS:
         return
-    if tmp_path.exists():
-        shutil.rmtree(tmp_path, ignore_errors=True)
-    _cleanup_tmp_base_dirs()
+    with _TMP_DIR_LOCK:
+        if tmp_path.exists():
+            shutil.rmtree(tmp_path, ignore_errors=True)
+        _cleanup_tmp_base_dirs()
 
 
 def _cleanup_remaining_tmp_dirs() -> None:
-    for tmp_path in list(_ACTIVE_TMP_DIRS):
+    with _TMP_DIR_LOCK:
+        remaining = list(_ACTIVE_TMP_DIRS)
+    for tmp_path in remaining:
         cleanup_test_tmp_dir(tmp_path)
-    _cleanup_tmp_base_dirs()
+    with _TMP_DIR_LOCK:
+        _cleanup_tmp_base_dirs()
 
 
 def _cleanup_all_tmp_dirs() -> None:
@@ -545,9 +554,12 @@ def _cleanup_all_tmp_dirs() -> None:
 
     if KEEP_TMP_DIRS:
         return
-    for tmp_path in list(_ACTIVE_TMP_DIRS):
+    with _TMP_DIR_LOCK:
+        remaining = list(_ACTIVE_TMP_DIRS)
+    for tmp_path in remaining:
         cleanup_test_tmp_dir(tmp_path)
-    _cleanup_tmp_base_dirs()
+    with _TMP_DIR_LOCK:
+        _cleanup_tmp_base_dirs()
 
 
 def _cleanup_tmp_base_dirs() -> None:
