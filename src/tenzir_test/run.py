@@ -2654,20 +2654,22 @@ def run_simple_test(
             return False
         if interrupted:
             _request_interrupt()
-        message = (
+        summary_line = (
             _INTERRUPTED_NOTICE
             if interrupted
-            else f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m"
+            else f"└─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m"
         )
         if passthrough_mode:
-            report_failure(test, message)
+            report_failure(test, summary_line)
         else:
             with stdout_lock:
-                report_failure(test, message)
+                fail(test)
                 if not interrupted:
-                    for last, line in last_and(output.split(b"\n")):
-                        prefix = "│ " if not last else "└─"
-                        sys.stdout.buffer.write(prefix.encode() + line + b"\n")
+                    line_prefix = "│ ".encode()
+                    for line in output.splitlines():
+                        sys.stdout.buffer.write(line_prefix + line + b"\n")
+                if summary_line:
+                    sys.stdout.write(summary_line + "\n")
         return False
     if passthrough_mode:
         success(test)

@@ -64,35 +64,6 @@ class ShellRunner(ExtRunner):
             fixture_api.pop_context(context_token)
             run_mod.cleanup_test_tmp_dir(env.get(run_mod.TEST_TMP_ENV_VAR))
 
-        good = completed.returncode == 0
-        if expect_error == good:
-            suppressed = run_mod.should_suppress_failure_output()
-            if passthrough:
-                if not suppressed:
-                    run_mod.report_failure(
-                        test,
-                        f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m",
-                    )
-                return False
-            if suppressed:
-                return False
-            with run_mod.stdout_lock:
-                run_mod.report_failure(
-                    test,
-                    f"┌─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m",
-                )
-                stdout = completed.stdout or b""
-                for last, line in run_mod.last_and(stdout.split(b"\n")):
-                    prefix = "│ " if not last else "└─"
-                    sys.stdout.buffer.write(prefix.encode() + line + b"\n")
-                if completed.stderr:
-                    sys.stdout.buffer.write(completed.stderr)
-            return False
-
-        if passthrough:
-            run_mod.success(test)
-            return True
-
         stdout_data = completed.stdout
         if isinstance(stdout_data, str):
             stdout_bytes: bytes = stdout_data.encode()
@@ -104,6 +75,32 @@ class ShellRunner(ExtRunner):
             stderr_bytes: bytes = stderr_data.encode()
         else:
             stderr_bytes = stderr_data or b""
+
+        good = completed.returncode == 0
+        if expect_error == good:
+            suppressed = run_mod.should_suppress_failure_output()
+            summary_line = f"└─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m"
+            if passthrough:
+                if not suppressed:
+                    run_mod.report_failure(test, summary_line)
+                return False
+            if suppressed:
+                return False
+
+            with run_mod.stdout_lock:
+                run_mod.fail(test)
+                line_prefix = "│ ".encode()
+                for line in stdout_bytes.splitlines():
+                    sys.stdout.buffer.write(line_prefix + line + b"\n")
+                if stderr_bytes:
+                    for line in stderr_bytes.splitlines():
+                        sys.stdout.buffer.write(line_prefix + line + b"\n")
+                sys.stdout.write(summary_line + "\n")
+            return False
+
+        if passthrough:
+            run_mod.success(test)
+            return True
 
         root_prefix: bytes = (str(run_mod.ROOT) + "/").encode()
         stdout_bytes = stdout_bytes.replace(root_prefix, b"")
