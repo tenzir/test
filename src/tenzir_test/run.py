@@ -169,6 +169,7 @@ PASS_MAX_COLOR = "\033[92m"
 FAIL_COLOR = "\033[31m"
 SKIP_COLOR = "\033[90;1m"
 RESET_COLOR = "\033[0m"
+DETAIL_COLOR = "\033[2;37m"
 PASS_SPECTRUM = [
     "\033[38;5;52m",  # 0-9%   deep red
     "\033[38;5;88m",  # 10-19% red
@@ -2632,9 +2633,13 @@ def run_simple_test(
             )
         good = completed.returncode == 0
         output = b""
+        stderr_output = b""
         if not passthrough_mode:
-            captured = completed.stdout or b""
-            output = captured.replace(str(ROOT).encode() + b"/", b"")
+            root_bytes = str(ROOT).encode() + b"/"
+            captured_stdout = completed.stdout or b""
+            output = captured_stdout.replace(root_bytes, b"")
+            captured_stderr = completed.stderr or b""
+            stderr_output = captured_stderr.replace(root_bytes, b"")
     except subprocess.TimeoutExpired:
         report_failure(test, f"└─▶ \033[31msubprocess hit {timeout}s timeout\033[0m")
         return False
@@ -2668,6 +2673,14 @@ def run_simple_test(
                     line_prefix = "│ ".encode()
                     for line in output.splitlines():
                         sys.stdout.buffer.write(line_prefix + line + b"\n")
+                    if completed.returncode != 0 and stderr_output:
+                        sys.stdout.write("├─▶ stderr\n")
+                        detail_prefix = DETAIL_COLOR.encode()
+                        reset_bytes = RESET_COLOR.encode()
+                        for line in stderr_output.splitlines():
+                            sys.stdout.buffer.write(
+                                line_prefix + detail_prefix + line + reset_bytes + b"\n"
+                            )
                 if summary_line:
                     sys.stdout.write(summary_line + "\n")
         return False

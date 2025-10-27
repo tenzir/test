@@ -93,8 +93,13 @@ class ShellRunner(ExtRunner):
                 for line in stdout_bytes.splitlines():
                     sys.stdout.buffer.write(line_prefix + line + b"\n")
                 if stderr_bytes:
+                    sys.stdout.write("├─▶ stderr\n")
+                    detail_prefix = run_mod.DETAIL_COLOR.encode()
+                    reset_bytes = run_mod.RESET_COLOR.encode()
                     for line in stderr_bytes.splitlines():
-                        sys.stdout.buffer.write(line_prefix + line + b"\n")
+                        sys.stdout.buffer.write(
+                            line_prefix + detail_prefix + line + reset_bytes + b"\n"
+                        )
                 sys.stdout.write(summary_line + "\n")
             return False
 

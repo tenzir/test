@@ -145,3 +145,48 @@ def test_shell_runner_passthrough_streams_output(
     assert captured["check"] is True
     assert captured["capture_output"] is False
     assert captured["cwd"] == str(tmp_path)
+
+
+def test_shell_runner_reports_stderr_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = tmp_path / "tests" / "shell" / "fail.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("echo stdout\n >&2 echo stderr\n exit 42\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    class FakeCompletedProcess:
+        def __init__(self) -> None:
+            self.returncode = 42
+            self.stdout = b"stdout\n"
+            self.stderr = b"stderr\n"
+
+    monkeypatch.setattr(run, "run_subprocess", lambda *args, **kwargs: FakeCompletedProcess())
+
+    try:
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+        runner = run.ShellRunner()
+        result = runner.run(script, update=False, coverage=False)
+    finally:
+        run.apply_settings(original_settings)
+
+    assert result is False
+    lines = capsys.readouterr().out.splitlines()
+    assert "✘" in lines[0] and lines[0].endswith("tests/shell/fail.sh")
+    assert run.ANSI_ESCAPE.sub("", lines[1]) == "│ stdout"
+    assert run.ANSI_ESCAPE.sub("", lines[2]) == "├─▶ stderr"
+    assert run.ANSI_ESCAPE.sub("", lines[3]) == "│ stderr"
+    assert lines[4].startswith("└─▶ ")
+    assert "got unexpected exit code 42" in lines[4]

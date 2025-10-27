@@ -502,6 +502,7 @@ def test_run_simple_test_injects_package_dirs(
         def __init__(self) -> None:
             self.returncode = 0
             self.stdout = b"ok"
+            self.stderr = b""
 
     def fake_run(cmd, timeout, stdout=None, stderr=None, env=None, **kwargs):  # type: ignore[no-untyped-def]
         captured["cmd"] = list(cmd)
@@ -563,6 +564,7 @@ def test_run_simple_test_respects_inputs_override(
         def __init__(self) -> None:
             self.returncode = 0
             self.stdout = b"ok"
+            self.stderr = b""
 
     def fake_run(cmd, timeout, stdout=None, stderr=None, env=None, **kwargs):  # type: ignore[no-untyped-def]
         captured["cmd"] = list(cmd)
@@ -632,6 +634,48 @@ def test_run_simple_test_passthrough_streams_output(
         run.apply_settings(original_settings)
 
     assert captured.get("stdout") is None
+
+
+def test_run_simple_test_reports_stderr_on_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    test_file = tmp_path / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=sys.executable,
+            tenzir_node_binary=None,
+        )
+    )
+
+    class FakeCompletedProcess:
+        def __init__(self) -> None:
+            self.returncode = 13
+            self.stdout = b"captured stdout\n"
+            self.stderr = b"captured stderr\n"
+
+    monkeypatch.setattr(run, "run_subprocess", lambda *args, **kwargs: FakeCompletedProcess())
+
+    try:
+        result = run.run_simple_test(test_file, update=False, output_ext="txt")
+    finally:
+        run.apply_settings(original_settings)
+
+    assert result is False
+    lines = capsys.readouterr().out.splitlines()
+    assert "✘" in lines[0] and lines[0].endswith("case.tql")
+    assert run.ANSI_ESCAPE.sub("", lines[1]) == "│ captured stdout"
+    assert run.ANSI_ESCAPE.sub("", lines[2]) == "├─▶ stderr"
+    assert run.ANSI_ESCAPE.sub("", lines[3]) == "│ captured stderr"
+    assert lines[4].startswith("└─▶ ")
+    assert "got unexpected exit code 13" in lines[4]
 
 
 def test_run_simple_test_suppresses_diff_on_interrupt(
