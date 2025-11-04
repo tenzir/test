@@ -97,24 +97,37 @@ ready to cut a new version:
    ```sh
    uv run check-release
    ```
-2. Bump the version:
+2. Stage the release manifest and move unreleased changelog entries:
+   ```sh
+   uvx tenzir-changelog \
+     --root changelog \
+     release create vX.Y.Z \
+     --intro "Summary" \
+     --yes
+   uvx tenzir-changelog --root changelog validate
+   ```
+   Use `--intro-file` when you prefer to maintain the release summary in a
+   separate document. The command relocates the contents of
+   `changelog/unreleased/` into `changelog/releases/vX.Y.Z/entries/`, records
+   release metadata in `manifest.yaml`, and refreshes the release notes.
+3. Bump the version:
    ```sh
    uv version --bump <part>  # e.g., uv version --bump patch
    ```
    This updates `pyproject.toml` and `uv.lock`.
-3. Commit the bump:
+4. Commit the release artifacts and version bump:
    ```sh
-   git commit -a -v -m "Bump version to vX.Y.Z"
+   git commit -am "Bump version to vX.Y.Z"
    ```
-4. Tag the release:
+5. Publish the release and annotate the tag:
    ```sh
-   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   uvx tenzir-changelog --root changelog release publish vX.Y.Z --tag --yes
    ```
-5. Push code and tag:
-   ```sh
-   git push && git push --tags
-   ```
-6. Draft and publish a GitHub release referencing the tag.
+   Add `--draft` or `--prerelease` if you need staged releases. The command
+   pushes the current branch, creates the annotated tag, and publishes both the
+   tag and release notes.
+6. Draft and publish a GitHub release describing highlights if additional
+   context is helpful.
 
 Publishing the release triggers the **Publish to PyPI** workflow, which builds
 the distributions, validates metadata, uploads to PyPI, and performs an install
