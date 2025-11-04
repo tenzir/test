@@ -1,0 +1,4 @@
+id: tenzir-test
+name: Tenzir Test
+description: A testing framework for the Tenzir ecosystem
+repository: tenzir/tenzir-test
