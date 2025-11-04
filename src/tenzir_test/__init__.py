@@ -3,6 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from . import run
+from .run import ExecutionResult, HarnessError, ProjectResult, ensure_settings, execute
 from .config import Settings, discover_settings
 from .fixtures import (
     Executor,
@@ -32,9 +33,14 @@ __all__ = [
     "fixtures",
     "Settings",
     "discover_settings",
+    "ensure_settings",
+    "execute",
     "has",
     "register",
     "require",
+    "ExecutionResult",
+    "ProjectResult",
+    "HarnessError",
     "run",
 ]
 

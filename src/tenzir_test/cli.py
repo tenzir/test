@@ -152,33 +152,39 @@ def cli(
     jobs: int,
     passthrough: bool,
     all_projects: bool,
-) -> None:
+) -> int:
     """Execute tenzir-test scenarios."""
 
     jobs_source = ctx.get_parameter_source("jobs")
     jobs_overridden = jobs_source is not click.core.ParameterSource.DEFAULT
 
-    runtime.run_cli(
-        root=root,
-        tenzir_binary=tenzir_binary,
-        tenzir_node_binary=tenzir_node_binary,
-        tests=list(tests),
-        update=update,
-        debug=debug,
-        purge=purge,
-        coverage=coverage,
-        coverage_source_dir=coverage_source_dir,
-        runner_summary=runner_summary,
-        fixture_summary=fixture_summary,
-        show_summary=show_summary,
-        show_diff_output=show_diff_output,
-        show_diff_stat=show_diff_stat,
-        keep_tmp_dirs=keep_tmp_dirs,
-        jobs=jobs,
-        passthrough=passthrough,
-        jobs_overridden=jobs_overridden,
-        all_projects=all_projects,
-    )
+    try:
+        result = runtime.run_cli(
+            root=root,
+            tenzir_binary=tenzir_binary,
+            tenzir_node_binary=tenzir_node_binary,
+            tests=list(tests),
+            update=update,
+            debug=debug,
+            purge=purge,
+            coverage=coverage,
+            coverage_source_dir=coverage_source_dir,
+            runner_summary=runner_summary,
+            fixture_summary=fixture_summary,
+            show_summary=show_summary,
+            show_diff_output=show_diff_output,
+            show_diff_stat=show_diff_stat,
+            keep_tmp_dirs=keep_tmp_dirs,
+            jobs=jobs,
+            passthrough=passthrough,
+            jobs_overridden=jobs_overridden,
+            all_projects=all_projects,
+        )
+    except runtime.HarnessError as exc:
+        if exc.show_message and exc.args:
+            raise click.ClickException(str(exc)) from exc
+        return exc.exit_code
+    return result.exit_code
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -186,7 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     command_main = getattr(cli, "main")
     try:
-        command_main(
+        result = command_main(
             args=list(argv) if argv is not None else None,
             standalone_mode=False,
         )
@@ -198,7 +204,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _normalize_exit_code(exit_code)
     except SystemExit as exc:  # pragma: no cover - propagate runner exits
         return _normalize_exit_code(exc.code)
-    return 0
+    else:
+        return _normalize_exit_code(result)
 
 
 if __name__ == "__main__":

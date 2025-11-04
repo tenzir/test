@@ -151,12 +151,13 @@ def detect_execution_mode(root: Path) -> tuple[ExecutionMode, Path | None]:
     return ExecutionMode.PROJECT, None
 
 
-_settings = discover_settings()
-TENZIR_BINARY = _settings.tenzir_binary
-TENZIR_NODE_BINARY = _settings.tenzir_node_binary
-ROOT = _settings.root
-INPUTS_DIR = _settings.inputs_dir
-EXECUTION_MODE, _DETECTED_PACKAGE_ROOT = detect_execution_mode(ROOT)
+_settings: Settings | None = None
+TENZIR_BINARY: str | None = None
+TENZIR_NODE_BINARY: str | None = None
+ROOT: Path = Path.cwd()
+INPUTS_DIR: Path = ROOT / "inputs"
+EXECUTION_MODE: ExecutionMode = ExecutionMode.PROJECT
+_DETECTED_PACKAGE_ROOT: Path | None = None
 HARNESS_MODE = HarnessMode.COMPARE
 CHECKMARK = "\033[92;1m✔\033[0m"
 CROSS = "\033[31m✘\033[0m"
@@ -1459,6 +1460,14 @@ def _looks_like_project_root(path: Path) -> bool:
     return False
 
 
+def ensure_settings() -> Settings:
+    """Return the active harness settings, discovering defaults on first use."""
+
+    if _settings is None:
+        apply_settings(discover_settings())
+    return cast(Settings, _settings)
+
+
 def apply_settings(settings: Settings) -> None:
     global TENZIR_BINARY, TENZIR_NODE_BINARY
     global _settings
@@ -1826,6 +1835,31 @@ class Summary:
                 stats.failed += 1
 
 
+@dataclasses.dataclass(slots=True)
+class ProjectResult:
+    selection: ProjectSelection
+    summary: Summary
+    queue_size: int
+
+
+@dataclasses.dataclass(slots=True)
+class ExecutionResult:
+    summary: Summary
+    project_results: tuple[ProjectResult, ...]
+    queue_size: int
+    exit_code: int
+    interrupted: bool
+
+
+class HarnessError(RuntimeError):
+    """Fatal harness error signalling invalid invocation or configuration."""
+
+    def __init__(self, message: str, *, exit_code: int = 1, show_message: bool = True) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+        self.show_message = show_message
+
+
 def _format_percentage(count: int, total: int) -> str:
     return f"{_percentage_value(count, total)}%"
 
@@ -1919,7 +1953,7 @@ def _build_queue_from_paths(
         try:
             runner = get_runner_for_test(test_path)
         except ValueError as error:
-            sys.exit(f"error: {error}")
+            raise HarnessError(f"error: {error}") from error
 
         suite_info = _resolve_suite_for_test(test_path)
         test_item = TestQueueItem(runner=runner, path=test_path)
@@ -1951,7 +1985,7 @@ def _build_queue_from_paths(
             location_detail = (
                 f" ({_relativize_path(mismatch_path)})" if mismatch_path is not None else ""
             )
-            sys.exit(
+            raise HarnessError(
                 f"error: suite '{suite_info.name}' defined in {config_path} must use identical fixtures "
                 f"across tests (expected: {expected_list}, found: {example_list}{location_detail})"
             )
@@ -3018,7 +3052,8 @@ def run_cli(
     passthrough: bool,
     jobs_overridden: bool = False,
     all_projects: bool = False,
-) -> None:
+) -> ExecutionResult:
+    """Execute the harness and return a structured result for library consumers."""
     from tenzir_test.engine import state as engine_state
 
     try:
@@ -3098,25 +3133,31 @@ def run_cli(
 
         if not _is_project_root(ROOT):
             if all_projects:
-                sys.exit("error: --all-projects requires a project root; specify one with --root")
+                raise HarnessError(
+                    "error: --all-projects requires a project root; specify one with --root"
+                )
             if not selected_tests:
-                print(
+                message = (
                     f"{INFO} no tenzir-test project detected at {ROOT}.\n"
                     f"{INFO} run from your project root or provide --root."
                 )
-                sys.exit(1)
+                print(message)
+                raise HarnessError(message, show_message=False)
             assert plan is not None
             runnable_satellites = [item for item in plan.satellites if item.should_run()]
             if not runnable_satellites:
-                print(
+                message = (
                     f"{INFO} no tenzir-test project detected at {ROOT}.\n"
                     f"{INFO} run from your project root or provide --root."
                 )
+                print(message)
                 sample = ", ".join(str(path) for path in selected_tests[:3])
                 if len(selected_tests) > 3:
                     sample += ", ..."
                 print(f"{INFO} ignoring provided selection(s): {sample}")
-                sys.exit(1)
+                raise HarnessError(
+                    "no runnable tests selected outside of a project root", show_message=False
+                )
         if plan is None:
             plan = _build_execution_plan(
                 ROOT,
@@ -3135,7 +3176,9 @@ def run_cli(
             overall_summary = Summary()
             overall_queue_count = 0
             executed_projects: list[ProjectSelection] = []
+            project_results: list[ProjectResult] = []
             printed_projects = 0
+            interrupted = False
 
             for selection in plan.projects():
                 if interrupt_requested():
@@ -3148,7 +3191,7 @@ def run_cli(
                             _load_project_runners(selection.root, expose_namespace=True)
                             _load_project_fixtures(selection.root, expose_namespace=True)
                         except RuntimeError as exc:
-                            sys.exit(f"error: {exc}")
+                            raise HarnessError(f"error: {exc}") from exc
                         refresh_runner_metadata()
                         _set_project_root(settings.root)
                         engine_state.refresh()
@@ -3164,7 +3207,7 @@ def run_cli(
                     _load_project_runners(selection.root, expose_namespace=expose_namespace)
                     _load_project_fixtures(selection.root, expose_namespace=expose_namespace)
                 except RuntimeError as exc:
-                    sys.exit(f"error: {exc}")
+                    raise HarnessError(f"error: {exc}") from exc
                 refresh_runner_metadata()
 
                 tests_to_run = selection.selectors if not selection.run_all else [selection.root]
@@ -3184,14 +3227,16 @@ def run_cli(
 
                     resolved = test.resolve()
                     if not resolved.exists():
-                        sys.exit(f"error: test path `{test}` does not exist")
+                        raise HarnessError(f"error: test path `{test}` does not exist")
 
                     if resolved.is_dir():
                         if _is_inputs_path(resolved):
                             continue
                         tql_files = list(collect_all_tests(resolved))
                         if not tql_files:
-                            sys.exit(f"error: no {_allowed_extensions} files found in {resolved}")
+                            raise HarnessError(
+                                f"error: no {_allowed_extensions} files found in {resolved}"
+                            )
                         for file_path in tql_files:
                             suite_info = _resolve_suite_for_test(file_path)
                             if suite_info is None:
@@ -3211,7 +3256,10 @@ def run_cli(
                                     f"{INFO} select the suite directory instead",
                                     file=sys.stderr,
                                 )
-                                sys.exit(1)
+                                raise HarnessError(
+                                    f"invalid partial suite selection at {rel_target}",
+                                    show_message=False,
+                                )
                         for file_path in tql_files:
                             collected_paths.add(file_path.resolve())
                     elif resolved.is_file():
@@ -3229,18 +3277,18 @@ def run_cli(
                                     f"'{suite_info.name}' defined in {rel_suite / _CONFIG_FILE_NAME}."
                                 )
                                 print(f"{CROSS} {detail}", file=sys.stderr)
-                                print(
-                                    f"{INFO} select the suite directory instead",
-                                    file=sys.stderr,
+                                print(f"{INFO} select the suite directory instead", file=sys.stderr)
+                                raise HarnessError(
+                                    f"invalid suite selection for {rel_file}",
+                                    show_message=False,
                                 )
-                                sys.exit(1)
                             collected_paths.add(resolved.resolve())
                         else:
-                            sys.exit(
+                            raise HarnessError(
                                 f"error: unsupported file type {resolved.suffix} for {resolved} - only {_allowed_extensions} files are supported"
                             )
                     else:
-                        sys.exit(f"error: `{test}` is neither a file nor a directory")
+                        raise HarnessError(f"error: `{test}` is neither a file nor a directory")
 
                 if interrupt_requested():
                     break
@@ -3248,6 +3296,7 @@ def run_cli(
                 queue = _build_queue_from_paths(collected_paths, coverage=coverage)
                 queue.sort(key=_queue_sort_key, reverse=True)
                 project_queue_size = _count_queue_tests(queue)
+                project_summary = Summary()
                 job_count, enabled_flags, verb = _summarize_harness_configuration(
                     jobs=jobs,
                     update=update,
@@ -3262,15 +3311,26 @@ def run_cli(
                 if not project_queue_size:
                     overall_queue_count += project_queue_size
                     executed_projects.append(selection)
+                    project_results.append(
+                        ProjectResult(
+                            selection=selection,
+                            summary=project_summary,
+                            queue_size=project_queue_size,
+                        )
+                    )
                     continue
 
                 os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
                 if not TENZIR_BINARY:
-                    sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
+                    raise HarnessError(
+                        f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`"
+                    )
                 try:
                     tenzir_version = get_version()
                 except FileNotFoundError:
-                    sys.exit(f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`")
+                    raise HarnessError(
+                        f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`"
+                    )
 
                 runner_versions = _collect_runner_versions(queue, tenzir_version=tenzir_version)
                 runner_breakdown = _runner_breakdown(
@@ -3303,7 +3363,6 @@ def run_cli(
                     )
                     for _ in range(jobs)
                 ]
-                project_summary = Summary()
                 for worker in workers:
                     worker.start()
                 try:
@@ -3313,6 +3372,7 @@ def run_cli(
                     _request_interrupt()
                     for worker in workers:
                         worker.join()
+                    interrupted = True
                     break
 
                 _print_compact_summary(project_summary)
@@ -3336,6 +3396,13 @@ def run_cli(
                 overall_summary += project_summary
                 overall_queue_count += project_queue_size
                 executed_projects.append(selection)
+                project_results.append(
+                    ProjectResult(
+                        selection=selection,
+                        summary=project_summary,
+                        queue_size=project_queue_size,
+                    )
+                )
 
                 if interrupt_requested():
                     break
@@ -3347,23 +3414,95 @@ def run_cli(
             if purge:
                 for runner in runners_iter_runners():
                     runner.purge()
-                return
+                return ExecutionResult(
+                    summary=overall_summary,
+                    project_results=tuple(project_results),
+                    queue_size=overall_queue_count,
+                    exit_code=0,
+                    interrupted=interrupted,
+                )
 
             if overall_queue_count == 0:
                 print(f"{INFO} no tests selected")
-                return
+                return ExecutionResult(
+                    summary=overall_summary,
+                    project_results=tuple(project_results),
+                    queue_size=overall_queue_count,
+                    exit_code=0,
+                    interrupted=interrupted,
+                )
 
             if len(executed_projects) > 1:
                 _print_aggregate_totals(len(executed_projects), overall_summary)
 
-            if interrupt_requested():
-                sys.exit(130)
+            if interrupted:
+                return ExecutionResult(
+                    summary=overall_summary,
+                    project_results=tuple(project_results),
+                    queue_size=overall_queue_count,
+                    exit_code=130,
+                    interrupted=True,
+                )
 
-            if overall_summary.failed > 0:
-                sys.exit(1)
+            exit_code = 1 if overall_summary.failed > 0 else 0
+            return ExecutionResult(
+                summary=overall_summary,
+                project_results=tuple(project_results),
+                queue_size=overall_queue_count,
+                exit_code=exit_code,
+                interrupted=False,
+            )
 
     finally:
         _cleanup_all_tmp_dirs()
+
+
+def execute(
+    *,
+    root: Path | None = None,
+    tenzir_binary: Path | None = None,
+    tenzir_node_binary: Path | None = None,
+    tests: Sequence[Path] = (),
+    update: bool = False,
+    debug: bool = False,
+    purge: bool = False,
+    coverage: bool = False,
+    coverage_source_dir: Path | None = None,
+    runner_summary: bool = False,
+    fixture_summary: bool = False,
+    show_summary: bool = False,
+    show_diff_output: bool = True,
+    show_diff_stat: bool = True,
+    jobs: int | None = None,
+    keep_tmp_dirs: bool = False,
+    passthrough: bool = False,
+    jobs_overridden: bool = False,
+    all_projects: bool = False,
+) -> ExecutionResult:
+    """Library-oriented wrapper around `run_cli` with defaulted parameters."""
+
+    resolved_jobs = jobs if jobs is not None else get_default_jobs()
+    return run_cli(
+        root=root,
+        tenzir_binary=tenzir_binary,
+        tenzir_node_binary=tenzir_node_binary,
+        tests=list(tests),
+        update=update,
+        debug=debug,
+        purge=purge,
+        coverage=coverage,
+        coverage_source_dir=coverage_source_dir,
+        runner_summary=runner_summary,
+        fixture_summary=fixture_summary,
+        show_summary=show_summary,
+        show_diff_output=show_diff_output,
+        show_diff_stat=show_diff_stat,
+        jobs=resolved_jobs,
+        keep_tmp_dirs=keep_tmp_dirs,
+        passthrough=passthrough,
+        jobs_overridden=jobs_overridden,
+        all_projects=all_projects,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -3372,14 +3511,21 @@ def main(argv: Sequence[str] | None = None) -> None:
     from . import cli as cli_module
 
     try:
-        cli_module.cli.main(
+        result = cli_module.cli.main(
             args=list(argv) if argv is not None else None,
             standalone_mode=False,
         )
+    except click.exceptions.ClickException as exc:
+        exc.show(file=sys.stderr)
+        exit_code = getattr(exc, "exit_code", 1)
+        raise SystemExit(exit_code) from exc
     except click.exceptions.Exit as exc:
         raise SystemExit(exc.exit_code) from exc
     except click.exceptions.Abort as exc:
         raise SystemExit(1) from exc
+    exit_code = cli_module._normalize_exit_code(result)
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

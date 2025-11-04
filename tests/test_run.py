@@ -100,6 +100,29 @@ def test_main_accepts_current_directory_selection_without_project_root(
     assert lines == [f"{run.INFO} no tests selected"]
 
 
+def test_execute_delegates_to_run_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> run.ExecutionResult:
+        captured.update(kwargs)
+        return run.ExecutionResult(
+            summary=run.Summary(),
+            project_results=tuple(),
+            queue_size=0,
+            exit_code=0,
+            interrupted=False,
+        )
+
+    monkeypatch.setattr(run, "run_cli", fake_run_cli)
+
+    result = run.execute(tests=[Path("sample.tql")], jobs=2, update=True)
+
+    assert isinstance(result, run.ExecutionResult)
+    assert captured["tests"] == [Path("sample.tql")]
+    assert captured["jobs"] == 2
+    assert captured["update"] is True
+
+
 def test_format_summary_reports_counts_and_percentages() -> None:
     summary = run.Summary(failed=1, total=357, skipped=3)
     message = run._format_summary(summary)
@@ -755,7 +778,7 @@ def test_cli_rejects_partial_suite_selection(
     )
     run.refresh_runner_metadata()
     try:
-        with pytest.raises(SystemExit):
+        with pytest.raises(run.HarnessError) as exc_info:
             run.run_cli(
                 root=project_root,
                 tenzir_binary=None,
@@ -777,11 +800,12 @@ def test_cli_rejects_partial_suite_selection(
                 jobs_overridden=False,
                 all_projects=False,
             )
+        assert exc_info.value.exit_code == 1
 
         first_err = capsys.readouterr().err
         assert "belongs to the suite" in first_err
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(run.HarnessError) as exc_info:
             run.run_cli(
                 root=project_root,
                 tenzir_binary=None,
@@ -803,6 +827,7 @@ def test_cli_rejects_partial_suite_selection(
                 jobs_overridden=False,
                 all_projects=False,
             )
+        assert exc_info.value.exit_code == 1
         second_err = capsys.readouterr().err
         assert "inside the suite" in second_err
     finally:
