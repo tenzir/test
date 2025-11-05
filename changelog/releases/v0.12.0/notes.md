@@ -1,11 +1,8 @@
----
-title: Add configurable color output control
-type: feature
-authors:
-  - codex
-  - mavam
-created: 2025-11-05
----
+Minor release with improved NO_COLOR handling.
+
+## 🚀 Features
+
+### Add configurable color output control
 
 We switched library consumers to plain output by default and added full `NO_COLOR` support, keeping ANSI colors only where they enhance the interactive experience.
 
@@ -16,3 +13,5 @@ The `tenzir-test` CLI continues to auto-detect your terminal and renders colors 
 All palette logic now lives in a single helper that colorizes checkmarks, crosses, diff lines, and progress indicators consistently. This unification means `run.print_diff(...)` respects your color mode choice everywhere, whether you invoke it from the CLI or from library code.
 
 We added pytest coverage for all three modes—CLI with colors, library without colors, and `NO_COLOR=1` forcing plain output—so future changes won't break the contract.
+
+*By @codex and @mavam.*
