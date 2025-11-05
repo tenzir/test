@@ -79,7 +79,9 @@ class ShellRunner(ExtRunner):
         good = completed.returncode == 0
         if expect_error == good:
             suppressed = run_mod.should_suppress_failure_output()
-            summary_line = f"└─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m"
+            summary_line = run_mod.format_failure_message(
+                f"got unexpected exit code {completed.returncode}"
+            )
             if passthrough:
                 if not suppressed:
                     run_mod.report_failure(test, summary_line)
@@ -127,7 +129,7 @@ class ShellRunner(ExtRunner):
             if not stdout_path.exists():
                 run_mod.report_failure(
                     test,
-                    f'└─▶ \033[31mFailed to find ref file: "{stdout_path}"\033[0m',
+                    run_mod.format_failure_message(f'Failed to find ref file: "{stdout_path}"'),
                 )
                 return False
             run_mod.log_comparison(test, stdout_path, mode="comparing")

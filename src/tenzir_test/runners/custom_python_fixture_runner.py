@@ -127,7 +127,9 @@ class CustomPythonFixture(ExtRunner):
                     if not ref_path.exists():
                         run_mod.report_failure(
                             test,
-                            f'└─▶ \033[31mFailed to find ref file: "{ref_path}"\033[0m',
+                            run_mod.format_failure_message(
+                                f'Failed to find ref file: "{ref_path}"'
+                            ),
                         )
                         return False
                     run_mod.log_comparison(test, ref_path, mode="comparing")
@@ -144,7 +146,8 @@ class CustomPythonFixture(ExtRunner):
                 run_mod.cleanup_test_tmp_dir(env.get(run_mod.TEST_TMP_ENV_VAR))
         except subprocess.TimeoutExpired:
             run_mod.report_failure(
-                test, f"└─▶ \033[31mpython fixture hit {timeout}s timeout\033[0m"
+                test,
+                run_mod.format_failure_message(f"python fixture hit {timeout}s timeout"),
             )
             return False
         except subprocess.CalledProcessError as e:

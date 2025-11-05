@@ -27,11 +27,31 @@
 - Name callables with `snake_case`, classes with `CamelCase`, and constants with `UPPER_CASE`.
 - Prefer explicit imports and isolate configuration helpers in `config.py` for discoverability.
 - Write documentation in active voice and rewrite passive sentences before committing.
+- When writing changelog entries, use active voice so the change reads like a clear user-facing announcement.
 
 ## Testing Guidelines
 
 - Place tests in `tests/` following the `test_*.py` pattern configured via Pytest options.
 - Mirror module names in test files and use parametrization to exercise scenario variation.
+
+## Writing Changelog Entries
+
+- Learn (once) about how to use the changelog tool by reading the reference
+  documentation at https://docs.tenzir.com/reference/changelog-framework.
+- When you implement new changes, features, or fix bugs, create a new changelog
+  entry with `uvx tenzir-changelog --root changelog add ...`; do not
+  hand-write changelog entry files.
+- If you are a coding agent, use your own name as author, e.g., claude or codex.
+- Focus on the user-facing impact of your changes. Do not mention internal
+  implementation details.
+- Always begin with one sentence or paragraph that concisely describes the
+  change.
+- If helpful, add examples of how to use a the new feature or how to fix the
+  bug. A changelog entry can have multiple paragraphs and should read like a
+  concise micro-blog post that spotlights the change.
+- Make deliberate use of Markdown syntax, e.g., frame technical pieces of the
+  code base in backticks, e.g., `--option 42` or `cmd`. Use emphasis and bold
+  where it feels appropriate and improves clarity.
 
 ## Commit & Pull Request Guidelines
 
@@ -39,3 +59,5 @@
 - Summarize motivation, core code changes, and validation commands in every pull request.
 - Attach screenshots or key logs whenever behaviour changes; ensure CI is green before review.
 - Tag at least one Tenzir maintainer and respond promptly to feedback to keep iteration quick.
+- Every PR should mention the changes from a user perspective. Copy the
+  user-facing changes from the changelog entry.

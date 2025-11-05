@@ -191,6 +191,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the Click command and translate Click exits to integer codes."""
 
     command_main = getattr(cli, "main")
+    previous_color_mode = runtime.get_color_mode()
+    runtime.set_color_mode(runtime.ColorMode.AUTO)
     try:
         result = command_main(
             args=list(argv) if argv is not None else None,
@@ -206,6 +208,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _normalize_exit_code(exc.code)
     else:
         return _normalize_exit_code(result)
+    finally:
+        runtime.set_color_mode(previous_color_mode)
 
 
 if __name__ == "__main__":

@@ -138,6 +138,14 @@ class HarnessMode(enum.Enum):
     PASSTHROUGH = "passthrough"
 
 
+class ColorMode(enum.Enum):
+    """Supported color output policies."""
+
+    AUTO = "auto"
+    ALWAYS = "always"
+    NEVER = "never"
+
+
 def detect_execution_mode(root: Path) -> tuple[ExecutionMode, Path | None]:
     """Return the execution mode and detected package root for `root`."""
 
@@ -159,19 +167,23 @@ INPUTS_DIR: Path = ROOT / "inputs"
 EXECUTION_MODE: ExecutionMode = ExecutionMode.PROJECT
 _DETECTED_PACKAGE_ROOT: Path | None = None
 HARNESS_MODE = HarnessMode.COMPARE
-CHECKMARK = "\033[92;1m✔\033[0m"
-CROSS = "\033[31m✘\033[0m"
-INFO = "\033[94;1mi\033[0m"
-SKIP = "\033[90;1m●\033[0m"
-DEBUG_PREFIX = "\033[95m◆\033[0m"
-BOLD = "\033[1m"
-CHECK_COLOR = "\033[92;1m"
-PASS_MAX_COLOR = "\033[92m"
-FAIL_COLOR = "\033[31m"
-SKIP_COLOR = "\033[90;1m"
-RESET_COLOR = "\033[0m"
-DETAIL_COLOR = "\033[2;37m"
-PASS_SPECTRUM = [
+_COLOR_MODE = ColorMode.NEVER
+COLORS_ENABLED = False
+CHECKMARK = ""
+CROSS = ""
+INFO = ""
+SKIP = ""
+DEBUG_PREFIX = ""
+BOLD = ""
+CHECK_COLOR = ""
+PASS_MAX_COLOR = ""
+FAIL_COLOR = ""
+SKIP_COLOR = ""
+RESET_COLOR = ""
+DETAIL_COLOR = ""
+DIFF_ADD_COLOR = ""
+PASS_SPECTRUM: list[str] = []
+_COLORED_PASS_SPECTRUM = [
     "\033[38;5;52m",  # 0-9%   deep red
     "\033[38;5;88m",  # 10-19% red
     "\033[38;5;124m",  # 20-29% dark orange
@@ -182,8 +194,107 @@ PASS_SPECTRUM = [
     "\033[38;5;148m",  # 70-79% spring green
     "\033[38;5;112m",  # 80-89% medium green
     "\033[38;5;28m",  # 90-99% deep forest green
-    PASS_MAX_COLOR,  # 100% bright green
+    "\033[92m",  # 100% bright green
 ]
+_INTERRUPTED_NOTICE = "└─▶ test interrupted by user"
+
+
+def _colors_available() -> bool:
+    if _COLOR_MODE is ColorMode.NEVER:
+        return False
+    if "NO_COLOR" in os.environ:
+        return False
+    if _COLOR_MODE is ColorMode.ALWAYS:
+        return True
+    return True
+
+
+def _apply_color_palette() -> None:
+    global COLORS_ENABLED
+    global CHECKMARK
+    global CROSS
+    global INFO
+    global SKIP
+    global DEBUG_PREFIX
+    global BOLD
+    global CHECK_COLOR
+    global PASS_MAX_COLOR
+    global FAIL_COLOR
+    global SKIP_COLOR
+    global RESET_COLOR
+    global DETAIL_COLOR
+    global DIFF_ADD_COLOR
+    global PASS_SPECTRUM
+    global _INTERRUPTED_NOTICE
+
+    COLORS_ENABLED = _colors_available()
+    RESET_COLOR = "\033[0m" if COLORS_ENABLED else ""
+
+    def _wrap(code: str, text: str) -> str:
+        if not code:
+            return text
+        return f"{code}{text}{RESET_COLOR}"
+
+    CHECK_COLOR = "\033[92;1m" if COLORS_ENABLED else ""
+    PASS_MAX_COLOR = "\033[92m" if COLORS_ENABLED else ""
+    FAIL_COLOR = "\033[31m" if COLORS_ENABLED else ""
+    SKIP_COLOR = "\033[90;1m" if COLORS_ENABLED else ""
+    DETAIL_COLOR = "\033[2;37m" if COLORS_ENABLED else ""
+    DIFF_ADD_COLOR = "\033[32m" if COLORS_ENABLED else ""
+    BOLD = "\033[1m" if COLORS_ENABLED else ""
+
+    CHECKMARK = _wrap(CHECK_COLOR, "✔")
+    CROSS = _wrap(FAIL_COLOR, "✘")
+    INFO = _wrap("\033[94;1m" if COLORS_ENABLED else "", "i")
+    SKIP = _wrap(SKIP_COLOR, "●")
+    DEBUG_PREFIX = _wrap("\033[95m" if COLORS_ENABLED else "", "◆")
+    PASS_SPECTRUM = (
+        list(_COLORED_PASS_SPECTRUM) if COLORS_ENABLED else ["" for _ in _COLORED_PASS_SPECTRUM]
+    )
+    _INTERRUPTED_NOTICE = (
+        f"└─▶ {_wrap('\033[33m' if COLORS_ENABLED else '', 'test interrupted by user')}"
+    )
+
+
+def refresh_color_palette() -> None:
+    """Re-evaluate ANSI color availability based on environment variables."""
+
+    _apply_color_palette()
+
+
+def colors_enabled() -> bool:
+    return COLORS_ENABLED
+
+
+def get_color_mode() -> ColorMode:
+    return _COLOR_MODE
+
+
+def set_color_mode(mode: ColorMode) -> None:
+    global _COLOR_MODE
+    if not isinstance(mode, ColorMode):
+        raise TypeError("mode must be an instance of ColorMode")
+    if _COLOR_MODE is mode:
+        return
+    _COLOR_MODE = mode
+    _apply_color_palette()
+
+
+def colorize(text: str, color: str) -> str:
+    """Wrap `text` with the given ANSI `color` code if colors are enabled."""
+
+    if not color:
+        return text
+    return f"{color}{text}{RESET_COLOR}"
+
+
+def format_failure_message(message: str) -> str:
+    """Render a standardized failure line with optional ANSI coloring."""
+
+    return f"└─▶ {colorize(message, FAIL_COLOR)}"
+
+
+_apply_color_palette()
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 stdout_lock = threading.RLock()
@@ -243,8 +354,6 @@ def _is_interrupt_exit(returncode: int) -> bool:
         return -returncode in _INTERRUPT_SIGNALS
     return returncode in {128 + sig for sig in _INTERRUPT_SIGNALS}
 
-
-_INTERRUPTED_NOTICE = "└─▶ \033[33mtest interrupted by user\033[0m"
 
 _CURRENT_RETRY_CONTEXT = threading.local()
 _CURRENT_SUITE_CONTEXT = threading.local()
@@ -332,7 +441,8 @@ def _format_attempt_suffix() -> str:
     attempt, max_attempts = progress
     if attempt <= 1 or max_attempts <= 1:
         return ""
-    return f"  \033[2;37mattempts={attempt}/{max_attempts}\033[0m"
+    detail = f"attempts={attempt}/{max_attempts}"
+    return f"  {colorize(detail, DETAIL_COLOR)}"
 
 
 def _format_suite_suffix() -> str:
@@ -342,7 +452,8 @@ def _format_suite_suffix() -> str:
     name, index, total = progress
     if not name or total <= 0:
         return ""
-    return f"  \033[2;37msuite={name} ({index}/{total})\033[0m"
+    detail = f"suite={name} ({index}/{total})"
+    return f"  {colorize(detail, DETAIL_COLOR)}"
 
 
 TEST_TMP_ENV_VAR = "TENZIR_TMP_DIR"
@@ -2175,8 +2286,8 @@ def _color_tree_glyphs(line: str, color: str) -> str:
     glyphs = {"│", "├", "└", "─"}
     parts = []
     for char in line:
-        if char in glyphs:
-            parts.append(f"{color}{char}\033[0m")
+        if char in glyphs and color:
+            parts.append(f"{color}{char}{RESET_COLOR}")
         else:
             parts.append(char)
     return "".join(parts)
@@ -2424,7 +2535,7 @@ def _print_detailed_summary(summary: Summary) -> None:
     if summary.failed_paths:
         print(f"{CROSS} Failed tests:")
         for line in _render_tree(_build_path_tree(summary.failed_paths)):
-            print(f"  {_color_tree_glyphs(line, '\033[31m')}")
+            print(f"  {_color_tree_glyphs(line, FAIL_COLOR)}")
 
 
 def get_version() -> str:
@@ -2489,16 +2600,16 @@ def _format_unary_symbols(count: int, symbols: dict[int, str]) -> str:
 def _format_diff_counter(added: int, removed: int) -> str:
     plus_segment = _format_unary_symbols(added, _PLUS_SYMBOLS)
     minus_segment = _format_unary_symbols(removed, _MINUS_SYMBOLS)
-    colored_plus = f"\033[32m{plus_segment}\033[0m" if plus_segment else ""
-    colored_minus = f"\033[31m{minus_segment}\033[0m" if minus_segment else ""
+    colored_plus = colorize(plus_segment, DIFF_ADD_COLOR) if plus_segment else ""
+    colored_minus = colorize(minus_segment, FAIL_COLOR) if minus_segment else ""
     return f"{colored_plus}{colored_minus}"
 
 
 def _format_stat_header(path: os.PathLike[str] | str, added: int, removed: int) -> str:
     path_str = os.fspath(path)
     counter = _format_diff_counter(added, removed)
-    plus_count = f"\033[32m{added}(+)\033[0m"
-    minus_count = f"\033[31m{removed}(-)\033[0m"
+    plus_count = colorize(f"{added}(+)", DIFF_ADD_COLOR)
+    minus_count = colorize(f"{removed}(-)", FAIL_COLOR)
     if counter:
         counter_segment = f" {counter}"
     else:
@@ -2543,9 +2654,9 @@ def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
                 continue
             text = raw_line.decode("utf-8", "replace").rstrip("\r\n")
             if raw_line.startswith(b"+") and not raw_line.startswith(b"+++"):
-                text = f"\033[32m{text}\033[0m"
+                text = colorize(text, DIFF_ADD_COLOR)
             elif raw_line.startswith(b"-") and not raw_line.startswith(b"---"):
-                text = f"\033[31m{text}\033[0m"
+                text = colorize(text, FAIL_COLOR)
             diff_lines.append(text)
     rel_path = _relativize_path(path)
     rel_path_str = os.fspath(rel_path)
@@ -2589,7 +2700,7 @@ def run_simple_test(
         # Parse test configuration
         test_config = parse_test_config(test, coverage=coverage)
     except ValueError as e:
-        report_failure(test, f"└─▶ \033[31m{e}\033[0m")
+        report_failure(test, format_failure_message(str(e)))
         return False
 
     inputs_override = typing.cast(str | None, test_config.get("inputs"))
@@ -2675,13 +2786,16 @@ def run_simple_test(
             captured_stderr = completed.stderr or b""
             stderr_output = captured_stderr.replace(root_bytes, b"")
     except subprocess.TimeoutExpired:
-        report_failure(test, f"└─▶ \033[31msubprocess hit {timeout}s timeout\033[0m")
+        report_failure(
+            test,
+            format_failure_message(f"subprocess hit {timeout}s timeout"),
+        )
         return False
     except subprocess.CalledProcessError as e:
-        report_failure(test, f"└─▶ \033[31msubprocess error: {e}\033[0m")
+        report_failure(test, format_failure_message(f"subprocess error: {e}"))
         return False
     except Exception as e:
-        report_failure(test, f"└─▶ \033[31munexpected exception: {e}\033[0m")
+        report_failure(test, format_failure_message(f"unexpected exception: {e}"))
         return False
     finally:
         fixtures_impl.pop_context(context_token)
@@ -2696,7 +2810,7 @@ def run_simple_test(
         summary_line = (
             _INTERRUPTED_NOTICE
             if interrupted
-            else f"└─▶ \033[31mgot unexpected exit code {completed.returncode}\033[0m"
+            else format_failure_message(f"got unexpected exit code {completed.returncode}")
         )
         if passthrough_mode:
             report_failure(test, summary_line)
@@ -2729,7 +2843,7 @@ def run_simple_test(
             f.write(output)
     else:
         if not ref_path.exists():
-            report_failure(test, f'└─▶ \033[31mFailed to find ref file: "{ref_path}"\033[0m')
+            report_failure(test, format_failure_message(f'Failed to find ref file: "{ref_path}"'))
             return False
         log_comparison(test, ref_path, mode="comparing")
         expected = ref_path.read_bytes()
@@ -2758,7 +2872,9 @@ def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool 
             if expected != b"":
                 report_failure(
                     test,
-                    f'└─▶ \033[31mReference file for skipped test must be empty: "{ref_path}"\033[0m',
+                    format_failure_message(
+                        f'Reference file for skipped test must be empty: "{ref_path}"'
+                    ),
                 )
                 return False
     return "skipped"
@@ -2935,7 +3051,7 @@ class Worker:
             if suite_fixtures is None:
                 configured_fixtures = config_fixtures
         if parse_error is not None:
-            message = f"└─▶ \033[31m{parse_error}\033[0m"
+            message = format_failure_message(parse_error)
             report_failure(test_path, message)
             summary.total += 1
             summary.record_runner_outcome(runner.name, False)
@@ -2981,7 +3097,7 @@ class Worker:
                     interrupted = True
                     outcome = False
                 except Exception as exc:
-                    error_message = f"└─▶ \033[31m{exc}\033[0m"
+                    error_message = format_failure_message(str(exc))
                     report_failure(test_path, error_message)
                     outcome = False
                     final_interrupted = False

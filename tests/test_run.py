@@ -16,6 +16,7 @@ from tenzir_test.runners.runner import Runner
 
 def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
     original_settings = run._settings
+    original_root = run.ROOT
     monkeypatch.setenv("TENZIR_TEST_ROOT", str(tmp_path))
     monkeypatch.delenv("TENZIR_BINARY", raising=False)
     monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
@@ -24,7 +25,13 @@ def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
         try:
             run.main([])
         finally:
-            run.apply_settings(original_settings)
+            if original_settings is not None:
+                run.apply_settings(original_settings)
+            else:
+                run._settings = None
+                run.TENZIR_BINARY = None
+                run.TENZIR_NODE_BINARY = None
+                run._set_project_root(original_root)
 
     assert exc.value.code == 1
     captured = capsys.readouterr()
@@ -35,6 +42,7 @@ def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
 
 def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, capsys):
     original_settings = run._settings
+    original_root = run.ROOT
     monkeypatch.setenv("TENZIR_TEST_ROOT", str(tmp_path))
     monkeypatch.delenv("TENZIR_BINARY", raising=False)
     monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
@@ -43,7 +51,13 @@ def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, c
         try:
             run.main(["tests/sample.tql"])
         finally:
-            run.apply_settings(original_settings)
+            if original_settings is not None:
+                run.apply_settings(original_settings)
+            else:
+                run._settings = None
+                run.TENZIR_BINARY = None
+                run.TENZIR_NODE_BINARY = None
+                run._set_project_root(original_root)
 
     assert str(exc.value).startswith("error: test path `tests/sample.tql` does not exist")
     captured = capsys.readouterr()
@@ -52,6 +66,7 @@ def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, c
 
 def test_main_accepts_satellite_selection_without_project_root(tmp_path, monkeypatch, capsys):
     original_settings = run._settings
+    original_root = run.ROOT
     library_root = tmp_path / "library"
     library_root.mkdir()
     package_dir = library_root / "pkg"
@@ -67,7 +82,13 @@ def test_main_accepts_satellite_selection_without_project_root(tmp_path, monkeyp
     try:
         run.main(["pkg"])
     finally:
-        run.apply_settings(original_settings)
+        if original_settings is not None:
+            run.apply_settings(original_settings)
+        else:
+            run._settings = None
+            run.TENZIR_BINARY = None
+            run.TENZIR_NODE_BINARY = None
+            run._set_project_root(original_root)
 
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
@@ -78,6 +99,7 @@ def test_main_accepts_current_directory_selection_without_project_root(
     tmp_path, monkeypatch, capsys
 ):
     original_settings = run._settings
+    original_root = run.ROOT
     library_root = tmp_path / "library"
     library_root.mkdir()
     package_dir = library_root / "pkg"
@@ -93,7 +115,13 @@ def test_main_accepts_current_directory_selection_without_project_root(
     try:
         run.main(["."])
     finally:
-        run.apply_settings(original_settings)
+        if original_settings is not None:
+            run.apply_settings(original_settings)
+        else:
+            run._settings = None
+            run.TENZIR_BINARY = None
+            run.TENZIR_NODE_BINARY = None
+            run._set_project_root(original_root)
 
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
@@ -241,16 +269,29 @@ def test_print_detailed_summary_outputs_tree(capsys):
     )
     summary.runner_stats["tenzir"] = run.RunnerStats(total=2, failed=1, skipped=1)
 
-    run._print_detailed_summary(summary)
+    original_color_mode = run.get_color_mode()
+    fail_color = ""
+    reset_color = ""
+    skip_symbol = run.SKIP
+    cross_symbol = run.CROSS
+    try:
+        run.set_color_mode(run.ColorMode.ALWAYS)
+        run._print_detailed_summary(summary)
+        output = capsys.readouterr().out.splitlines()
+        fail_color = run.FAIL_COLOR
+        reset_color = run.RESET_COLOR
+        skip_symbol = run.SKIP
+        cross_symbol = run.CROSS
+    finally:
+        run.set_color_mode(original_color_mode)
 
-    output = capsys.readouterr().out.splitlines()
     assert output[0] == ""
-    assert output[1] == f"{run.SKIP} Skipped tests:"
+    assert output[1] == f"{skip_symbol} Skipped tests:"
     assert output[2] == "  └── pkg"
     assert output[3] == "      └── tests"
     assert output[4] == "          └── slow.tql"
     assert output[5] == ""
-    assert output[6] == f"{run.CROSS} Failed tests:"
+    assert output[6] == f"{cross_symbol} Failed tests:"
     failed_lines = output[7:10]
     for line, suffix in zip(
         failed_lines,
@@ -259,8 +300,10 @@ def test_print_detailed_summary_outputs_tree(capsys):
     ):
         assert line.startswith("  ")
         assert line.endswith(suffix)
-        assert line.count("\x1b[31m") >= 1
-        assert f"\x1b[31m{suffix.strip()}" not in line
+        assert fail_color in line
+        if fail_color and reset_color:
+            assert f"{fail_color}{suffix.strip()}" not in line
+            assert line.endswith(f"{suffix}")
 
 
 def test_handle_skip_uses_skip_glyph(tmp_path, capsys):
@@ -860,42 +903,55 @@ def test_detailed_summary_order(capsys):
 def test_print_diff_default_layout(capsys):
     original_show_diff = run.should_show_diff_output()
     original_show_stat = run.should_show_diff_stat()
+    original_color_mode = run.get_color_mode()
     try:
+        run.set_color_mode(run.ColorMode.ALWAYS)
         run.set_show_diff_output(True)
         run.set_show_diff_stat(True)
         run.print_diff(b"line\nbeta\n", b"line\ngamma\n", Path("tests/example.txt"))
+        output = capsys.readouterr().out.splitlines()
+        expected_counter = run._format_diff_counter(1, 1)
+        expected_counts = (
+            f"{run.colorize('1(+)', run.DIFF_ADD_COLOR)}/{run.colorize('1(-)', run.FAIL_COLOR)}"
+        )
+        colored_minus = run.colorize("-beta", run.FAIL_COLOR)
+        colored_plus = run.colorize("+gamma", run.DIFF_ADD_COLOR)
     finally:
+        run.set_color_mode(original_color_mode)
         run.set_show_diff_output(original_show_diff)
         run.set_show_diff_stat(original_show_stat)
 
-    output = capsys.readouterr().out.splitlines()
     assert output[0].startswith(f"{run._BLOCK_INDENT}┌ tests/example.txt")
-    expected_counter = run._format_diff_counter(1, 1)
-    assert "\033[32m1(+)\033[0m/\033[31m1(-)\033[0m" in output[0]
+    assert expected_counts in output[0]
     assert output[0].endswith(expected_counter)
     assert output[1] == f"{run._BLOCK_INDENT}│ @@ -1,2 +1,2 @@"
     assert output[2] == f"{run._BLOCK_INDENT}│  line"
-    assert output[3].startswith(f"{run._BLOCK_INDENT}│ \033[31m-beta")
-    assert output[4].startswith(f"{run._BLOCK_INDENT}│ \033[32m+gamma")
+    assert output[3].startswith(f"{run._BLOCK_INDENT}│ {colored_minus}")
+    assert output[4].startswith(f"{run._BLOCK_INDENT}│ {colored_plus}")
     assert output[5] == f"{run._BLOCK_INDENT}└ 2 lines changed"
 
 
 def test_print_diff_no_diff_outputs_stat_only(capsys):
     original_show_diff = run.should_show_diff_output()
     original_show_stat = run.should_show_diff_stat()
+    original_color_mode = run.get_color_mode()
     try:
+        run.set_color_mode(run.ColorMode.ALWAYS)
         run.set_show_diff_output(False)
         run.set_show_diff_stat(True)
         run.print_diff(b"line\nbeta\n", b"line\ngamma\n", Path("tests/example.txt"))
+        output = capsys.readouterr().out.splitlines()
+        expected_header = (
+            f"{run._BLOCK_INDENT}┌ tests/example.txt "
+            f"{run.colorize('1(+)', run.DIFF_ADD_COLOR)}"
+            f"/{run.colorize('1(-)', run.FAIL_COLOR)} "
+            f"{run._format_diff_counter(1, 1)}"
+        )
     finally:
+        run.set_color_mode(original_color_mode)
         run.set_show_diff_output(original_show_diff)
         run.set_show_diff_stat(original_show_stat)
 
-    output = capsys.readouterr().out.splitlines()
-    expected_header = (
-        f"{run._BLOCK_INDENT}┌ tests/example.txt "
-        f"\033[32m1(+)\033[0m/\033[31m1(-)\033[0m {run._format_diff_counter(1, 1)}"
-    )
     assert output == [
         expected_header,
         f"{run._BLOCK_INDENT}└ 2 lines changed",
@@ -931,6 +987,33 @@ def test_print_diff_disabled_outputs_nothing(capsys):
         run.set_show_diff_stat(original_show_stat)
 
     assert capsys.readouterr().out.strip() == ""
+
+
+def test_no_color_env_disables_colors(monkeypatch, capsys):
+    original_show_diff = run.should_show_diff_output()
+    original_show_stat = run.should_show_diff_stat()
+    original_color_mode = run.get_color_mode()
+    capsys.readouterr()
+    try:
+        run.set_color_mode(run.ColorMode.ALWAYS)
+        monkeypatch.setenv("NO_COLOR", "1")
+        run.refresh_color_palette()
+        run.set_show_diff_output(True)
+        run.set_show_diff_stat(True)
+        run.print_diff(b"line\nbeta\n", b"line\ngamma\n", Path("tests/example.txt"))
+        captured = capsys.readouterr().out
+        palette_state = run.colors_enabled()
+        checkmark_symbol = run.CHECKMARK
+    finally:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        run.set_color_mode(original_color_mode)
+        run.refresh_color_palette()
+        run.set_show_diff_output(original_show_diff)
+        run.set_show_diff_stat(original_show_stat)
+
+    assert "\033[" not in captured
+    assert palette_state is False
+    assert checkmark_symbol == "✔"
 
 
 def test_describe_project_root_detects_standard_project(tmp_path: Path) -> None:
