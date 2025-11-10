@@ -213,7 +213,25 @@ def node() -> Iterator[dict[str, str]]:
             endpoint = process.stdout.readline().strip()
 
         if not endpoint:
-            raise RuntimeError("failed to obtain endpoint from tenzir-node")
+            diagnostics: list[str] = []
+
+            returncode = process.poll()
+            if returncode is not None:
+                diagnostics.append(f"exit code {returncode}")
+
+            if process.stderr:
+                try:
+                    if returncode is not None:
+                        stderr_output = process.stderr.read().strip()
+                        if stderr_output:
+                            diagnostics.append(f"stderr:\n{stderr_output}")
+                except Exception as exc:
+                    diagnostics.append(f"failed to read stderr: {exc}")
+
+            detail = (
+                "; ".join(diagnostics) if diagnostics else "no additional diagnostics available"
+            )
+            raise RuntimeError(f"failed to obtain endpoint from tenzir-node ({detail})")
 
         fixture_env = {
             "TENZIR_NODE_CLIENT_ENDPOINT": endpoint,
