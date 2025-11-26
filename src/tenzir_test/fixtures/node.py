@@ -13,8 +13,9 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Iterator, TYPE_CHECKING
+from typing import Iterator, TYPE_CHECKING, Optional
 import weakref
+import yaml
 
 from . import (
     current_context,
@@ -125,6 +126,23 @@ def _ensure_temp_dir(context: "FixtureContext") -> Path:
     return path
 
 
+def _load_package_id(directory: str) -> Optional[str]:
+    """Return the 'id' field from directory/package.yaml, or None if not found/invalid."""
+    pkg_file = Path(directory) / "package.yaml"
+    try:
+        with pkg_file.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if isinstance(data, dict):
+            return data.get("id")
+    except OSError:
+        # package.yaml missing or unreadable -> no id
+        return None
+    except yaml.YAMLError:
+        # malformed YAML -> treat as no id
+        return None
+    return None
+
+
 @contextmanager
 def node() -> Iterator[dict[str, str]]:
     """Start ``tenzir-node`` and yield environment data for dependent tests."""
@@ -142,12 +160,39 @@ def node() -> Iterator[dict[str, str]]:
     node_config = env.get("TENZIR_NODE_CONFIG")
     if node_config:
         config_args.append(f"--config={node_config}")
+
+    package_dirs: list[str] = []
+
     package_root = env.get("TENZIR_PACKAGE_ROOT")
-    package_args: list[str] = []
+    root_id: Optional[str] = None
     if package_root:
-        package_arg = f"--package-dirs={package_root}"
-        if package_arg not in config_args:
-            package_args.append(package_arg)
+        package_dirs.append(package_root)
+        root_id = _load_package_id(package_root)
+
+    additional_packages = env.get("TENZIR_ADDITIONAL_PACKAGES")
+    if additional_packages:
+        for entry in additional_packages.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if root_id is not None:
+                entry_id = _load_package_id(entry)
+                if entry_id == root_id:
+                    _LOGGER.warn(
+                        'ignoring additional package "%s" because it conflicts with the root package "%s"',
+                        entry,
+                        package_root,
+                    )
+                    continue
+            package_dirs.append(entry)
+
+    # Only add --package-dirs if the user didn't already specify it
+    has_package_dirs_cli = any(arg.startswith("--package-dirs=") for arg in config_args)
+
+    package_args: list[str] = []
+    if package_dirs and not has_package_dirs_cli:
+        package_args.append(f"--package-dirs={','.join(package_dirs)}")
+
     temp_dir = _ensure_temp_dir(context)
     key = id(context)
 
