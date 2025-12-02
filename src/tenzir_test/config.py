@@ -41,7 +41,7 @@ def discover_settings(
 ) -> Settings:
     """Produce harness settings by combining CLI overrides with environment defaults."""
 
-    environment = dict(env or os.environ)
+    environment = dict(os.environ if env is None else env)
 
     chosen_root = root or environment.get("TENZIR_TEST_ROOT") or Path.cwd()
     root_path = Path(chosen_root).resolve()

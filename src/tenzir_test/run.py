@@ -128,6 +128,7 @@ class ExecutionMode(enum.Enum):
 
     PROJECT = "project"
     PACKAGE = "package"
+    LIBRARY = "library"
 
 
 class HarnessMode(enum.Enum):
@@ -146,6 +147,18 @@ class ColorMode(enum.Enum):
     NEVER = "never"
 
 
+def _is_library_root(path: Path) -> bool:
+    """Return True when the directory looks like a library of packages."""
+
+    if packages.is_package_dir(path):
+        return False
+    try:
+        entries = list(packages.iter_package_dirs(path))
+    except OSError:
+        return False
+    return bool(entries)
+
+
 def detect_execution_mode(root: Path) -> tuple[ExecutionMode, Path | None]:
     """Return the execution mode and detected package root for `root`."""
 
@@ -155,6 +168,9 @@ def detect_execution_mode(root: Path) -> tuple[ExecutionMode, Path | None]:
     parent = root.parent if root.name == "tests" else None
     if parent is not None and packages.is_package_dir(parent):
         return ExecutionMode.PACKAGE, parent
+
+    if _is_library_root(root):
+        return ExecutionMode.LIBRARY, None
 
     return ExecutionMode.PROJECT, None
 
@@ -768,6 +784,7 @@ class ProjectMarker(enum.Enum):
     TESTS_DIRECTORY = "tests_directory"
     TEST_CONFIG = "test_config"
     TEST_SUITE_DIRECTORY = "test_suite_directory"
+    LIBRARY_ROOT = "library_root"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -790,6 +807,7 @@ _PRIMARY_PROJECT_MARKERS = {
     ProjectMarker.TESTS_DIRECTORY,
     ProjectMarker.TEST_CONFIG,
     ProjectMarker.TEST_SUITE_DIRECTORY,
+    ProjectMarker.LIBRARY_ROOT,
 }
 
 
@@ -818,6 +836,12 @@ def _describe_project_root(path: Path) -> ProjectSignature | None:
 
     if resolved.name == "tests" and resolved.is_dir():
         markers.add(ProjectMarker.TEST_SUITE_DIRECTORY)
+
+    try:
+        if _is_library_root(resolved):
+            markers.add(ProjectMarker.LIBRARY_ROOT)
+    except OSError:
+        pass
 
     if not markers:
         return None
@@ -1117,12 +1141,15 @@ def _default_test_config() -> TestConfig:
         "inputs": None,
         "retry": 1,
         "suite": None,
+        "package-dirs": tuple(),
     }
 
 
 def _canonical_config_key(key: str) -> str:
     if key == "fixture":
         return "fixtures"
+    if key == "package-dirs":
+        return "package-dirs"
     return key
 
 
@@ -1224,6 +1251,50 @@ def _normalize_inputs_value(
     return None
 
 
+def _normalize_package_dirs_value(
+    value: typing.Any,
+    *,
+    location: Path | str,
+    line_number: int | None = None,
+) -> tuple[str, ...]:
+    if value is None:
+        return tuple()
+    if not isinstance(value, (list, tuple)):
+        _raise_config_error(
+            location,
+            f"Invalid value for 'package-dirs', expected list of strings, got '{value}'",
+            line_number,
+        )
+        return tuple()
+    base_dir = _extract_location_path(location).parent
+    normalized: list[str] = []
+    for entry in value:
+        if not isinstance(entry, (str, os.PathLike)):
+            _raise_config_error(
+                location,
+                f"Invalid package-dirs entry '{entry}', expected string",
+                line_number,
+            )
+            continue
+        raw = os.fspath(entry).strip()
+        if not raw:
+            _raise_config_error(
+                location,
+                "Invalid package-dirs entry: must be non-empty string",
+                line_number,
+            )
+            continue
+        path = Path(raw)
+        if not path.is_absolute():
+            path = base_dir / path
+        try:
+            path = path.resolve()
+        except OSError:
+            path = path
+        normalized.append(str(path))
+    return tuple(normalized)
+
+
 def _assign_config_option(
     config: TestConfig,
     key: str,
@@ -1234,7 +1305,16 @@ def _assign_config_option(
     origin: ConfigOrigin,
 ) -> None:
     canonical = _canonical_config_key(key)
-    valid_keys: set[str] = {"error", "timeout", "runner", "skip", "fixtures", "inputs", "retry"}
+    valid_keys: set[str] = {
+        "error",
+        "timeout",
+        "runner",
+        "skip",
+        "fixtures",
+        "inputs",
+        "retry",
+        "package-dirs",
+    }
     if origin == "directory":
         valid_keys.add("suite")
     if canonical not in valid_keys:
@@ -1318,6 +1398,17 @@ def _assign_config_option(
 
     if canonical == "inputs":
         config[canonical] = _normalize_inputs_value(
+            value, location=location, line_number=line_number
+        )
+        return
+    if canonical == "package-dirs":
+        if origin != "directory":
+            _raise_config_error(
+                location,
+                "'package-dirs' can only be specified in directory-level test.yaml files",
+                line_number,
+            )
+        config[canonical] = _normalize_package_dirs_value(
             value, location=location, line_number=line_number
         )
         return
@@ -2710,14 +2801,31 @@ def run_simple_test(
     expect_error = bool(test_config.get("error", False))
     passthrough_mode = is_passthrough_enabled()
 
+    config_package_dirs = cast(tuple[str, ...], test_config.get("package-dirs", tuple()))
+    additional_package_dirs: list[str] = list(config_package_dirs)
+
     package_root = packages.find_package_root(test)
     package_args: list[str] = []
+    package_dir_candidates: list[str] = []
+    if EXECUTION_MODE is ExecutionMode.LIBRARY:
+        package_dir_candidates.append(str(ROOT))
     if package_root is not None:
         env["TENZIR_PACKAGE_ROOT"] = str(package_root)
         package_tests_root = package_root / "tests"
         if inputs_override is None:
             env["TENZIR_INPUTS"] = str(package_tests_root / "inputs")
-        package_args.append(f"--package-dirs={package_root}")
+        package_dir_candidates.append(str(package_root))
+    package_dir_candidates.extend(additional_package_dirs)
+    if package_dir_candidates:
+        seen: set[str] = set()
+        merged_dirs: list[str] = []
+        for candidate in package_dir_candidates:
+            normalized = str(Path(candidate).expanduser().resolve(strict=False))
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            merged_dirs.append(candidate)
+        package_args.append(f"--package-dirs={','.join(merged_dirs)}")
 
     context_token = fixtures_impl.push_context(
         fixtures_impl.FixtureContext(
@@ -2975,11 +3083,28 @@ class Worker:
             raise RuntimeError(f"failed to parse suite config for {primary_test}: {exc}") from exc
         inputs_override = typing.cast(str | None, primary_config.get("inputs"))
         env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
+        config_package_dirs = cast(tuple[str, ...], primary_config.get("package-dirs", tuple()))
+        additional_package_dirs: list[str] = list(config_package_dirs)
         package_root = packages.find_package_root(primary_test)
+        package_dir_candidates: list[str] = []
+        if EXECUTION_MODE is ExecutionMode.LIBRARY:
+            package_dir_candidates.append(str(ROOT))
         if package_root is not None:
             env["TENZIR_PACKAGE_ROOT"] = str(package_root)
             if inputs_override is None:
                 env["TENZIR_INPUTS"] = str((package_root / "tests" / "inputs"))
+            package_dir_candidates.append(str(package_root))
+        package_dir_candidates.extend(additional_package_dirs)
+        if package_dir_candidates:
+            seen: set[str] = set()
+            merged_dirs: list[str] = []
+            for candidate in package_dir_candidates:
+                normalized = str(Path(candidate).expanduser().resolve(strict=False))
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                merged_dirs.append(candidate)
+            config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
         _apply_fixture_env(env, suite_item.fixtures)
         context_token = fixtures_impl.push_context(
             fixtures_impl.FixtureContext(

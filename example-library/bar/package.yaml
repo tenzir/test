@@ -1,0 +1,4 @@
+id: bar
+name: Bar Package
+description: |
+  Demonstrates a library package that consumes operators from a sibling package.
