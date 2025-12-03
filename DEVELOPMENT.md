@@ -48,15 +48,10 @@ expects.
   uv build
   ```
 
-- Run the full pre-release check suite (formatter, lint, types, tests, build):
-  ```sh
-  uv run check-release
-  ```
-
 ## Quality Gates
 
-Before you open a pull request, make sure the full toolchain passes. The
-simplest way is to execute the aggregated workflow:
+Before committing a change, make sure the full toolchain passes. The simplest
+way is to execute the aggregated workflow:
 
 ```sh
 uv run check-release
