@@ -213,21 +213,21 @@ def node() -> Iterator[dict[str, str]]:
             endpoint = process.stdout.readline().strip()
 
         if not endpoint:
+            # Collect diagnostic information to help debug startup failures.
+            # Note: if the process is still running (hangs without producing
+            # an endpoint), we cannot safely read stderr and diagnostics will
+            # be limited to "no additional diagnostics available".
             diagnostics: list[str] = []
-
             returncode = process.poll()
             if returncode is not None:
                 diagnostics.append(f"exit code {returncode}")
-
-            if process.stderr:
-                try:
-                    if returncode is not None:
+                if process.stderr:
+                    try:
                         stderr_output = process.stderr.read().strip()
                         if stderr_output:
                             diagnostics.append(f"stderr:\n{stderr_output}")
-                except Exception as exc:
-                    diagnostics.append(f"failed to read stderr: {exc}")
-
+                    except Exception as exc:
+                        diagnostics.append(f"failed to read stderr: {exc}")
             detail = (
                 "; ".join(diagnostics) if diagnostics else "no additional diagnostics available"
             )
