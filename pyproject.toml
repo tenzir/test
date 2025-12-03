@@ -48,14 +48,17 @@ packages = ["src/tenzir_test"]
 
 [tool.hatch.build.targets.sdist]
 include = [
+  "/LICENSE",
+  "/README.md",
+  "/changelog",
+  "/example-library",
+  "/example-package",
+  "/example-project",
+  "/example-satellite",
+  "/pyproject.toml",
+  "/scripts",
   "/src/**/*",
   "/tests",
-  "/example-project",
-  "/scripts",
-  "/README.md",
-  "/CHANGELOG.md",
-  "/LICENSE",
-  "/pyproject.toml",
 ]
 exclude = [
   "*.pyc",
