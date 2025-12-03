@@ -6,6 +6,7 @@ import atexit
 import functools
 import logging
 import os
+import select
 import shlex
 import subprocess
 import tempfile
@@ -25,6 +26,37 @@ from . import (
 
 if TYPE_CHECKING:
     from . import FixtureContext
+
+_STDERR_READ_TIMEOUT = 0.5  # seconds to wait for stderr data
+
+
+def _read_available_stderr(process: subprocess.Popen[str]) -> str:
+    """Read any available stderr output without blocking.
+
+    Uses select() to check if data is available before reading. This allows
+    capturing diagnostic output even when the process is still running but
+    has written error messages to stderr.
+    """
+    if not process.stderr:
+        return ""
+    try:
+        fd = process.stderr.fileno()
+        readable, _, _ = select.select([fd], [], [], _STDERR_READ_TIMEOUT)
+        if not readable:
+            return ""
+        # Read available data in chunks to avoid blocking on partial reads.
+        chunks: list[str] = []
+        while True:
+            ready, _, _ = select.select([fd], [], [], 0)
+            if not ready:
+                break
+            chunk = os.read(fd, 4096).decode("utf-8", errors="replace")
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return "".join(chunks).strip()
+    except Exception:
+        return ""
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:
@@ -214,20 +246,16 @@ def node() -> Iterator[dict[str, str]]:
 
         if not endpoint:
             # Collect diagnostic information to help debug startup failures.
-            # Note: if the process is still running (hangs without producing
-            # an endpoint), we cannot safely read stderr and diagnostics will
-            # be limited to "no additional diagnostics available".
             diagnostics: list[str] = []
             returncode = process.poll()
             if returncode is not None:
                 diagnostics.append(f"exit code {returncode}")
-                if process.stderr:
-                    try:
-                        stderr_output = process.stderr.read().strip()
-                        if stderr_output:
-                            diagnostics.append(f"stderr:\n{stderr_output}")
-                    except Exception as exc:
-                        diagnostics.append(f"failed to read stderr: {exc}")
+            # Try to read stderr output using non-blocking I/O. This captures
+            # diagnostics even when the process is still running (e.g., when it
+            # hangs after writing an error message but before exiting).
+            stderr_output = _read_available_stderr(process)
+            if stderr_output:
+                diagnostics.append(f"stderr:\n{stderr_output}")
             detail = (
                 "; ".join(diagnostics) if diagnostics else "no additional diagnostics available"
             )
