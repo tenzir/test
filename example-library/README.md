@@ -14,6 +14,7 @@ uvx tenzir-test --package-dirs example-library example-library
 example-library/
 ├── foo/
 │   ├── package.yaml
+│   ├── test.yaml
 │   ├── operators/
 │   │   └── increment.tql
 │   └── tests/
@@ -21,6 +22,7 @@ example-library/
 │       └── use-bar.txt
 └── bar/
     ├── package.yaml
+    ├── test.yaml
     ├── operators/
     │   └── double.tql
     └── tests/
@@ -36,6 +38,6 @@ example-library/
 Because `--package-dirs` points at the library, both packages are visible to
 every test without additional flags.
 
-You can also pin package discovery in a directory `tests.yaml` by setting
+You can also pin package discovery in a directory `test.yaml` by setting
 `package-dirs:` there. This example keeps the entries commented so the CLI
 flag remains the primary, explicit mechanism.

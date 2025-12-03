@@ -775,7 +775,8 @@ def _expand_package_dirs(path: Path) -> list[str]:
     try:
         for pkg in packages.iter_package_dirs(resolved):
             expanded.append(str(pkg.resolve()))
-    except OSError:
+    except OSError as exc:
+        _CLI_LOGGER.debug("failed to expand package dir %s: %s", path, exc)
         return [str(resolved)]
     return expanded or [str(resolved)]
 
@@ -785,13 +786,27 @@ def _set_discovery_logging(enabled: bool) -> None:
     _DISCOVERY_ENABLED = enabled
 
 
-def _set_cli_packages(packages: list[Path]) -> None:
+def _set_cli_packages(package_paths: list[Path]) -> None:
     global _CLI_PACKAGES
-    _CLI_PACKAGES = [path.resolve() for path in packages]
+    _CLI_PACKAGES = [path.resolve() for path in package_paths]
 
 
 def _get_cli_packages() -> list[Path]:
     return list(_CLI_PACKAGES)
+
+
+def _deduplicate_package_dirs(candidates: list[str]) -> list[str]:
+    """Remove duplicate package directories while preserving order."""
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for candidate in candidates:
+        normalized = str(Path(candidate).expanduser().resolve(strict=False))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(candidate)
+    return result
 
 
 def _print_discovery_message(message: str) -> None:
@@ -2844,16 +2859,7 @@ def run_simple_test(
     for cli_path in _get_cli_packages():
         package_dir_candidates.extend(_expand_package_dirs(cli_path))
     if package_dir_candidates:
-        # propagate merged package dirs to env for fixtures
-        env["TENZIR_PACKAGE_DIRS"] = ",".join(package_dir_candidates)
-        seen: set[str] = set()
-        merged_dirs: list[str] = []
-        for candidate in package_dir_candidates:
-            normalized = str(Path(candidate).expanduser().resolve(strict=False))
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            merged_dirs.append(candidate)
+        merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
         env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
         package_args.append(f"--package-dirs={','.join(merged_dirs)}")
 
@@ -3128,15 +3134,8 @@ class Worker:
         for cli_path in _get_cli_packages():
             package_dir_candidates.extend(_expand_package_dirs(cli_path))
         if package_dir_candidates:
-            env["TENZIR_PACKAGE_DIRS"] = ",".join(package_dir_candidates)
-            seen: set[str] = set()
-            merged_dirs: list[str] = []
-            for candidate in package_dir_candidates:
-                normalized = str(Path(candidate).expanduser().resolve(strict=False))
-                if normalized in seen:
-                    continue
-                seen.add(normalized)
-                merged_dirs.append(candidate)
+            merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
+            env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
             config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
         context_token = fixtures_impl.push_context(
             fixtures_impl.FixtureContext(
