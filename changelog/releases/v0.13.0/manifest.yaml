@@ -1,0 +1,4 @@
+created: 2025-12-03
+title: Tenzir Test v0.13.0
+intro: >-
+  This release adds `--package-dirs` support and improves startup diagnostics.
