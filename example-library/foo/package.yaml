@@ -1,0 +1,4 @@
+id: foo
+name: Foo Package
+description: |
+  Demonstrates a library package that provides an operator used by sibling packages.

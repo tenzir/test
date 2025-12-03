@@ -8,7 +8,7 @@
 - Tests live in `tests/`, mirroring package modules so reviewers can locate coverage quickly.
 - Ship new public APIs with type hints and update `py.typed` exports if you add subpackages.
 - Keep `README.md` focused on user onboarding and `DEVELOPMENT.md` for contributor workflows; update both when behaviour or processes change.
-- Primary documentation is external at https://docs.tenzir.com/reference/test
+- Primary documentation is external at <https://docs.tenzir.com/reference/test>
 
 ## Build, Test, and Development Commands
 
@@ -18,6 +18,7 @@
 - `uv run pytest`: execute unit and scenario suites with strict markers enabled.
 - `uv run mypy`: enforce the strict typing profile defined in `pyproject.toml`.
 - `uv build`: emit sdist and wheel artifacts for local validation or release staging.
+- `uv run check-release`: run the full pre-release check suite (lint, format, types, tests, build) in sequence.
 
 ## Coding Style & Naming Conventions
 
@@ -37,7 +38,7 @@
 ## Writing Changelog Entries
 
 - Learn (once) about how to use the changelog tool by reading the reference
-  documentation at https://docs.tenzir.com/reference/changelog-framework.
+  documentation at <https://docs.tenzir.com/reference/changelog-framework>.
 - When you implement new changes, features, or fix bugs, create a new changelog
   entry with `uvx tenzir-changelog --root changelog add ...`; do not
   hand-write changelog entry files.

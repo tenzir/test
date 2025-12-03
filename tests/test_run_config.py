@@ -70,6 +70,7 @@ write_json
         "fixtures": tuple(),
         "inputs": None,
         "retry": 1,
+        "package_dirs": tuple(),
     }
 
 
@@ -99,6 +100,7 @@ write_json
         "fixtures": tuple(),
         "inputs": None,
         "retry": 1,
+        "package_dirs": tuple(),
     }
 
 
@@ -337,6 +339,7 @@ print("ok")
         "fixtures": tuple(),
         "inputs": None,
         "retry": 1,
+        "package_dirs": tuple(),
     }
 
 
@@ -473,6 +476,20 @@ def test_detect_execution_mode_for_nested_paths(tmp_path: Path) -> None:
     assert detected_root is None
 
 
+def test_detect_execution_mode_for_library_root(tmp_path: Path) -> None:
+    library_root = tmp_path / "lib"
+    library_root.mkdir()
+    package_root = library_root / "alpha"
+    package_root.mkdir()
+    (package_root / "package.yaml").write_text("name: alpha\n", encoding="utf-8")
+    (package_root / "tests").mkdir()
+
+    mode, detected_root = run.detect_execution_mode(library_root)
+
+    assert mode is ExecutionMode.LIBRARY
+    assert detected_root is None
+
+
 def test_run_simple_test_injects_package_dirs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -519,10 +536,61 @@ def test_run_simple_test_injects_package_dirs(
     finally:
         run.apply_settings(original_settings)
 
-    cmd = captured.get("cmd")
-    env = captured.get("env")
-    assert isinstance(cmd, list)
-    assert any(item == f"--package-dirs={package_root}" for item in cmd)
+
+def test_run_simple_test_merges_package_dirs_from_directory_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    package_root = tmp_path / "pkg"
+    tests_dir = package_root / "tests"
+    tests_dir.mkdir(parents=True)
+    (package_root / "package.yaml").write_text("name: pkg\n", encoding="utf-8")
+    test_file = tests_dir / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    test_config = tests_dir / "test.yaml"
+    shared_dir = (tests_dir / ".." / "shared").resolve()
+    other_dir = Path("/opt/other/pkg")
+    test_config.write_text(f"package_dirs:\n  - {shared_dir}\n  - {other_dir}\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=package_root,
+            tenzir_binary=sys.executable,
+            tenzir_node_binary=None,
+        )
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeCompletedProcess:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = b"ok"
+            self.stderr = b""
+
+    def fake_run(cmd, timeout, stdout=None, stderr=None, env=None, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        assert env is not None
+        captured["env"] = dict(env)
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    try:
+        assert run.run_simple_test(test_file, update=True, output_ext="txt") is True
+    finally:
+        run.apply_settings(original_settings)
+
+    cmd = captured["cmd"]
+    flags = [arg for arg in cmd if arg.startswith("--package-dirs=")]
+    assert len(flags) == 1
+    expected_dirs = {str(package_root), str(shared_dir), str(other_dir)}
+    assert set(flags[0].split("=", 1)[1].split(",")) == expected_dirs
+    env = captured["env"]
     assert isinstance(env, dict)
     assert env["TENZIR_PACKAGE_ROOT"] == str(package_root)
     expected_inputs = package_root / "tests" / "inputs"

@@ -588,6 +588,67 @@ def test_node_fixture_adds_package_dirs_from_env(monkeypatch):
     assert package_flags == ["--package-dirs=/pkg"]
 
 
+def test_node_fixture_deduplicates_package_dirs(monkeypatch):
+    """Verify package dirs are deduplicated when the same path appears in multiple sources."""
+    captured: dict[str, object] = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return SimpleNamespace(
+            stdout=io.StringIO("localhost:20001\n"),
+            stderr=io.StringIO(""),
+            pid=45,
+            terminate=lambda: None,
+            wait=lambda timeout=None: None,
+            kill=lambda: None,
+        )
+
+    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(node_fixture.os, "getpgid", lambda pid: 100)
+
+    def fake_killpg(_pgid, _sig):
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(node_fixture.os, "killpg", fake_killpg)
+
+    # Simulate the scenario where /pkg appears in all three sources:
+    # - TENZIR_PACKAGE_ROOT
+    # - TENZIR_PACKAGE_DIRS (which already includes the root)
+    # - config_args (via --package-dirs)
+    env = {
+        "TENZIR_NODE_BINARY": "/usr/bin/tenzir-node",
+        "TENZIR_BINARY": "/usr/bin/tenzir",
+        "TENZIR_PACKAGE_ROOT": "/pkg",
+        "TENZIR_PACKAGE_DIRS": "/pkg,/other",
+    }
+    context = fixture_api.FixtureContext(
+        test=Path("/tmp/dedup-test.tql"),
+        config={"timeout": 30},
+        coverage=False,
+        env=env,
+        config_args=("--package-dirs=/pkg,/other",),
+        tenzir_binary="/usr/bin/tenzir",
+        tenzir_node_binary="/usr/bin/tenzir-node",
+    )
+
+    token = fixture_api.push_context(context)
+    try:
+        with node_fixture.node():
+            pass
+    finally:
+        fixture_api.pop_context(token)
+
+    cmd = captured["cmd"]
+    package_flags = [arg for arg in cmd if arg.startswith("--package-dirs=")]
+    # Should only have one --package-dirs argument with deduplicated entries.
+    assert len(package_flags) == 1
+    dirs = package_flags[0].split("=", 1)[1].split(",")
+    # /pkg should appear only once despite being in all three sources.
+    assert dirs.count("/pkg") == 1
+    assert dirs.count("/other") == 1
+    assert set(dirs) == {"/pkg", "/other"}
+
+
 def test_node_fixture_in_suite_receives_package_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
     package_root = Path(__file__).resolve().parent.parent / "example-package"
     suite_dir = package_root / "tests" / "context"

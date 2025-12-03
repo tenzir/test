@@ -138,16 +138,47 @@ def node() -> Iterator[dict[str, str]]:
         raise RuntimeError("TENZIR_NODE_BINARY must be configured for the node fixture")
 
     env = context.env.copy()
-    config_args = [arg for arg in context.config_args if not arg.startswith("--config=")]
+    # Extract and filter config arguments: we handle --config and --package-dirs separately.
+    config_args: list[str] = []
+    config_package_dirs: list[str] = []
+    for arg in context.config_args:
+        if arg.startswith("--config="):
+            continue
+        if arg.startswith("--package-dirs="):
+            value = arg.split("=", 1)[1]
+            config_package_dirs.extend(entry.strip() for entry in value.split(",") if entry.strip())
+            continue
+        config_args.append(arg)
     node_config = env.get("TENZIR_NODE_CONFIG")
     if node_config:
         config_args.append(f"--config={node_config}")
-    package_root = env.get("TENZIR_PACKAGE_ROOT")
     package_args: list[str] = []
+    package_root = env.get("TENZIR_PACKAGE_ROOT")
+    package_dirs: list[str] = []
     if package_root:
-        package_arg = f"--package-dirs={package_root}"
-        if package_arg not in config_args:
-            package_args.append(package_arg)
+        package_dirs.append(package_root)
+
+    extra_package_dirs = env.get("TENZIR_PACKAGE_DIRS")
+    if extra_package_dirs:
+        package_dirs.extend(
+            [entry.strip() for entry in extra_package_dirs.split(",") if entry.strip()]
+        )
+
+    # Include package directories from config_args as well.
+    package_dirs.extend(config_package_dirs)
+
+    # Deduplicate while preserving order by using resolved paths as keys.
+    seen: set[str] = set()
+    unique_dirs: list[str] = []
+    for entry in package_dirs:
+        resolved = str(Path(entry).expanduser().resolve(strict=False))
+        if resolved not in seen:
+            seen.add(resolved)
+            unique_dirs.append(entry)
+    package_dirs = unique_dirs
+
+    if package_dirs:
+        package_args.append(f"--package-dirs={','.join(package_dirs)}")
     temp_dir = _ensure_temp_dir(context)
     key = id(context)
 
