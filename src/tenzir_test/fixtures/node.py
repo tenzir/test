@@ -142,12 +142,20 @@ def node() -> Iterator[dict[str, str]]:
     node_config = env.get("TENZIR_NODE_CONFIG")
     if node_config:
         config_args.append(f"--config={node_config}")
-    package_root = env.get("TENZIR_PACKAGE_ROOT")
     package_args: list[str] = []
+    package_root = env.get("TENZIR_PACKAGE_ROOT")
+    package_dirs: list[str] = []
     if package_root:
-        package_arg = f"--package-dirs={package_root}"
-        if package_arg not in config_args:
-            package_args.append(package_arg)
+        package_dirs.append(package_root)
+
+    extra_package_dirs = env.get("TENZIR_PACKAGE_DIRS")
+    if extra_package_dirs:
+        package_dirs.extend(
+            [entry.strip() for entry in extra_package_dirs.split(",") if entry.strip()]
+        )
+
+    if package_dirs:
+        package_args.append(f"--package-dirs={','.join(package_dirs)}")
     temp_dir = _ensure_temp_dir(context)
     key = id(context)
 

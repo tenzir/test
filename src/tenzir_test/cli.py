@@ -51,6 +51,15 @@ def _normalize_exit_code(value: object) -> int:
     type=click.Path(path_type=Path, dir_okay=False, writable=False, resolve_path=False),
     help="Path to the tenzir-node executable.",
 )
+@click.option(
+    "package_dirs",
+    "--package-dirs",
+    multiple=True,
+    help=(
+        "Comma-separated list of package directories to load (repeatable). "
+        "These only control package visibility; test selection still follows the usual --root/args."
+    ),
+)
 @click.argument(
     "tests",
     nargs=-1,
@@ -137,6 +146,7 @@ def cli(
     root: Path | None,
     tenzir_binary: Path | None,
     tenzir_node_binary: Path | None,
+    package_dirs: tuple[str, ...],
     tests: tuple[Path, ...],
     update: bool,
     debug: bool,
@@ -155,6 +165,14 @@ def cli(
 ) -> int:
     """Execute tenzir-test scenarios."""
 
+    package_paths: list[Path] = []
+    for entry in package_dirs:
+        for piece in entry.split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            package_paths.append(Path(piece))
+
     jobs_source = ctx.get_parameter_source("jobs")
     jobs_overridden = jobs_source is not click.core.ParameterSource.DEFAULT
 
@@ -163,6 +181,7 @@ def cli(
             root=root,
             tenzir_binary=tenzir_binary,
             tenzir_node_binary=tenzir_node_binary,
+            package_dirs=package_paths,
             tests=list(tests),
             update=update,
             debug=debug,

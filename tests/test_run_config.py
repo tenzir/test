@@ -70,7 +70,7 @@ write_json
         "fixtures": tuple(),
         "inputs": None,
         "retry": 1,
-        "package-dirs": tuple(),
+        "package_dirs": tuple(),
     }
 
 
@@ -100,7 +100,7 @@ write_json
         "fixtures": tuple(),
         "inputs": None,
         "retry": 1,
-        "package-dirs": tuple(),
+        "package_dirs": tuple(),
     }
 
 
@@ -339,7 +339,7 @@ print("ok")
         "fixtures": tuple(),
         "inputs": None,
         "retry": 1,
-        "package-dirs": tuple(),
+        "package_dirs": tuple(),
     }
 
 
@@ -549,7 +549,7 @@ def test_run_simple_test_merges_package_dirs_from_directory_config(
     test_config = tests_dir / "test.yaml"
     shared_dir = (tests_dir / ".." / "shared").resolve()
     other_dir = Path("/opt/other/pkg")
-    test_config.write_text(f"package-dirs:\n  - {shared_dir}\n  - {other_dir}\n", encoding="utf-8")
+    test_config.write_text(f"package_dirs:\n  - {shared_dir}\n  - {other_dir}\n", encoding="utf-8")
 
     original_settings = config.Settings(
         root=run.ROOT,

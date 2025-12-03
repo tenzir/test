@@ -9,17 +9,24 @@ prs:
 created: 2025-12-02
 ---
 
-Introducing **library mode**: point `tenzir-test` at a directory whose children
-are packages (`package.yaml`) and the harness runs with all packages it finds.
-It also injects the library root as `--package-dirs`, so sibling packages can
-work with each other's user-defined operators and contexts without extra flags.
+Explicit package loading for tests: use `--package-dirs` (repeatable, accepts
+comma-separated lists) to point the harness at package directories. The same
+flag is passed to the Tenzir binaries, and it merges with any `package-dirs:`
+declared in directory `test.yaml` files. Entries are normalized and
+de-duplicated, then exported via `TENZIR_PACKAGE_DIRS` for fixtures.
 
-The test config got an upgrade, too. Add `package-dirs:` to a directory
-`test.yaml` to pull in extra package directories (relative or absolute). The
-harness normalizes and de-duplicates these paths, then merges them with any CLI
-`--package-dirs` and the package under test for both the CLI run and the node
-fixture.
+The test configuration uses the same spelling: add
 
-To make it tangible, there's a new `example-library/` with `foo` and `bar`
-packages that cross-reference each other’s operators. Run `uvx tenzir-test
---root example-library` to see library mode in action.
+```yaml
+package-dirs:
+  - ../shared-packages
+  - /opt/tenzir/packages/foo
+```
+
+to a directory `test.yaml` when you want those packages available for the tests
+below it.
+
+Example: `uvx tenzir-test --package-dirs example-library example-library`
+loads both `foo` and `bar` packages so their operators can cross-import. The
+example-library `test.yaml` files demonstrate the config-based approach if you
+prefer not to pass the `--package-dirs` flag.

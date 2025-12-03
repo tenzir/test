@@ -762,11 +762,36 @@ _CLI_LOGGER.setLevel(logging.DEBUG if _debug_logging else logging.WARNING)
 _DIRECTORY_CONFIG_CACHE: dict[Path, "_DirectoryConfig"] = {}
 
 _DISCOVERY_ENABLED = False
+_CLI_PACKAGES: list[Path] = []
+
+
+def _expand_package_dirs(path: Path) -> list[str]:
+    """Normalize a package dir hint; if it contains packages, return those."""
+
+    resolved = path.expanduser().resolve()
+    if packages.is_package_dir(resolved):
+        return [str(resolved)]
+    expanded: list[str] = []
+    try:
+        for pkg in packages.iter_package_dirs(resolved):
+            expanded.append(str(pkg.resolve()))
+    except OSError:
+        return [str(resolved)]
+    return expanded or [str(resolved)]
 
 
 def _set_discovery_logging(enabled: bool) -> None:
     global _DISCOVERY_ENABLED
     _DISCOVERY_ENABLED = enabled
+
+
+def _set_cli_packages(packages: list[Path]) -> None:
+    global _CLI_PACKAGES
+    _CLI_PACKAGES = [path.resolve() for path in packages]
+
+
+def _get_cli_packages() -> list[Path]:
+    return list(_CLI_PACKAGES)
 
 
 def _print_discovery_message(message: str) -> None:
@@ -1141,15 +1166,15 @@ def _default_test_config() -> TestConfig:
         "inputs": None,
         "retry": 1,
         "suite": None,
-        "package-dirs": tuple(),
+        "package_dirs": tuple(),
     }
 
 
 def _canonical_config_key(key: str) -> str:
     if key == "fixture":
         return "fixtures"
-    if key == "package-dirs":
-        return "package-dirs"
+    if key in {"package_dirs", "package-dirs"}:
+        return "package_dirs"
     return key
 
 
@@ -1313,7 +1338,7 @@ def _assign_config_option(
         "fixtures",
         "inputs",
         "retry",
-        "package-dirs",
+        "package_dirs",
     }
     if origin == "directory":
         valid_keys.add("suite")
@@ -1401,7 +1426,7 @@ def _assign_config_option(
             value, location=location, line_number=line_number
         )
         return
-    if canonical == "package-dirs":
+    if canonical == "package_dirs":
         if origin != "directory":
             _raise_config_error(
                 location,
@@ -2801,14 +2826,14 @@ def run_simple_test(
     expect_error = bool(test_config.get("error", False))
     passthrough_mode = is_passthrough_enabled()
 
-    config_package_dirs = cast(tuple[str, ...], test_config.get("package-dirs", tuple()))
-    additional_package_dirs: list[str] = list(config_package_dirs)
+    config_package_dirs = cast(tuple[str, ...], test_config.get("package_dirs", tuple()))
+    additional_package_dirs: list[str] = []
+    for entry in config_package_dirs:
+        additional_package_dirs.extend(_expand_package_dirs(Path(entry)))
 
     package_root = packages.find_package_root(test)
     package_args: list[str] = []
     package_dir_candidates: list[str] = []
-    if EXECUTION_MODE is ExecutionMode.LIBRARY:
-        package_dir_candidates.append(str(ROOT))
     if package_root is not None:
         env["TENZIR_PACKAGE_ROOT"] = str(package_root)
         package_tests_root = package_root / "tests"
@@ -2816,7 +2841,11 @@ def run_simple_test(
             env["TENZIR_INPUTS"] = str(package_tests_root / "inputs")
         package_dir_candidates.append(str(package_root))
     package_dir_candidates.extend(additional_package_dirs)
+    for cli_path in _get_cli_packages():
+        package_dir_candidates.extend(_expand_package_dirs(cli_path))
     if package_dir_candidates:
+        # propagate merged package dirs to env for fixtures
+        env["TENZIR_PACKAGE_DIRS"] = ",".join(package_dir_candidates)
         seen: set[str] = set()
         merged_dirs: list[str] = []
         for candidate in package_dir_candidates:
@@ -2825,6 +2854,7 @@ def run_simple_test(
                 continue
             seen.add(normalized)
             merged_dirs.append(candidate)
+        env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
         package_args.append(f"--package-dirs={','.join(merged_dirs)}")
 
     context_token = fixtures_impl.push_context(
@@ -3083,19 +3113,22 @@ class Worker:
             raise RuntimeError(f"failed to parse suite config for {primary_test}: {exc}") from exc
         inputs_override = typing.cast(str | None, primary_config.get("inputs"))
         env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
-        config_package_dirs = cast(tuple[str, ...], primary_config.get("package-dirs", tuple()))
-        additional_package_dirs: list[str] = list(config_package_dirs)
+        config_package_dirs = cast(tuple[str, ...], primary_config.get("package_dirs", tuple()))
+        additional_package_dirs: list[str] = []
+        for entry in config_package_dirs:
+            additional_package_dirs.extend(_expand_package_dirs(Path(entry)))
         package_root = packages.find_package_root(primary_test)
         package_dir_candidates: list[str] = []
-        if EXECUTION_MODE is ExecutionMode.LIBRARY:
-            package_dir_candidates.append(str(ROOT))
         if package_root is not None:
             env["TENZIR_PACKAGE_ROOT"] = str(package_root)
             if inputs_override is None:
                 env["TENZIR_INPUTS"] = str((package_root / "tests" / "inputs"))
             package_dir_candidates.append(str(package_root))
         package_dir_candidates.extend(additional_package_dirs)
+        for cli_path in _get_cli_packages():
+            package_dir_candidates.extend(_expand_package_dirs(cli_path))
         if package_dir_candidates:
+            env["TENZIR_PACKAGE_DIRS"] = ",".join(package_dir_candidates)
             seen: set[str] = set()
             merged_dirs: list[str] = []
             for candidate in package_dir_candidates:
@@ -3105,7 +3138,6 @@ class Worker:
                 seen.add(normalized)
                 merged_dirs.append(candidate)
             config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
-        _apply_fixture_env(env, suite_item.fixtures)
         context_token = fixtures_impl.push_context(
             fixtures_impl.FixtureContext(
                 test=primary_test,
@@ -3277,6 +3309,7 @@ def run_cli(
     root: Path | None,
     tenzir_binary: Path | None,
     tenzir_node_binary: Path | None,
+    package_dirs: Sequence[Path] | None = None,
     tests: Sequence[Path],
     update: bool,
     debug: bool,
@@ -3361,6 +3394,7 @@ def run_cli(
             tenzir_node_binary=tenzir_node_binary,
         )
         apply_settings(settings)
+        _set_cli_packages(list(package_dirs or []))
         selected_tests = list(tests)
 
         plan: ExecutionPlan | None = None

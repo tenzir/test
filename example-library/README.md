@@ -1,9 +1,12 @@
 # Example Library
 
 This directory contains two sibling packages, `foo` and `bar`, to demonstrate
-**library mode**. Running `uvx tenzir-test --root example-library` discovers
-both packages and runs their tests while making each package available to the
-other.
+explicit package loading. Point `tenzir-test` at the directory and add
+`--package-dirs example-library` so both packages are visible to every test:
+
+```sh
+uvx tenzir-test --package-dirs example-library example-library
+```
 
 ## Layout
 
@@ -30,6 +33,9 @@ example-library/
 - `foo/tests/use-bar.tql` calls `bar::double`.
 - `bar/tests/use-foo.tql` calls `foo::increment`.
 
-Because the root is a library, `tenzir-test` passes the library root as
-`--package-dirs`, so both packages are visible to every test without extra
-flags.
+Because `--package-dirs` points at the library, both packages are visible to
+every test without additional flags.
+
+You can also pin package discovery in a directory `tests.yaml` by setting
+`package-dirs:` there. This example keeps the entries commented so the CLI
+flag remains the primary, explicit mechanism.
