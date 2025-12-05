@@ -34,7 +34,6 @@ Documentation = "https://docs.tenzir.com"
 
 [project.scripts]
 tenzir-test = "tenzir_test.cli:main"
-check-release = "tenzir_test.checks:main"
 
 [build-system]
 requires = ["hatchling>=1.25.0"]
