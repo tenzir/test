@@ -34,17 +34,17 @@ for an end-to-end walkthrough of writing tests.
 We also provide a dense [reference](https://docs.tenzir.com/reference/test) that
 explains concepts, configuration, multi-project execution, and CLI details.
 
-## 🧑‍💻 Development
-
-Contributor workflows, quality gates, and release procedures live in
-[`DEVELOPMENT.md`](DEVELOPMENT.md). Follow that guide when you work on the
-project locally.
-
 ## 🗞️ Releases
 
 New versions are published to PyPI through trusted publishing when a GitHub
 release is created. Review the latest release notes on GitHub for details about
 what's new.
+
+## 🤝 Contributing
+
+Want to contribute? We're all-in on agentic coding with [Claude
+Code](https://claude.ai/code)! The repo comes pre-configured with our [custom
+plugins](https://github.com/tenzir/claude-plugins)—just clone and start hacking.
 
 ## 📜 License
 
