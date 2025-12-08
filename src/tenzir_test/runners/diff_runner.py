@@ -106,11 +106,16 @@ class DiffRunner(TqlRunner):
             fixture_api.pop_context(context_token)
             run_mod.cleanup_test_tmp_dir(env.get(run_mod.TEST_TMP_ENV_VAR))
 
+        # Strip the ROOT prefix from paths in output to make them relative,
+        # consistent with run_simple_test behavior.
+        root_bytes = str(run_mod.ROOT).encode() + b"/"
+        unoptimized_stdout = unoptimized.stdout.replace(root_bytes, b"")
+        optimized_stdout = optimized.stdout.replace(root_bytes, b"")
         diff_chunks = list(
             difflib.diff_bytes(
                 difflib.unified_diff,
-                unoptimized.stdout.splitlines(keepends=True),
-                optimized.stdout.splitlines(keepends=True),
+                unoptimized_stdout.splitlines(keepends=True),
+                optimized_stdout.splitlines(keepends=True),
                 n=2**31 - 1,
             )
         )[3:]
@@ -118,7 +123,7 @@ class DiffRunner(TqlRunner):
             diff_bytes = b"".join(diff_chunks)
         else:
             diff_bytes = b"".join(
-                b" " + line for line in unoptimized.stdout.splitlines(keepends=True)
+                b" " + line for line in unoptimized_stdout.splitlines(keepends=True)
             )
         ref_path = test.with_suffix(".diff")
         if update:
