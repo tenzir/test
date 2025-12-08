@@ -1,0 +1,5 @@
+created: 2025-12-08
+title: Tenzir Test v0.13.1
+intro: >-
+  This release fixes path handling in the diff runner to strip root path prefixes
+  from output, making paths relative and consistent with other test runners.
