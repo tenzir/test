@@ -1,4 +1,6 @@
 id: tenzir-test
 name: Tenzir Test
-description: A testing framework for the Tenzir ecosystem
+description: >-
+  An integration testing framework that discovers tests, runs them with managed
+  fixtures, and validates output against baselines.
 repository: tenzir/test
