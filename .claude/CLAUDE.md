@@ -36,4 +36,4 @@ The framework supports satellite projects that inherit fixtures and runners from
 
 ## Documentation
 
-Primary documentation lives at <https://docs.tenzir.com/reference/test>.
+Primary documentation lives at <https://docs.tenzir.com/reference/test.md>.
