@@ -1,0 +1,5 @@
+// Test inline input via TENZIR_INPUT
+from_file env("TENZIR_INPUT") {
+  read_ndjson
+}
+where level != "info"

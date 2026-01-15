@@ -1,0 +1,3 @@
+// Test local inputs directory
+from_file f"{env("TENZIR_INPUTS")}/local-data.ndjson"
+where value > 50
