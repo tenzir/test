@@ -1,0 +1,7 @@
+created: 2026-01-15
+title: Inline Test Inputs
+intro: >-
+  This release introduces inline test inputs for better test organization in deeply
+  nested hierarchies. Tests can now place input data directly alongside test files,
+  and you can create local `inputs/` directories at any level with automatic shadowing
+  semantics.
