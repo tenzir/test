@@ -1641,20 +1641,12 @@ def _iter_project_test_directories(root: Path) -> Iterator[Path]:
 
 
 def _is_inputs_path(path: Path) -> bool:
-    """Return True when the path lives under an inputs directory."""
+    """Return True when the path lives under any inputs directory."""
     try:
         parts = path.relative_to(ROOT).parts
     except ValueError:
         parts = path.parts
-
-    for index, part in enumerate(parts):
-        if part != "inputs":
-            continue
-        if index == 0:
-            return True
-        if index > 0 and parts[index - 1] == "tests":
-            return True
-    return False
+    return "inputs" in parts
 
 
 def _refresh_registry() -> None:
@@ -1685,6 +1677,25 @@ def _resolve_inputs_dir(root: Path) -> Path:
     if tests_inputs.exists():
         return tests_inputs
     return direct
+
+
+def _find_nearest_inputs_dir(test: Path, root: Path) -> Path | None:
+    """Walk up from test directory to find nearest inputs/ directory.
+
+    Returns the nearest inputs/ directory between the test and root,
+    or None if no inputs/ directory exists in that range.
+    """
+    current = test.parent
+    root_resolved = root.resolve()
+    while True:
+        candidate = current / "inputs"
+        if candidate.is_dir():
+            return candidate
+        # Stop when we reach or pass the root
+        if current.resolve() == root_resolved or current == current.parent:
+            break
+        current = current.parent
+    return None
 
 
 def _looks_like_project_root(path: Path) -> bool:
@@ -1818,13 +1829,22 @@ def get_test_env_and_config_args(
     config_args = [f"--config={config_file}"] if config_file.exists() else []
     env = os.environ.copy()
     if inputs is None:
-        inputs_path = str(_resolve_inputs_dir(ROOT).resolve())
+        # Try nearest inputs/ directory first, fall back to project-level
+        nearest = _find_nearest_inputs_dir(test, ROOT)
+        if nearest is not None:
+            inputs_path = str(nearest.resolve())
+        else:
+            inputs_path = str(_resolve_inputs_dir(ROOT).resolve())
     else:
         candidate = Path(os.fspath(inputs))
         if not candidate.is_absolute():
             candidate = test.parent / candidate
         inputs_path = str(candidate.resolve())
     env["TENZIR_INPUTS"] = inputs_path
+    # Check for inline input file (.input extension)
+    inline_input = test.with_suffix(".input")
+    if inline_input.is_file():
+        env["TENZIR_INPUT"] = str(inline_input.resolve())
     if config_file.exists():
         env.setdefault("TENZIR_CONFIG", str(config_file))
     if node_config_file.exists():
@@ -2853,7 +2873,12 @@ def run_simple_test(
         env["TENZIR_PACKAGE_ROOT"] = str(package_root)
         package_tests_root = package_root / "tests"
         if inputs_override is None:
-            env["TENZIR_INPUTS"] = str(package_tests_root / "inputs")
+            # Try nearest inputs/ directory, fall back to package-level
+            nearest = _find_nearest_inputs_dir(test, package_root)
+            if nearest is not None:
+                env["TENZIR_INPUTS"] = str(nearest.resolve())
+            else:
+                env["TENZIR_INPUTS"] = str(package_tests_root / "inputs")
         package_dir_candidates.append(str(package_root))
     package_dir_candidates.extend(additional_package_dirs)
     for cli_path in _get_cli_packages():
@@ -3128,7 +3153,12 @@ class Worker:
         if package_root is not None:
             env["TENZIR_PACKAGE_ROOT"] = str(package_root)
             if inputs_override is None:
-                env["TENZIR_INPUTS"] = str((package_root / "tests" / "inputs"))
+                # Try nearest inputs/ directory, fall back to package-level
+                nearest = _find_nearest_inputs_dir(primary_test, package_root)
+                if nearest is not None:
+                    env["TENZIR_INPUTS"] = str(nearest.resolve())
+                else:
+                    env["TENZIR_INPUTS"] = str((package_root / "tests" / "inputs"))
             package_dir_candidates.append(str(package_root))
         package_dir_candidates.extend(additional_package_dirs)
         for cli_path in _get_cli_packages():
