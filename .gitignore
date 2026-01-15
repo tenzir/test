@@ -38,3 +38,6 @@ coverage.xml
 .DS_Store
 .vscode/
 .idea/
+
+# Documentation (separate repository)
+.docs/
