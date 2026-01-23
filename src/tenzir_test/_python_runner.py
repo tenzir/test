@@ -59,7 +59,9 @@ def _push_context_from_env() -> Token[Any] | None:
         env=env,
         config_args=config_args,
         tenzir_binary=tuple(shlex.split(tenzir_binary_str)) if tenzir_binary_str else None,
-        tenzir_node_binary=tuple(shlex.split(tenzir_node_binary_str)) if tenzir_node_binary_str else None,
+        tenzir_node_binary=tuple(shlex.split(tenzir_node_binary_str))
+        if tenzir_node_binary_str
+        else None,
     )
     token = _fixtures.push_context(context)
     return cast(Token[Any], token)
