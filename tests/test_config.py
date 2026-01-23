@@ -61,7 +61,7 @@ def test_discover_settings_uvx_fallback(monkeypatch: pytest.MonkeyPatch, tmp_pat
     settings = config.discover_settings(env={})
 
     assert settings.tenzir_binary == ("uvx", "tenzir")
-    assert settings.tenzir_node_binary == ("uvx", "tenzir-node")
+    assert settings.tenzir_node_binary == ("uvx", "--from", "tenzir", "tenzir-node")
 
 
 def test_discover_settings_no_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -40,14 +40,14 @@ def _resolve_binary(
                 f"Invalid shell syntax in environment variable for {binary_name}: {e}"
             ) from e
         if not parts:
-            raise ValueError(
-                f"Empty command in environment variable for {binary_name}"
-            )
+            raise ValueError(f"Empty command in environment variable for {binary_name}")
         return parts
     which_result = shutil.which(binary_name)
     if which_result:
         return (which_result,)
     if shutil.which("uvx"):
+        if binary_name == "tenzir-node":
+            return ("uvx", "--from", "tenzir", "tenzir-node")
         return ("uvx", binary_name)
     return None
 
