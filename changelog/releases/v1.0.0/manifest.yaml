@@ -1,0 +1,8 @@
+created: 2026-01-23
+title: Automatic Binary Detection
+intro: >-
+  This release introduces automatic binary detection with a clear precedence order:
+  environment variables take priority, followed by PATH lookup, with `uvx` as fallback.
+  Environment variables now support multi-part commands for full control over binary
+  invocation. The `--tenzir-binary` and `--tenzir-node-binary` CLI flags have been
+  removed in favor of environment variables.
