@@ -66,7 +66,7 @@ class DiffRunner(TqlRunner):
                 binary = run_mod.TENZIR_BINARY
                 if not binary:
                     raise RuntimeError("TENZIR_BINARY must be configured for diff runners")
-                base_cmd: list[str] = [binary, *config_args]
+                base_cmd: list[str] = [*binary, *config_args]
 
                 if coverage:
                     coverage_dir = env.get(
