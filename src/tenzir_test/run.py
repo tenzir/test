@@ -508,11 +508,17 @@ def should_show_diff_stat() -> bool:
 
 
 def set_verbose_output(enabled: bool) -> None:
+    """Enable or disable verbose output for individual test results.
+
+    When enabled, both success and skip messages are printed as tests complete.
+    When disabled (default), only failures are printed.
+    """
     global VERBOSE_OUTPUT
     VERBOSE_OUTPUT = enabled
 
 
 def is_verbose_output() -> bool:
+    """Return whether verbose output is enabled."""
     return VERBOSE_OUTPUT
 
 
@@ -2726,6 +2732,10 @@ def success(test: Path) -> None:
         print(f"{CHECKMARK} {rel_test}{suite_suffix}{attempt_suffix}")
 
 
+# Failures always print regardless of verbose mode because failures are critical
+# information that users need to see immediately. In contrast, success() and
+# handle_skip() respect the verbose setting since passed/skipped tests are
+# expected outcomes that can be summarized at the end.
 def fail(test: Path) -> None:
     with stdout_lock:
         rel_test = _relativize_path(test)
@@ -3370,7 +3380,12 @@ def run_cli(
     jobs_overridden: bool = False,
     all_projects: bool = False,
 ) -> ExecutionResult:
-    """Execute the harness and return a structured result for library consumers."""
+    """Execute the harness and return a structured result for library consumers.
+
+    Args:
+        verbose: Print individual test results (pass/skip) as they complete.
+            When False (default), only failures are printed during execution.
+    """
     from tenzir_test.engine import state as engine_state
 
     try:
@@ -3423,6 +3438,7 @@ def run_cli(
             harness_mode = HarnessMode.COMPARE
         set_harness_mode(harness_mode)
         passthrough_mode = harness_mode is HarnessMode.PASSTHROUGH
+        # Passthrough mode requires verbose output to show real-time test results
         set_verbose_output(verbose or passthrough_mode)
         if passthrough_mode and jobs > 1:
             if jobs_overridden:
@@ -3800,8 +3816,12 @@ def execute(
     jobs_overridden: bool = False,
     all_projects: bool = False,
 ) -> ExecutionResult:
-    """Library-oriented wrapper around `run_cli` with defaulted parameters."""
+    """Library-oriented wrapper around `run_cli` with defaulted parameters.
 
+    Args:
+        verbose: Print individual test results (pass/skip) as they complete.
+            When False (default), only failures are printed during execution.
+    """
     resolved_jobs = jobs if jobs is not None else get_default_jobs()
     return run_cli(
         root=root,

@@ -308,7 +308,7 @@ def test_print_detailed_summary_outputs_tree(capsys):
 
 def test_handle_skip_uses_skip_glyph(tmp_path, capsys):
     original_root = run.ROOT
-    original_verbose = run.VERBOSE_OUTPUT
+    original_verbose = run.is_verbose_output()
     try:
         run.ROOT = tmp_path
         run.set_verbose_output(True)
@@ -328,7 +328,7 @@ def test_handle_skip_uses_skip_glyph(tmp_path, capsys):
 
 def test_success_includes_suite_suffix(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     original_root = run.ROOT
-    original_verbose = run.VERBOSE_OUTPUT
+    original_verbose = run.is_verbose_output()
     try:
         run.ROOT = tmp_path
         run.set_verbose_output(True)
@@ -339,6 +339,49 @@ def test_success_includes_suite_suffix(tmp_path: Path, capsys: pytest.CaptureFix
             run.success(test_path)
         output = capsys.readouterr().out.strip()
         assert "suite=alpha (2/3)" in output
+    finally:
+        run.ROOT = original_root
+        run.set_verbose_output(original_verbose)
+
+
+def test_handle_skip_suppressed_when_verbose_disabled(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    original_root = run.ROOT
+    original_verbose = run.is_verbose_output()
+    try:
+        run.ROOT = tmp_path
+        run.set_verbose_output(False)
+        test_path = tmp_path / "tests" / "example.tql"
+        test_path.parent.mkdir(parents=True)
+        test_path.touch()
+
+        result = run.handle_skip("slow", test_path, update=False, output_ext="txt")
+
+        assert result == "skipped"
+        output = capsys.readouterr().out.strip()
+        assert output == ""
+    finally:
+        run.ROOT = original_root
+        run.set_verbose_output(original_verbose)
+
+
+def test_success_suppressed_when_verbose_disabled(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    original_root = run.ROOT
+    original_verbose = run.is_verbose_output()
+    try:
+        run.ROOT = tmp_path
+        run.set_verbose_output(False)
+        test_path = tmp_path / "tests" / "example.tql"
+        test_path.parent.mkdir(parents=True)
+        test_path.touch()
+
+        run.success(test_path)
+
+        output = capsys.readouterr().out.strip()
+        assert output == ""
     finally:
         run.ROOT = original_root
         run.set_verbose_output(original_verbose)

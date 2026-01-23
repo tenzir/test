@@ -137,7 +137,7 @@ def _normalize_exit_code(value: object) -> int:
     "-v",
     "--verbose",
     is_flag=True,
-    help="Print individual test results as they complete.",
+    help="Print individual test results as they complete. By default, only failures are shown. Automatically enabled in passthrough mode.",
 )
 @click.option(
     "-a",
