@@ -1,0 +1,6 @@
+created: 2026-01-23
+title: Verbose Output Control
+intro: >-
+  This release adds the `--verbose` flag for controlling test output verbosity. By
+  default, only failures are shown, reducing noise in large test suites while still
+  providing all details when needed.
