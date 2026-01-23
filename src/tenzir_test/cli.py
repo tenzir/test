@@ -40,18 +40,6 @@ def _normalize_exit_code(value: object) -> int:
     help="Project root to scan for tests.",
 )
 @click.option(
-    "tenzir_binary",
-    "--tenzir-binary",
-    type=click.Path(path_type=Path, dir_okay=False, writable=False, resolve_path=False),
-    help="Path to the tenzir executable.",
-)
-@click.option(
-    "tenzir_node_binary",
-    "--tenzir-node-binary",
-    type=click.Path(path_type=Path, dir_okay=False, writable=False, resolve_path=False),
-    help="Path to the tenzir-node executable.",
-)
-@click.option(
     "package_dirs",
     "--package-dirs",
     multiple=True,
@@ -150,8 +138,6 @@ def cli(
     ctx: click.Context,
     *,
     root: Path | None,
-    tenzir_binary: Path | None,
-    tenzir_node_binary: Path | None,
     package_dirs: tuple[str, ...],
     tests: tuple[Path, ...],
     update: bool,
@@ -186,8 +172,6 @@ def cli(
     try:
         result = runtime.run_cli(
             root=root,
-            tenzir_binary=tenzir_binary,
-            tenzir_node_binary=tenzir_node_binary,
             package_dirs=package_paths,
             tests=list(tests),
             update=update,

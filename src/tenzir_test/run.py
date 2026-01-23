@@ -176,8 +176,8 @@ def detect_execution_mode(root: Path) -> tuple[ExecutionMode, Path | None]:
 
 
 _settings: Settings | None = None
-TENZIR_BINARY: str | None = None
-TENZIR_NODE_BINARY: str | None = None
+TENZIR_BINARY: tuple[str, ...] | None = None
+TENZIR_NODE_BINARY: tuple[str, ...] | None = None
 ROOT: Path = Path.cwd()
 INPUTS_DIR: Path = ROOT / "inputs"
 EXECUTION_MODE: ExecutionMode = ExecutionMode.PROJECT
@@ -1866,9 +1866,9 @@ def get_test_env_and_config_args(
     if node_config_file.exists():
         env["TENZIR_NODE_CONFIG"] = str(node_config_file)
     if TENZIR_BINARY:
-        env["TENZIR_BINARY"] = TENZIR_BINARY
+        env["TENZIR_BINARY"] = shlex.join(TENZIR_BINARY)
     if TENZIR_NODE_BINARY:
-        env["TENZIR_NODE_BINARY"] = TENZIR_NODE_BINARY
+        env["TENZIR_NODE_BINARY"] = shlex.join(TENZIR_NODE_BINARY)
     env["TENZIR_TEST_ROOT"] = str(ROOT)
     tmp_dir = _create_test_tmp_dir(test)
     env[TEST_TMP_ENV_VAR] = str(tmp_dir)
@@ -2711,7 +2711,7 @@ def get_version() -> str:
     return (
         subprocess.check_output(
             [
-                TENZIR_BINARY,
+                *TENZIR_BINARY,
                 "--bare-mode",
                 "--console-verbosity=warning",
                 "version | select version | write_lines",
@@ -2949,7 +2949,7 @@ def run_simple_test(
             if not TENZIR_BINARY:
                 raise RuntimeError("TENZIR_BINARY must be configured before running tests")
             cmd: list[str] = [
-                TENZIR_BINARY,
+                *TENZIR_BINARY,
                 "--bare-mode",
                 "--console-verbosity=warning",
                 "--multi",
@@ -3359,8 +3359,6 @@ def collect_all_tests(directory: Path) -> Iterator[Path]:
 def run_cli(
     *,
     root: Path | None,
-    tenzir_binary: Path | None,
-    tenzir_node_binary: Path | None,
     package_dirs: Sequence[Path] | None = None,
     tests: Sequence[Path],
     update: bool,
@@ -3448,11 +3446,7 @@ def run_cli(
             print(f"{INFO} ignoring --update in passthrough mode")
             update = False
 
-        settings = discover_settings(
-            root=root,
-            tenzir_binary=tenzir_binary,
-            tenzir_node_binary=tenzir_node_binary,
-        )
+        settings = discover_settings(root=root)
         apply_settings(settings)
         _set_cli_packages(list(package_dirs or []))
         selected_tests = list(tests)
@@ -3796,8 +3790,6 @@ def run_cli(
 def execute(
     *,
     root: Path | None = None,
-    tenzir_binary: Path | None = None,
-    tenzir_node_binary: Path | None = None,
     tests: Sequence[Path] = (),
     update: bool = False,
     debug: bool = False,
@@ -3825,8 +3817,6 @@ def execute(
     resolved_jobs = jobs if jobs is not None else get_default_jobs()
     return run_cli(
         root=root,
-        tenzir_binary=tenzir_binary,
-        tenzir_node_binary=tenzir_node_binary,
         tests=list(tests),
         update=update,
         debug=debug,

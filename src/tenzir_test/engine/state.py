@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 from ..config import Settings
 from tenzir_test import run
 
-TENZIR_BINARY: Optional[str] = run.TENZIR_BINARY
-TENZIR_NODE_BINARY: Optional[str] = run.TENZIR_NODE_BINARY
+TENZIR_BINARY: tuple[str, ...] | None = run.TENZIR_BINARY
+TENZIR_NODE_BINARY: tuple[str, ...] | None = run.TENZIR_NODE_BINARY
 ROOT: Path = run.ROOT
 INPUTS_DIR: Path = run.INPUTS_DIR
 

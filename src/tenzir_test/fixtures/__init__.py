@@ -42,8 +42,8 @@ class FixtureContext:
     coverage: bool
     env: dict[str, str]
     config_args: Sequence[str]
-    tenzir_binary: str | None
-    tenzir_node_binary: str | None
+    tenzir_binary: tuple[str, ...] | None
+    tenzir_node_binary: tuple[str, ...] | None
 
 
 _CONTEXT: ContextVar[FixtureContext | None] = ContextVar(
@@ -57,7 +57,7 @@ class Executor:
     def __init__(self, env: Mapping[str, str] | None = None) -> None:
         source = env or os.environ
         try:
-            self.binary: str = source["TENZIR_NODE_CLIENT_BINARY"]
+            self.binary: tuple[str, ...] = tuple(shlex.split(source["TENZIR_NODE_CLIENT_BINARY"]))
         except KeyError as exc:  # pragma: no cover - defensive guard
             raise RuntimeError("TENZIR_NODE_CLIENT_BINARY is not configured") from exc
         self.endpoint: str | None = source.get("TENZIR_NODE_CLIENT_ENDPOINT")
@@ -72,7 +72,7 @@ class Executor:
         self, source: str, desired_timeout: float | None = None, mirror: bool = False
     ) -> subprocess.CompletedProcess[bytes]:
         cmd = [
-            self.binary,
+            *self.binary,
             "--bare-mode",
             "--console-verbosity=warning",
             "--multi",
