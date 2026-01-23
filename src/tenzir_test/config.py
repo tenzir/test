@@ -33,7 +33,17 @@ def _resolve_binary(
 ) -> tuple[str, ...] | None:
     """Resolve a binary with fallback to uvx."""
     if env_var:
-        return tuple(shlex.split(env_var))
+        try:
+            parts = tuple(shlex.split(env_var))
+        except ValueError as e:
+            raise ValueError(
+                f"Invalid shell syntax in environment variable for {binary_name}: {e}"
+            ) from e
+        if not parts:
+            raise ValueError(
+                f"Empty command in environment variable for {binary_name}"
+            )
+        return parts
     which_result = shutil.which(binary_name)
     if which_result:
         return (which_result,)

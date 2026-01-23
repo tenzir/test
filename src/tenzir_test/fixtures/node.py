@@ -167,11 +167,11 @@ def node() -> Iterator[dict[str, str]]:
 
     node_binary: tuple[str, ...] | None = context.tenzir_node_binary
     if not node_binary:
-        env_binary = context.env.get("TENZIR_NODE_BINARY")
-        if env_binary:
-            node_binary = tuple(shlex.split(env_binary))
-    if not node_binary:
-        raise RuntimeError("TENZIR_NODE_BINARY must be configured for the node fixture")
+        raise RuntimeError(
+            "tenzir-node binary not available. The harness checks: "
+            "TENZIR_NODE_BINARY env var, PATH lookup, uvx fallback. "
+            "Ensure tenzir-node is installed, uv is available, or set TENZIR_NODE_BINARY."
+        )
 
     env = context.env.copy()
     # Extract and filter config arguments: we handle --config and --package-dirs separately.

@@ -82,3 +82,25 @@ def test_settings_inputs_dir_nested(tmp_path: Path) -> None:
     settings = config.discover_settings(root=tmp_path)
 
     assert settings.inputs_dir == nested
+
+
+def test_discover_settings_malformed_binary(tmp_path: Path) -> None:
+    """Malformed shell syntax in binary env var raises ValueError."""
+    env = {
+        "TENZIR_TEST_ROOT": str(tmp_path),
+        "TENZIR_BINARY": "unclosed 'quote",
+    }
+
+    with pytest.raises(ValueError, match="Invalid shell syntax"):
+        config.discover_settings(env=env)
+
+
+def test_discover_settings_empty_binary(tmp_path: Path) -> None:
+    """Empty string after parsing raises ValueError."""
+    env = {
+        "TENZIR_TEST_ROOT": str(tmp_path),
+        "TENZIR_BINARY": "   ",  # Whitespace-only parses to empty
+    }
+
+    with pytest.raises(ValueError, match="Empty command"):
+        config.discover_settings(env=env)
