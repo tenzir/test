@@ -134,6 +134,12 @@ def _normalize_exit_code(value: object) -> int:
     help="Stream raw test output directly to the terminal.",
 )
 @click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Print individual test results as they complete. By default, only failures are shown. Automatically enabled in passthrough mode.",
+)
+@click.option(
     "-a",
     "--all-projects",
     is_flag=True,
@@ -161,6 +167,7 @@ def cli(
     keep_tmp_dirs: bool,
     jobs: int,
     passthrough: bool,
+    verbose: bool,
     all_projects: bool,
 ) -> int:
     """Execute tenzir-test scenarios."""
@@ -196,6 +203,7 @@ def cli(
             keep_tmp_dirs=keep_tmp_dirs,
             jobs=jobs,
             passthrough=passthrough,
+            verbose=verbose,
             jobs_overridden=jobs_overridden,
             all_projects=all_projects,
         )
