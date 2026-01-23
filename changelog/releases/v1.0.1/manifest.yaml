@@ -1,0 +1,5 @@
+created: 2026-01-23
+title: Multi-Word Command Fix
+intro: >-
+  This release fixes an issue with diff tests failing when using multi-word Tenzir
+  commands.
