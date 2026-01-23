@@ -483,6 +483,7 @@ KEEP_TMP_DIRS = bool(os.environ.get(_TMP_KEEP_ENV_VAR))
 
 SHOW_DIFF_OUTPUT = True
 SHOW_DIFF_STAT = True
+VERBOSE_OUTPUT = False
 _BLOCK_INDENT = ""
 _PLUS_SYMBOLS = {1: "□", 10: "▣", 100: "■"}
 _MINUS_SYMBOLS = {1: "□", 10: "▣", 100: "■"}
@@ -504,6 +505,15 @@ def set_show_diff_stat(enabled: bool) -> None:
 
 def should_show_diff_stat() -> bool:
     return SHOW_DIFF_STAT
+
+
+def set_verbose_output(enabled: bool) -> None:
+    global VERBOSE_OUTPUT
+    VERBOSE_OUTPUT = enabled
+
+
+def is_verbose_output() -> bool:
+    return VERBOSE_OUTPUT
 
 
 def set_harness_mode(mode: HarnessMode) -> None:
@@ -2707,6 +2717,8 @@ def get_version() -> str:
 
 
 def success(test: Path) -> None:
+    if not is_verbose_output():
+        return
     with stdout_lock:
         rel_test = _relativize_path(test)
         suite_suffix = _format_suite_suffix()
@@ -3028,9 +3040,10 @@ def run_simple_test(
 
 
 def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool | str:
-    rel_path = _relativize_path(test)
-    suite_suffix = _format_suite_suffix()
-    print(f"{SKIP} skipped {rel_path}{suite_suffix}: {reason}")
+    if is_verbose_output():
+        rel_path = _relativize_path(test)
+        suite_suffix = _format_suite_suffix()
+        print(f"{SKIP} skipped {rel_path}{suite_suffix}: {reason}")
     ref_path = test.with_suffix(f".{output_ext}")
     if update:
         with ref_path.open("wb") as f:
@@ -3353,6 +3366,7 @@ def run_cli(
     jobs: int,
     keep_tmp_dirs: bool,
     passthrough: bool,
+    verbose: bool = False,
     jobs_overridden: bool = False,
     all_projects: bool = False,
 ) -> ExecutionResult:
@@ -3409,6 +3423,7 @@ def run_cli(
             harness_mode = HarnessMode.COMPARE
         set_harness_mode(harness_mode)
         passthrough_mode = harness_mode is HarnessMode.PASSTHROUGH
+        set_verbose_output(verbose or passthrough_mode)
         if passthrough_mode and jobs > 1:
             if jobs_overridden:
                 print(f"{INFO} forcing --jobs=1 in passthrough mode to preserve output ordering")
@@ -3682,7 +3697,8 @@ def run_cli(
                 _print_compact_summary(project_summary)
                 summary_enabled = show_summary or runner_summary or fixture_summary
                 if summary_enabled:
-                    _print_detailed_summary(project_summary)
+                    if is_verbose_output():
+                        _print_detailed_summary(project_summary)
                     _print_ascii_summary(
                         project_summary,
                         include_runner=runner_summary,
@@ -3780,6 +3796,7 @@ def execute(
     jobs: int | None = None,
     keep_tmp_dirs: bool = False,
     passthrough: bool = False,
+    verbose: bool = False,
     jobs_overridden: bool = False,
     all_projects: bool = False,
 ) -> ExecutionResult:
@@ -3804,6 +3821,7 @@ def execute(
         jobs=resolved_jobs,
         keep_tmp_dirs=keep_tmp_dirs,
         passthrough=passthrough,
+        verbose=verbose,
         jobs_overridden=jobs_overridden,
         all_projects=all_projects,
     )
