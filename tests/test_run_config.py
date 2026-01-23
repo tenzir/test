@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
 import shutil
 import sys
 
@@ -206,9 +207,9 @@ def test_get_test_env_and_config_args(configured_root: Path) -> None:
     assert env_override["TENZIR_INPUTS"] == str(custom_inputs.resolve())
     assert args_override == [f"--config={config_file}"]
     if run.TENZIR_BINARY:
-        assert env["TENZIR_BINARY"] == run.TENZIR_BINARY
+        assert env["TENZIR_BINARY"] == shlex.join(run.TENZIR_BINARY)
     if run.TENZIR_NODE_BINARY:
-        assert env["TENZIR_NODE_BINARY"] == run.TENZIR_NODE_BINARY
+        assert env["TENZIR_NODE_BINARY"] == shlex.join(run.TENZIR_NODE_BINARY)
     assert "TENZIR_NODE_CONFIG" not in env
     assert args == [f"--config={config_file}"]
 
@@ -508,7 +509,7 @@ def test_run_simple_test_injects_package_dirs(
     run.apply_settings(
         config.Settings(
             root=package_root,
-            tenzir_binary=sys.executable,
+            tenzir_binary=(sys.executable,),
             tenzir_node_binary=None,
         )
     )
@@ -559,7 +560,7 @@ def test_run_simple_test_merges_package_dirs_from_directory_config(
     run.apply_settings(
         config.Settings(
             root=package_root,
-            tenzir_binary=sys.executable,
+            tenzir_binary=(sys.executable,),
             tenzir_node_binary=None,
         )
     )
@@ -621,7 +622,7 @@ def test_run_simple_test_respects_inputs_override(
     run.apply_settings(
         config.Settings(
             root=package_root,
-            tenzir_binary=sys.executable,
+            tenzir_binary=(sys.executable,),
             tenzir_node_binary=None,
         )
     )
@@ -672,7 +673,7 @@ def test_run_simple_test_passthrough_streams_output(
     run.apply_settings(
         config.Settings(
             root=tmp_path,
-            tenzir_binary=sys.executable,
+            tenzir_binary=(sys.executable,),
             tenzir_node_binary=None,
         )
     )
@@ -718,7 +719,7 @@ def test_run_simple_test_reports_stderr_on_failure(
     run.apply_settings(
         config.Settings(
             root=tmp_path,
-            tenzir_binary=sys.executable,
+            tenzir_binary=(sys.executable,),
             tenzir_node_binary=None,
         )
     )
@@ -762,7 +763,7 @@ def test_run_simple_test_suppresses_diff_on_interrupt(
     run.apply_settings(
         config.Settings(
             root=tmp_path,
-            tenzir_binary=sys.executable,
+            tenzir_binary=(sys.executable,),
             tenzir_node_binary=None,
         )
     )
