@@ -165,7 +165,11 @@ def node() -> Iterator[dict[str, str]]:
     if context is None:
         raise RuntimeError("node fixture requires an active test context")
 
-    node_binary = context.tenzir_node_binary or context.env.get("TENZIR_NODE_BINARY")
+    node_binary: tuple[str, ...] | None = context.tenzir_node_binary
+    if not node_binary:
+        env_binary = context.env.get("TENZIR_NODE_BINARY")
+        if env_binary:
+            node_binary = tuple(shlex.split(env_binary))
     if not node_binary:
         raise RuntimeError("TENZIR_NODE_BINARY must be configured for the node fixture")
 
@@ -240,7 +244,7 @@ def node() -> Iterator[dict[str, str]]:
     test_root = context.test.parent
 
     node_cmd = [
-        node_binary,
+        *node_binary,
         "--bare-mode",
         "--console-verbosity=warning",
         f"--state-directory={state_dir}",
@@ -292,9 +296,14 @@ def node() -> Iterator[dict[str, str]]:
             )
             raise RuntimeError(f"failed to obtain endpoint from tenzir-node ({detail})")
 
+        client_binary: str | None = None
+        if context.tenzir_binary:
+            client_binary = shlex.join(context.tenzir_binary)
+        else:
+            client_binary = env.get("TENZIR_BINARY")
         fixture_env = {
             "TENZIR_NODE_CLIENT_ENDPOINT": endpoint,
-            "TENZIR_NODE_CLIENT_BINARY": context.tenzir_binary or env.get("TENZIR_BINARY"),
+            "TENZIR_NODE_CLIENT_BINARY": client_binary,
             "TENZIR_NODE_CLIENT_TIMEOUT": str(context.config["timeout"]),
             "TENZIR_NODE_STATE_DIRECTORY": str(state_dir),
             "TENZIR_NODE_CACHE_DIRECTORY": str(cache_dir),

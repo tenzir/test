@@ -7,10 +7,12 @@ pieces fit together.
 
 ## Prerequisites
 
-- A `tenzir` binary on your `PATH`, or an explicit `TENZIR_BINARY`.
-- `tenzir-node` for scenarios that talk to a running node.
 - Python 3.12+ with [`uv`](https://docs.astral.sh/uv/) (used in the commands
   below).
+- A `tenzir` binary on your `PATH`. If not found, the harness falls back to
+  `uvx tenzir` when `uv` is installed. Set `TENZIR_BINARY` to override.
+- `tenzir-node` for scenarios that talk to a running node. Same fallback logic
+  applies via `TENZIR_NODE_BINARY`.
 
 ## Layout
 
@@ -83,7 +85,7 @@ example-project/
 - **Satellite demo** (`../example-satellite/`): a self-contained project that
   reuses the root fixtures **and** the `xxd` runner while adding its own
   `satellite_marker` fixture. Invoke `uvx tenzir-test --root example-project
-  example-satellite` to run both projects in one go.
+example-satellite` to run both projects in one go.
 
 Every scenario keeps its expected output in a neighbouring `.txt` file. Run with
 `--update` after deliberate behaviour changes to refresh the baselines.

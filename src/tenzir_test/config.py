@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,8 +13,8 @@ class Settings:
     """Configuration values steering how the harness discovers binaries and data."""
 
     root: Path
-    tenzir_binary: str | None
-    tenzir_node_binary: str | None
+    tenzir_binary: tuple[str, ...] | None
+    tenzir_node_binary: tuple[str, ...] | None
 
     @property
     def inputs_dir(self) -> Path:
@@ -26,17 +27,24 @@ class Settings:
         return direct
 
 
-def _coerce_binary(value: str | os.PathLike[str] | None) -> str | None:
-    if value is None:
-        return None
-    return str(value)
+def _resolve_binary(
+    env_var: str | None,
+    binary_name: str,
+) -> tuple[str, ...] | None:
+    """Resolve a binary with fallback to uvx."""
+    if env_var:
+        return tuple(shlex.split(env_var))
+    which_result = shutil.which(binary_name)
+    if which_result:
+        return (which_result,)
+    if shutil.which("uvx"):
+        return ("uvx", binary_name)
+    return None
 
 
 def discover_settings(
     *,
     root: Path | None = None,
-    tenzir_binary: str | os.PathLike[str] | None = None,
-    tenzir_node_binary: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Settings:
     """Produce harness settings by combining CLI overrides with environment defaults."""
@@ -46,12 +54,7 @@ def discover_settings(
     chosen_root = root or environment.get("TENZIR_TEST_ROOT") or Path.cwd()
     root_path = Path(chosen_root).resolve()
 
-    binary_cli = _coerce_binary(tenzir_binary)
-    binary_env = environment.get("TENZIR_BINARY")
-    tenzir_path = binary_cli or binary_env or shutil.which("tenzir")
-
-    node_cli = _coerce_binary(tenzir_node_binary)
-    node_env = environment.get("TENZIR_NODE_BINARY")
-    node_path = node_cli or node_env or shutil.which("tenzir-node")
+    tenzir_path = _resolve_binary(environment.get("TENZIR_BINARY"), "tenzir")
+    node_path = _resolve_binary(environment.get("TENZIR_NODE_BINARY"), "tenzir-node")
 
     return Settings(root=root_path, tenzir_binary=tenzir_path, tenzir_node_binary=node_path)

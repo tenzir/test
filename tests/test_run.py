@@ -520,8 +520,8 @@ def test_node_fixture_uses_explicit_node_config(tmp_path, monkeypatch):
         coverage=False,
         env=env,
         config_args=("--config=/default/tenzir.yaml", "--package-dirs=/pkg"),
-        tenzir_binary="/usr/bin/tenzir",
-        tenzir_node_binary="/usr/bin/tenzir-node",
+        tenzir_binary=("/usr/bin/tenzir",),
+        tenzir_node_binary=("/usr/bin/tenzir-node",),
     )
 
     token = fixture_api.push_context(context)
@@ -571,8 +571,8 @@ def test_node_fixture_skips_config_when_unset(monkeypatch):
         coverage=False,
         env=env,
         config_args=("--config=/default/tenzir.yaml", "--package-dirs=/pkg"),
-        tenzir_binary="/usr/bin/tenzir",
-        tenzir_node_binary="/usr/bin/tenzir-node",
+        tenzir_binary=("/usr/bin/tenzir",),
+        tenzir_node_binary=("/usr/bin/tenzir-node",),
     )
 
     token = fixture_api.push_context(context)
@@ -620,8 +620,8 @@ def test_node_fixture_adds_package_dirs_from_env(monkeypatch):
         coverage=False,
         env=env,
         config_args=("--config=/default/tenzir.yaml",),
-        tenzir_binary="/usr/bin/tenzir",
-        tenzir_node_binary="/usr/bin/tenzir-node",
+        tenzir_binary=("/usr/bin/tenzir",),
+        tenzir_node_binary=("/usr/bin/tenzir-node",),
     )
 
     token = fixture_api.push_context(context)
@@ -676,8 +676,8 @@ def test_node_fixture_deduplicates_package_dirs(monkeypatch):
         coverage=False,
         env=env,
         config_args=("--package-dirs=/pkg,/other",),
-        tenzir_binary="/usr/bin/tenzir",
-        tenzir_node_binary="/usr/bin/tenzir-node",
+        tenzir_binary=("/usr/bin/tenzir",),
+        tenzir_node_binary=("/usr/bin/tenzir-node",),
     )
 
     token = fixture_api.push_context(context)
@@ -709,8 +709,8 @@ def test_node_fixture_in_suite_receives_package_dirs(monkeypatch: pytest.MonkeyP
     run.apply_settings(
         config.Settings(
             root=package_root,
-            tenzir_binary="tenzir",
-            tenzir_node_binary="tenzir-node",
+            tenzir_binary=("tenzir",),
+            tenzir_node_binary=("tenzir-node",),
         )
     )
     run._clear_directory_config_cache()
@@ -934,8 +934,6 @@ def test_cli_rejects_partial_suite_selection(
         with pytest.raises(run.HarnessError) as exc_info:
             run.run_cli(
                 root=project_root,
-                tenzir_binary=None,
-                tenzir_node_binary=None,
                 tests=[test_file],
                 update=False,
                 debug=False,
@@ -961,8 +959,6 @@ def test_cli_rejects_partial_suite_selection(
         with pytest.raises(run.HarnessError) as exc_info:
             run.run_cli(
                 root=project_root,
-                tenzir_binary=None,
-                tenzir_node_binary=None,
                 tests=[suite_subdir],
                 update=False,
                 debug=False,

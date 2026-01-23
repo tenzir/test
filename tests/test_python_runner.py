@@ -21,7 +21,7 @@ def python_fixture_root(tmp_path: Path) -> Path:
     )
     test_settings = config.Settings(
         root=tmp_path,
-        tenzir_binary=run.TENZIR_BINARY or "/usr/bin/tenzir",
+        tenzir_binary=run.TENZIR_BINARY or ("/usr/bin/tenzir",),
         tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(test_settings)
@@ -267,7 +267,7 @@ def test_executor_from_env() -> None:
         "TENZIR_NODE_CLIENT_TIMEOUT": "5",
     }
     executor = fixtures.Executor.from_env(env)
-    assert executor.binary == "/usr/bin/tenzir-node"
+    assert executor.binary == ("/usr/bin/tenzir-node",)
     assert executor.endpoint == "localhost:0"
 
 
