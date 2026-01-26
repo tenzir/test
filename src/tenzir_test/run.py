@@ -3437,7 +3437,8 @@ def run_cli(
         set_harness_mode(harness_mode)
         passthrough_mode = harness_mode is HarnessMode.PASSTHROUGH
         # Passthrough mode requires verbose output to show real-time test results
-        set_verbose_output(verbose or passthrough_mode)
+        # Debug mode also implies verbose to show all test results when diagnosing
+        set_verbose_output(verbose or passthrough_mode or debug_enabled)
         if passthrough_mode and jobs > 1:
             if jobs_overridden:
                 print(f"{INFO} forcing --jobs=1 in passthrough mode to preserve output ordering")
