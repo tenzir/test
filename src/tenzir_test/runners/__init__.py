@@ -133,7 +133,7 @@ def get_runner_for_test(test_path: Path) -> Runner:
         runner_name = runner_value
     if runner_name in RUNNERS_BY_NAME:
         return RUNNERS_BY_NAME[runner_name]
-    raise ValueError(f"Runner '{runner_name}' not found - this is a bug")
+    raise ValueError(f"runner '{runner_name}' not found; define it in <project>/runners/")
 
 
 register(ShellRunner())
