@@ -1,0 +1,5 @@
+created: 2026-01-27
+title: Improved Debug Output
+intro: >-
+  This release improves the debugging experience by making the `--debug` flag automatically
+  enable verbose output, so you see all test results when diagnosing failures.
