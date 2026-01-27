@@ -1387,7 +1387,7 @@ def test_print_execution_plan_lists_projects(capsys):
     output = capsys.readouterr().out
     assert "found 2 projects" in output
     assert f"{run.INFO}   ■ root-project" in output
-    assert f"{run.INFO}   □ satellite-project" in output
+    assert f"{run.INFO}   □ ../satellite-project" in output
 
 
 def test_print_execution_plan_marks_packages(tmp_path, capsys):
@@ -1418,7 +1418,7 @@ def test_print_execution_plan_marks_packages(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "found 2 projects" in output
     assert f"{run.INFO}   ■ root" in output
-    assert f"{run.INFO}   ○ pkg" in output
+    assert f"{run.INFO}   ○ ../pkg" in output
 
 
 def test_print_project_start_reports_empty_projects(tmp_path, capsys):

@@ -1144,11 +1144,10 @@ def _format_relative_path(path: Path, base: Path) -> str:
 
 
 def _marker_for_selection(selection: ProjectSelection) -> str:
+    is_package = packages.is_package_dir(selection.root)
     if selection.kind == "root":
-        return "■"
-    if packages.is_package_dir(selection.root):
-        return "○"
-    return "□"
+        return "●" if is_package else "■"
+    return "○" if is_package else "□"
 
 
 def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> int:
@@ -1166,8 +1165,12 @@ def _print_execution_plan(plan: ExecutionPlan, *, display_base: Path) -> int:
         return 0
 
     print(f"{INFO} found {len(active)} projects")
+    root_base = plan.root.root
     for marker, selection in active:
-        name = selection.root.name or selection.root.as_posix()
+        if selection.kind == "satellite":
+            name = _format_relative_path(selection.root, root_base)
+        else:
+            name = selection.root.name or selection.root.as_posix()
         print(f"{INFO}   {marker} {name}")
     return len(active)
 
