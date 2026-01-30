@@ -125,6 +125,7 @@ class ShellRunner(ExtRunner):
             run_mod.success(test)
             return True
 
+        pre_compare = typing.cast(tuple[str, ...], test_config.get("pre_compare", tuple()))
         if combined_bytes:
             if not stdout_path.exists():
                 run_mod.report_failure(
@@ -134,22 +135,28 @@ class ShellRunner(ExtRunner):
                 return False
             run_mod.log_comparison(test, stdout_path, mode="comparing")
             expected_stdout = stdout_path.read_bytes()
-            if expected_stdout != combined_bytes:
+            expected_transformed = run_mod.apply_pre_compare(expected_stdout, pre_compare)
+            actual_transformed = run_mod.apply_pre_compare(combined_bytes, pre_compare)
+            if expected_transformed != actual_transformed:
                 if run_mod.interrupt_requested():
                     run_mod.report_interrupted_test(test)
                 else:
                     run_mod.report_failure(test, "")
-                    run_mod.print_diff(expected_stdout, combined_bytes, stdout_path)
+                    run_mod.print_diff(expected_transformed, actual_transformed, stdout_path)
                 return False
         elif stdout_path.exists():
             expected_stdout = stdout_path.read_bytes()
+            # Check if original baseline is empty before transformation
             if expected_stdout not in {b"", b"\n"}:
-                if run_mod.interrupt_requested():
-                    run_mod.report_interrupted_test(test)
-                else:
-                    run_mod.report_failure(test, "")
-                    run_mod.print_diff(expected_stdout, b"", stdout_path)
-                return False
+                expected_transformed = run_mod.apply_pre_compare(expected_stdout, pre_compare)
+                actual_transformed = run_mod.apply_pre_compare(b"", pre_compare)
+                if expected_transformed != actual_transformed:
+                    if run_mod.interrupt_requested():
+                        run_mod.report_interrupted_test(test)
+                    else:
+                        run_mod.report_failure(test, "")
+                        run_mod.print_diff(expected_transformed, actual_transformed, stdout_path)
+                    return False
 
         run_mod.success(test)
         return True

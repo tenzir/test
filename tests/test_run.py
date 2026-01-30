@@ -1583,20 +1583,18 @@ def test_directory_with_test_yaml_inside_root_is_selector(tmp_path, monkeypatch)
 
 
 class TestTransformSort:
-    def test_empty_input_returns_empty(self):
-        assert run._transform_sort(b"") == b""
-
-    def test_single_line_without_newline(self):
-        assert run._transform_sort(b"hello") == b"hello"
-
-    def test_single_line_with_newline(self):
-        assert run._transform_sort(b"hello\n") == b"hello\n"
-
-    def test_multiple_lines_get_sorted(self):
-        assert run._transform_sort(b"zebra\napple\nmango\n") == b"apple\nmango\nzebra\n"
-
-    def test_duplicate_lines_preserved(self):
-        assert run._transform_sort(b"b\na\nb\na\n") == b"a\na\nb\nb\n"
+    @pytest.mark.parametrize(
+        "input_data,expected_output",
+        [
+            (b"", b""),
+            (b"hello", b"hello"),
+            (b"hello\n", b"hello\n"),
+            (b"zebra\napple\nmango\n", b"apple\nmango\nzebra\n"),
+            (b"b\na\nb\na\n", b"a\na\nb\nb\n"),
+        ],
+    )
+    def test_sort_transform(self, input_data, expected_output):
+        assert run._transform_sort(input_data) == expected_output
 
     def test_trailing_newline_preserved(self):
         result = run._transform_sort(b"b\na\n")

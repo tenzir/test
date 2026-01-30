@@ -68,6 +68,7 @@ class DiffRunner(TqlRunner):
                     raise RuntimeError("TENZIR_BINARY must be configured for diff runners")
                 base_cmd: list[str] = [*binary, *config_args]
 
+                coverage_dir = ""
                 if coverage:
                     coverage_dir = env.get(
                         "CMAKE_COVERAGE_OUTPUT_DIRECTORY",
@@ -111,6 +112,7 @@ class DiffRunner(TqlRunner):
         root_bytes = str(run_mod.ROOT).encode() + b"/"
         unoptimized_stdout = unoptimized.stdout.replace(root_bytes, b"")
         optimized_stdout = optimized.stdout.replace(root_bytes, b"")
+        # Generate diff without transforms first
         diff_chunks = list(
             difflib.diff_bytes(
                 difflib.unified_diff,
@@ -130,12 +132,15 @@ class DiffRunner(TqlRunner):
             ref_path.write_bytes(diff_bytes)
         else:
             expected = ref_path.read_bytes()
-            if diff_bytes != expected:
+            pre_compare = typing.cast(tuple[str, ...], test_config.get("pre_compare", tuple()))
+            expected_transformed = run_mod.apply_pre_compare(expected, pre_compare)
+            actual_transformed = run_mod.apply_pre_compare(diff_bytes, pre_compare)
+            if actual_transformed != expected_transformed:
                 if run_mod.interrupt_requested():
                     run_mod.report_interrupted_test(test)
                 else:
                     run_mod.report_failure(test, "")
-                    run_mod.print_diff(expected, diff_bytes, ref_path)
+                    run_mod.print_diff(expected_transformed, actual_transformed, ref_path)
                 return False
         run_mod.success(test)
         return True
