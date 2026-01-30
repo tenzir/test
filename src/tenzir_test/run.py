@@ -1251,7 +1251,6 @@ def _normalize_fixtures_value(
             f"Invalid value for 'fixtures', expected string or list, got '{value}'",
             line_number,
         )
-        return tuple()
 
     fixtures: list[str] = []
     for entry in raw:
@@ -1312,7 +1311,6 @@ def _normalize_inputs_value(
         f"Invalid value for 'inputs', expected string, got '{value}'",
         line_number,
     )
-    return None
 
 
 def _normalize_package_dirs_value(
@@ -1329,7 +1327,6 @@ def _normalize_package_dirs_value(
             f"Invalid value for 'package-dirs', expected list of strings, got '{value}'",
             line_number,
         )
-        return tuple()
     base_dir = _extract_location_path(location).parent
     normalized: list[str] = []
     for entry in value:
@@ -1339,7 +1336,6 @@ def _normalize_package_dirs_value(
                 f"Invalid package-dirs entry '{entry}', expected string",
                 line_number,
             )
-            continue
         raw = os.fspath(entry).strip()
         if not raw:
             _raise_config_error(
@@ -1347,7 +1343,6 @@ def _normalize_package_dirs_value(
                 "Invalid package-dirs entry: must be non-empty string",
                 line_number,
             )
-            continue
         path = Path(raw)
         if not path.is_absolute():
             path = base_dir / path
@@ -1383,7 +1378,6 @@ def _normalize_pre_compare_value(
             f"Invalid value for 'pre-compare', expected string or list, got '{value}'",
             line_number,
         )
-        return tuple()
 
     transforms: list[str] = []
     valid_names = set(_TRANSFORMS.keys())
@@ -1478,7 +1472,6 @@ def _assign_config_option(
             f"Invalid value for '{canonical}', expected 'true' or 'false', got '{value}'",
             line_number,
         )
-        return
 
     if canonical == "timeout":
         if isinstance(value, int):
@@ -1491,7 +1484,6 @@ def _assign_config_option(
                 f"Invalid value for 'timeout', expected integer, got '{value}'",
                 line_number,
             )
-            return
         if timeout_value <= 0:
             _raise_config_error(
                 location,
@@ -1547,7 +1539,6 @@ def _assign_config_option(
                 f"Invalid value for 'retry', expected integer, got '{value}'",
                 line_number,
             )
-            return
         if retry_value <= 0:
             _raise_config_error(
                 location,
