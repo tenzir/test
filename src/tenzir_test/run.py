@@ -2880,6 +2880,13 @@ def _transform_sort(output: bytes) -> bytes:
     return result.encode("utf-8", errors="surrogateescape")
 
 
+# Transforms are intentionally simple and hardcoded rather than using the plugin
+# architecture (like runners and fixtures). Rationale:
+# - Transforms are core comparison utilities, not user-extensible features
+# - Currently only one transform exists; extensibility can be added if needed
+# - Pre-compare transforms are rarely customized per-project compared to runners
+# - If custom transforms become necessary, this can be refactored to use a
+#   registry pattern similar to runners/__init__.py
 _TRANSFORMS: dict[str, typing.Callable[[bytes], bytes]] = {
     "sort": _transform_sort,
 }
