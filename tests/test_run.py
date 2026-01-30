@@ -1577,3 +1577,449 @@ def test_directory_with_test_yaml_inside_root_is_selector(tmp_path, monkeypatch)
 
     assert plan.root.selectors == [alerts_dir.resolve()]
     assert not plan.satellites
+
+
+# Tests for pre-compare transforms
+
+
+class TestTransformSort:
+    @pytest.mark.parametrize(
+        "input_data,expected_output",
+        [
+            (b"", b""),
+            (b"hello", b"hello"),
+            (b"hello\n", b"hello\n"),
+            (b"zebra\napple\nmango\n", b"apple\nmango\nzebra\n"),
+            (b"b\na\nb\na\n", b"a\na\nb\nb\n"),
+        ],
+    )
+    def test_sort_transform(self, input_data, expected_output):
+        assert run._transform_sort(input_data) == expected_output
+
+    def test_trailing_newline_preserved(self):
+        result = run._transform_sort(b"b\na\n")
+        assert result == b"a\nb\n"
+        assert result.endswith(b"\n")
+
+    def test_no_trailing_newline_preserved(self):
+        result = run._transform_sort(b"b\na")
+        assert result == b"a\nb"
+        assert not result.endswith(b"\n")
+
+    def test_non_utf8_handled_via_surrogateescape(self):
+        # Input with invalid UTF-8 byte sequence
+        invalid_utf8 = b"valid\n\xff\xfe\nhello\n"
+        result = run._transform_sort(invalid_utf8)
+        # Should sort without crashing, and preserve the invalid bytes
+        assert b"hello" in result
+        assert b"valid" in result
+        assert b"\xff\xfe" in result
+
+    def test_mixed_line_endings(self):
+        """TST-3: Test _transform_sort with mixed line endings (CRLF, LF, CR)."""
+        # Input with various line ending styles
+        mixed = b"zebra\r\napple\nmango\rbanana\n"
+        result = run._transform_sort(mixed)
+        # Should handle all line ending types correctly
+        # splitlines() handles \r\n, \n, and \r as line terminators
+        # After sorting, lines should be ordered alphabetically
+        assert b"apple" in result
+        assert b"banana" in result
+        assert b"mango" in result
+        assert b"zebra" in result
+
+
+class TestNormalizePreCompareValue:
+    def test_valid_single_string(self):
+        result = run._normalize_pre_compare_value("sort", location=Path("test.tql"), line_number=1)
+        assert result == ("sort",)
+
+    def test_valid_list(self):
+        result = run._normalize_pre_compare_value(
+            ["sort"], location=Path("test.tql"), line_number=1
+        )
+        assert result == ("sort",)
+
+    def test_yaml_list_string(self):
+        result = run._normalize_pre_compare_value(
+            "[sort]", location=Path("test.tql"), line_number=1
+        )
+        assert result == ("sort",)
+
+    def test_unknown_transform_raises_config_error(self):
+        with pytest.raises(ValueError) as exc_info:
+            run._normalize_pre_compare_value("srot", location=Path("test.tql"), line_number=1)
+        assert "Unknown pre-compare transform 'srot'" in str(exc_info.value)
+        assert "valid transforms: sort" in str(exc_info.value)
+
+    def test_empty_transform_name_raises_config_error(self):
+        with pytest.raises(ValueError) as exc_info:
+            run._normalize_pre_compare_value(["  "], location=Path("test.tql"), line_number=1)
+        assert "non-empty" in str(exc_info.value)
+
+    def test_invalid_type_raises_config_error(self):
+        with pytest.raises(ValueError) as exc_info:
+            run._normalize_pre_compare_value(123, location=Path("test.tql"), line_number=1)
+        assert "expected string or list" in str(exc_info.value)
+
+
+class TestApplyPreCompare:
+    def test_empty_transforms_returns_unchanged(self):
+        """TST-6: Test apply_pre_compare with empty tuple returns unchanged output."""
+        output = b"hello\nworld\n"
+        assert run.apply_pre_compare(output, tuple()) == output
+
+    def test_sort_transform_applied(self):
+        output = b"zebra\napple\n"
+        result = run.apply_pre_compare(output, ("sort",))
+        assert result == b"apple\nzebra\n"
+
+    def test_transform_chaining(self):
+        """TST-1: Test applying multiple transforms in sequence."""
+        # When multiple transforms exist, they should be applied in order
+        # For now, we only have 'sort', but test the mechanism works correctly
+        output = b"zebra\napple\nmango\n"
+
+        # Single transform
+        result = run.apply_pre_compare(output, ("sort",))
+        assert result == b"apple\nmango\nzebra\n"
+
+        # Multiple transforms (applying sort twice should be idempotent)
+        result_double = run.apply_pre_compare(output, ("sort", "sort"))
+        assert result_double == b"apple\nmango\nzebra\n"
+        assert result_double == result
+
+
+# Integration tests for transform feature
+
+
+def test_transform_applied_in_diff_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """TST-10: Test that diff_runner correctly applies transforms to both diff and baseline."""
+    from tenzir_test.runners.diff_runner import DiffRunner
+
+    test_file = tmp_path / "transform.tql"
+    test_file.write_text(
+        """---
+pre_compare: sort
+timeout: 5
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+    baseline_file = test_file.with_suffix(".diff")
+    # The diff will show "-a\n+b\n" (removing a, adding b)
+    # After sorting, this becomes "+b\n-a\n" which should match the baseline
+    baseline_file.write_text("+b\n-a\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    # Set a fake binary path
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=("/usr/bin/tenzir",),
+            tenzir_node_binary=None,
+        )
+    )
+
+    class FakeCompletedProcess:
+        def __init__(self, stdout: bytes) -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = b""
+
+    call_count = {"count": 0}
+
+    def fake_run(cmd, timeout, stdout=None, stderr=None, env=None, **kwargs):  # type: ignore[no-untyped-def]
+        call_count["count"] += 1
+        # First call (unoptimized) returns "a", second call (optimized) returns "b"
+        # This creates diff: -a\n+b\n
+        if call_count["count"] == 1:
+            return FakeCompletedProcess(b"a\n")
+        return FakeCompletedProcess(b"b\n")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    try:
+        # Create a diff runner instance
+        runner = DiffRunner(a="opt-a", b="opt-b", name="test-diff")
+        result = runner.run(test_file, update=False)
+        # The diff "-a\n+b\n" when sorted becomes "+b\n-a\n" which matches the baseline
+        assert result is True
+    finally:
+        run.apply_settings(original_settings)
+
+
+def test_transform_error_during_comparison(tmp_path: Path) -> None:
+    """TST-2: Test what happens when a transform encounters an error during comparison."""
+    test_file = tmp_path / "invalid_transform.tql"
+    test_file.write_text(
+        """---
+pre_compare: invalid_transform_name
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        run.parse_test_config(test_file)
+
+    assert "Unknown pre-compare transform 'invalid_transform_name'" in str(exc_info.value)
+    assert "valid transforms: sort" in str(exc_info.value)
+
+
+def test_pre_compare_with_diff_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """TST-5: Test pre-compare transforms with diff runner output to ensure transforms work with diffs."""
+    from tenzir_test.runners.diff_runner import DiffRunner
+
+    test_file = tmp_path / "diff_transform.tql"
+    test_file.write_text(
+        """---
+pre_compare: sort
+timeout: 5
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+    baseline_file = test_file.with_suffix(".diff")
+    # The diff will show " line1\n line2\n+line3\n" (added line3)
+    # After sorting, both should match
+    baseline_file.write_text("+line3\n line1\n line2\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=("/usr/bin/tenzir",),
+            tenzir_node_binary=None,
+        )
+    )
+
+    class FakeCompletedProcess:
+        def __init__(self, stdout: bytes) -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = b""
+
+    call_count = {"count": 0}
+
+    def fake_run(cmd, timeout, stdout=None, stderr=None, env=None, **kwargs):  # type: ignore[no-untyped-def]
+        call_count["count"] += 1
+        # Both calls produce outputs that differ, creating a diff with added line
+        if call_count["count"] == 1:
+            return FakeCompletedProcess(b"line1\nline2\n")
+        return FakeCompletedProcess(b"line1\nline2\nline3\n")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    try:
+        runner = DiffRunner(a="opt-a", b="opt-b", name="test-diff")
+        result = runner.run(test_file, update=False)
+        # The diff will contain " line1\n line2\n+line3\n", and after sorting should match baseline
+        assert result is True
+    finally:
+        run.apply_settings(original_settings)
+
+
+def test_transform_chaining_future(tmp_path: Path) -> None:
+    """TST-4: Test multiple transforms applied in sequence (placeholder for future transforms)."""
+    test_file = tmp_path / "chained.tql"
+    # Currently only "sort" is available, but test the list format
+    test_file.write_text(
+        """---
+pre_compare: [sort]
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    config_result = run.parse_test_config(test_file)
+    assert config_result["pre_compare"] == ("sort",)
+
+    # Test that multiple transforms would be applied in order
+    output = b"zebra\napple\nmango\n"
+    result = run.apply_pre_compare(output, ("sort",))
+    assert result == b"apple\nmango\nzebra\n"
+
+
+def test_update_mode_stores_untransformed_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TST-8: Test that --update mode stores untransformed output even when pre-compare is configured."""
+    import sys
+
+    test_file = tmp_path / "update_transform.tql"
+    test_file.write_text(
+        """---
+pre_compare: sort
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=(sys.executable,),
+            tenzir_node_binary=None,
+        )
+    )
+
+    class FakeCompletedProcess:
+        def __init__(self) -> None:
+            self.returncode = 0
+            # Output is intentionally unsorted
+            self.stdout = b"zebra\napple\n"
+            self.stderr = b""
+
+    monkeypatch.setattr(run.subprocess, "run", lambda *args, **kwargs: FakeCompletedProcess())
+
+    try:
+        result = run.run_simple_test(test_file, update=True, output_ext="txt")
+        assert result is True
+
+        baseline_file = test_file.with_suffix(".txt")
+        assert baseline_file.exists()
+        # Baseline should contain the original unsorted output
+        content = baseline_file.read_bytes()
+        assert content == b"zebra\napple\n"
+        # Not the sorted version
+        assert content != b"apple\nzebra\n"
+    finally:
+        run.apply_settings(original_settings)
+
+
+def test_pre_compare_config_inheritance(tmp_path: Path) -> None:
+    """TST-9: Test that pre-compare transforms configuration is properly inherited from parent test.yaml files."""
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "suite"
+    suite_dir.mkdir(parents=True)
+    # Set pre-compare transforms in suite-level test.yaml
+    (suite_dir / "test.yaml").write_text("pre_compare: sort\ntimeout: 10\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    test_file = suite_dir / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    try:
+        config_result = run.parse_test_config(test_file)
+        # pre-compare transforms should be inherited from the directory config
+        assert config_result["pre_compare"] == ("sort",)
+        assert config_result["timeout"] == 10
+    finally:
+        run.apply_settings(original_settings)
+
+
+def test_pre_compare_list_format(tmp_path: Path) -> None:
+    """Test that pre-compare transforms accept list format in configuration."""
+    test_file = tmp_path / "list_format.tql"
+    test_file.write_text(
+        """---
+pre_compare:
+  - sort
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    config_result = run.parse_test_config(test_file)
+    assert config_result["pre_compare"] == ("sort",)
+
+
+def test_transform_does_not_affect_failure_reporting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test that transforms are applied during comparison but failure output is still meaningful."""
+    import sys
+
+    test_file = tmp_path / "fail_transform.tql"
+    test_file.write_text(
+        """---
+pre_compare: sort
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+    baseline_file = test_file.with_suffix(".txt")
+    # Baseline contains sorted content
+    baseline_file.write_text("a\nb\nc\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=(sys.executable,),
+            tenzir_node_binary=None,
+        )
+    )
+
+    class FakeCompletedProcess:
+        def __init__(self) -> None:
+            self.returncode = 0
+            # Output that will NOT match baseline even after sorting
+            self.stdout = b"x\ny\nz\n"
+            self.stderr = b""
+
+    monkeypatch.setattr(run.subprocess, "run", lambda *args, **kwargs: FakeCompletedProcess())
+
+    original_show_diff = run.should_show_diff_output()
+    run.set_show_diff_output(True)
+    try:
+        result = run.run_simple_test(test_file, update=False, output_ext="txt")
+        assert result is False
+
+        output = capsys.readouterr().out
+        # Verify failure was reported
+        assert "fail_transform.tql" in output
+    finally:
+        run.set_show_diff_output(original_show_diff)
+        run.apply_settings(original_settings)

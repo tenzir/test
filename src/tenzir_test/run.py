@@ -1201,6 +1201,7 @@ def _default_test_config() -> TestConfig:
         "retry": 1,
         "suite": None,
         "package_dirs": tuple(),
+        "pre_compare": tuple(),
     }
 
 
@@ -1209,13 +1210,17 @@ def _canonical_config_key(key: str) -> str:
         return "fixtures"
     if key in {"package_dirs", "package-dirs"}:
         return "package_dirs"
+    if key in {"pre_compare", "pre-compare"}:
+        return "pre_compare"
     return key
 
 
 ConfigOrigin = Literal["directory", "frontmatter"]
 
 
-def _raise_config_error(location: Path | str, message: str, line_number: int | None = None) -> None:
+def _raise_config_error(
+    location: Path | str, message: str, line_number: int | None = None
+) -> typing.NoReturn:
     base = str(location)
     if line_number is not None:
         base = f"{base}:{line_number}"
@@ -1246,7 +1251,6 @@ def _normalize_fixtures_value(
             f"Invalid value for 'fixtures', expected string or list, got '{value}'",
             line_number,
         )
-        return tuple()
 
     fixtures: list[str] = []
     for entry in raw:
@@ -1307,7 +1311,6 @@ def _normalize_inputs_value(
         f"Invalid value for 'inputs', expected string, got '{value}'",
         line_number,
     )
-    return None
 
 
 def _normalize_package_dirs_value(
@@ -1324,7 +1327,6 @@ def _normalize_package_dirs_value(
             f"Invalid value for 'package-dirs', expected list of strings, got '{value}'",
             line_number,
         )
-        return tuple()
     base_dir = _extract_location_path(location).parent
     normalized: list[str] = []
     for entry in value:
@@ -1334,7 +1336,6 @@ def _normalize_package_dirs_value(
                 f"Invalid package-dirs entry '{entry}', expected string",
                 line_number,
             )
-            continue
         raw = os.fspath(entry).strip()
         if not raw:
             _raise_config_error(
@@ -1342,7 +1343,6 @@ def _normalize_package_dirs_value(
                 "Invalid package-dirs entry: must be non-empty string",
                 line_number,
             )
-            continue
         path = Path(raw)
         if not path.is_absolute():
             path = base_dir / path
@@ -1352,6 +1352,58 @@ def _normalize_package_dirs_value(
             path = path
         normalized.append(str(path))
     return tuple(normalized)
+
+
+def _normalize_pre_compare_value(
+    value: typing.Any,
+    *,
+    location: Path | str,
+    line_number: int | None = None,
+) -> tuple[str, ...]:
+    entries: typing.Any
+    if isinstance(value, list):
+        entries = value
+    elif isinstance(value, str):
+        try:
+            parsed = yaml.safe_load(value)
+        except yaml.YAMLError:
+            parsed = None
+        if isinstance(parsed, list):
+            entries = parsed
+        else:
+            entries = [value]
+    else:
+        _raise_config_error(
+            location,
+            f"Invalid value for 'pre-compare', expected string or list, got '{value}'",
+            line_number,
+        )
+
+    transforms: list[str] = []
+    valid_names = set(_TRANSFORMS.keys())
+    for entry in entries:
+        if not isinstance(entry, str):
+            _raise_config_error(
+                location,
+                f"Invalid pre-compare entry '{entry}', expected string",
+                line_number,
+            )
+        name = entry.strip()
+        if not name:
+            _raise_config_error(
+                location,
+                "Pre-compare transform names must be non-empty strings",
+                line_number,
+            )
+        if name not in valid_names:
+            valid_list = ", ".join(sorted(valid_names))
+            _raise_config_error(
+                location,
+                f"Unknown pre-compare transform '{name}', valid transforms: {valid_list}",
+                line_number,
+            )
+        transforms.append(name)
+    return tuple(transforms)
 
 
 def _assign_config_option(
@@ -1373,6 +1425,7 @@ def _assign_config_option(
         "inputs",
         "retry",
         "package_dirs",
+        "pre_compare",
     }
     if origin == "directory":
         valid_keys.add("suite")
@@ -1419,7 +1472,6 @@ def _assign_config_option(
             f"Invalid value for '{canonical}', expected 'true' or 'false', got '{value}'",
             line_number,
         )
-        return
 
     if canonical == "timeout":
         if isinstance(value, int):
@@ -1432,7 +1484,6 @@ def _assign_config_option(
                 f"Invalid value for 'timeout', expected integer, got '{value}'",
                 line_number,
             )
-            return
         if timeout_value <= 0:
             _raise_config_error(
                 location,
@@ -1488,7 +1539,6 @@ def _assign_config_option(
                 f"Invalid value for 'retry', expected integer, got '{value}'",
                 line_number,
             )
-            return
         if retry_value <= 0:
             _raise_config_error(
                 location,
@@ -1496,6 +1546,11 @@ def _assign_config_option(
                 line_number,
             )
         config[canonical] = retry_value
+        return
+
+    if canonical == "pre_compare":
+        transforms = _normalize_pre_compare_value(value, location=location, line_number=line_number)
+        config[canonical] = transforms
         return
 
     if canonical == "runner":
@@ -2798,6 +2853,43 @@ def _format_lines_changed(total: int) -> str:
     return f"{_BLOCK_INDENT}└ {total} {line} changed"
 
 
+def _transform_sort(output: bytes) -> bytes:
+    """Sort output lines lexicographically.
+
+    Uses surrogateescape to preserve undecodable bytes as surrogate escapes,
+    allowing the transform to handle binary data gracefully.
+    """
+    if not output:
+        return output
+    has_trailing_newline = output.endswith(b"\n")
+    text = output.decode("utf-8", errors="surrogateescape")
+    lines = text.splitlines(keepends=False)
+    sorted_lines = sorted(lines)
+    result = "\n".join(sorted_lines)
+    if has_trailing_newline:
+        result += "\n"
+    return result.encode("utf-8", errors="surrogateescape")
+
+
+# Transforms are intentionally simple and hardcoded rather than using the plugin
+# architecture (like runners and fixtures). Rationale:
+# - Transforms are core comparison utilities, not user-extensible features
+# - Currently only one transform exists; extensibility can be added if needed
+# - Pre-compare transforms are rarely customized per-project compared to runners
+# - If custom transforms become necessary, this can be refactored to use a
+#   registry pattern similar to runners/__init__.py
+_TRANSFORMS: dict[str, typing.Callable[[bytes], bytes]] = {
+    "sort": _transform_sort,
+}
+
+
+def apply_pre_compare(output: bytes, transforms: tuple[str, ...]) -> bytes:
+    """Apply pre-compare transforms in order."""
+    for name in transforms:
+        output = _TRANSFORMS[name](output)
+    return output
+
+
 def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
     if should_suppress_failure_output():
         return
@@ -3041,12 +3133,15 @@ def run_simple_test(
             return False
         log_comparison(test, ref_path, mode="comparing")
         expected = ref_path.read_bytes()
-        if expected != output:
+        pre_compare = cast(tuple[str, ...], test_config.get("pre_compare", tuple()))
+        expected_transformed = apply_pre_compare(expected, pre_compare)
+        output_transformed = apply_pre_compare(output, pre_compare)
+        if expected_transformed != output_transformed:
             if interrupt_requested():
                 report_interrupted_test(test)
             else:
                 report_failure(test, "")
-                print_diff(expected, output, ref_path)
+                print_diff(expected_transformed, output_transformed, ref_path)
             return False
     success(test)
     return True
