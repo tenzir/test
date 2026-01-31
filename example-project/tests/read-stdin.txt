@@ -1,0 +1,8 @@
+{
+  level: "warn",
+  msg: "deprecated",
+}
+{
+  level: "error",
+  msg: "crash",
+}

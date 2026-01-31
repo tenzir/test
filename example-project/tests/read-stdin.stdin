@@ -1,0 +1,3 @@
+{"level": "info", "msg": "startup"}
+{"level": "warn", "msg": "deprecated"}
+{"level": "error", "msg": "crash"}
