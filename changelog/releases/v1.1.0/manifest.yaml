@@ -1,0 +1,5 @@
+created: 2026-01-31
+title: Stdin File Support
+intro: >-
+  This release adds stdin file support for piping data directly to tests, and improves
+  satellite project display in project listings.
