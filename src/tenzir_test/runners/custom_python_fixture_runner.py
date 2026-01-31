@@ -106,12 +106,14 @@ class CustomPythonFixture(ExtRunner):
                     env["TENZIR_PYTHON_FIXTURE_TIMEOUT"] = str(timeout)
                     if node_requested and endpoint:
                         env["TENZIR_PYTHON_FIXTURE_ENDPOINT"] = endpoint
+                    stdin_content = run_mod.get_stdin_content(env)
                     completed = run_mod.run_subprocess(
                         cmd,
                         timeout=timeout,
                         env=env,
                         capture_output=not passthrough,
                         check=True,
+                        stdin_data=stdin_content,
                     )
                 ref_path = test.with_suffix(".txt")
                 if completed.returncode != 0:

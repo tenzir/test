@@ -49,6 +49,7 @@ class ShellRunner(ExtRunner):
                     env["PATH"] = shell_path_prefix
 
                 try:
+                    stdin_content = run_mod.get_stdin_content(env)
                     completed = run_mod.run_subprocess(
                         ["sh", "-eu", str(test)],
                         env=env,
@@ -57,6 +58,7 @@ class ShellRunner(ExtRunner):
                         check=not expect_error,
                         text=False,
                         cwd=str(run_mod.ROOT),
+                        stdin_data=stdin_content,
                     )
                 except subprocess.CalledProcessError as exc:
                     completed = exc  # treat like CompletedProcess for diagnostics

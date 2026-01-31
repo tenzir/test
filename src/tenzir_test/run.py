@@ -587,6 +587,7 @@ def run_subprocess(
     check: bool = False,
     text: bool = False,
     force_capture: bool = False,
+    stdin_data: bytes | None = None,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str]:
     """Execute a subprocess honoring passthrough configuration.
@@ -597,10 +598,30 @@ def run_subprocess(
 
     Runner authors should prefer this helper over direct ``subprocess`` calls so
     passthrough semantics remain consistent across implementations.
+
+    Args:
+        args: Command and arguments to execute.
+        capture_output: Whether to capture stdout/stderr (ignored in passthrough mode).
+        check: If True, raise CalledProcessError on non-zero exit.
+        text: If True, decode stdout/stderr as text. Note: stdin_data must still
+            be bytes even when text=True, as subprocess.run expects bytes for input.
+        force_capture: Capture output even in passthrough mode.
+        stdin_data: Bytes to send to the process's stdin. Use :func:`get_stdin_content`
+            to read from a .stdin file. When None, stdin is not connected.
+        **kwargs: Additional arguments passed to subprocess.run. The keys 'stdout',
+            'stderr', 'capture_output', and 'input' are managed by this function
+            and will raise TypeError if provided.
+
+    Returns:
+        A CompletedProcess instance with returncode, stdout, and stderr.
+
+    Raises:
+        TypeError: If stdout, stderr, capture_output, or input are passed in kwargs.
+        subprocess.CalledProcessError: If check=True and process exits non-zero.
     """
 
-    if any(key in kwargs for key in {"stdout", "stderr", "capture_output"}):
-        raise TypeError("run_subprocess manages stdout/stderr automatically")
+    if any(key in kwargs for key in {"stdout", "stderr", "capture_output", "input"}):
+        raise TypeError("run_subprocess manages stdout/stderr/input automatically")
 
     passthrough = is_passthrough_enabled()
     stream_output = passthrough and not force_capture
@@ -622,6 +643,7 @@ def run_subprocess(
         stdout=stdout,
         stderr=stderr,
         text=text,
+        input=stdin_data,
         **kwargs,
     )
 
@@ -1251,7 +1273,6 @@ def _normalize_fixtures_value(
             f"Invalid value for 'fixtures', expected string or list, got '{value}'",
             line_number,
         )
-        return tuple()
 
     fixtures: list[str] = []
     for entry in raw:
@@ -1312,7 +1333,6 @@ def _normalize_inputs_value(
         f"Invalid value for 'inputs', expected string, got '{value}'",
         line_number,
     )
-    return None
 
 
 def _normalize_package_dirs_value(
@@ -1329,7 +1349,6 @@ def _normalize_package_dirs_value(
             f"Invalid value for 'package-dirs', expected list of strings, got '{value}'",
             line_number,
         )
-        return tuple()
     base_dir = _extract_location_path(location).parent
     normalized: list[str] = []
     for entry in value:
@@ -1339,7 +1358,6 @@ def _normalize_package_dirs_value(
                 f"Invalid package-dirs entry '{entry}', expected string",
                 line_number,
             )
-            continue
         raw = os.fspath(entry).strip()
         if not raw:
             _raise_config_error(
@@ -1347,7 +1365,6 @@ def _normalize_package_dirs_value(
                 "Invalid package-dirs entry: must be non-empty string",
                 line_number,
             )
-            continue
         path = Path(raw)
         if not path.is_absolute():
             path = base_dir / path
@@ -1383,7 +1400,6 @@ def _normalize_pre_compare_value(
             f"Invalid value for 'pre-compare', expected string or list, got '{value}'",
             line_number,
         )
-        return tuple()
 
     transforms: list[str] = []
     valid_names = set(_TRANSFORMS.keys())
@@ -1478,7 +1494,6 @@ def _assign_config_option(
             f"Invalid value for '{canonical}', expected 'true' or 'false', got '{value}'",
             line_number,
         )
-        return
 
     if canonical == "timeout":
         if isinstance(value, int):
@@ -1491,7 +1506,6 @@ def _assign_config_option(
                 f"Invalid value for 'timeout', expected integer, got '{value}'",
                 line_number,
             )
-            return
         if timeout_value <= 0:
             _raise_config_error(
                 location,
@@ -1547,7 +1561,6 @@ def _assign_config_option(
                 f"Invalid value for 'retry', expected integer, got '{value}'",
                 line_number,
             )
-            return
         if retry_value <= 0:
             _raise_config_error(
                 location,
@@ -1924,10 +1937,18 @@ def get_test_env_and_config_args(
             candidate = test.parent / candidate
         inputs_path = str(candidate.resolve())
     env["TENZIR_INPUTS"] = inputs_path
-    # Check for inline input file (.input extension)
+    # Check for inline input file (.input extension).
+    # Note: .input and .stdin extensions are reserved; see RESERVED_EXTENSIONS
+    # in tenzir_test.runners.ext_runner for the authoritative list.
     inline_input = test.with_suffix(".input")
     if inline_input.is_file():
-        env["TENZIR_INPUT"] = str(inline_input.resolve())
+        validated_input = _validate_path_within_root(inline_input, "input file")
+        env["TENZIR_INPUT"] = str(validated_input)
+    # Check for stdin file (.stdin extension)
+    stdin_file = test.with_suffix(".stdin")
+    if stdin_file.is_file():
+        validated_stdin = _validate_path_within_root(stdin_file, "stdin file")
+        env["TENZIR_STDIN"] = str(validated_stdin)
     if config_file.exists():
         env.setdefault("TENZIR_CONFIG", str(config_file))
     if node_config_file.exists():
@@ -1942,11 +1963,76 @@ def get_test_env_and_config_args(
     return env, config_args
 
 
+def _validate_path_within_root(path: Path, description: str) -> Path:
+    """Validate that a resolved path is within the project ROOT.
+
+    This provides defense-in-depth against symlink traversal attacks where a
+    malicious .stdin or .input file could be a symlink pointing outside the
+    project directory.
+
+    Args:
+        path: The path to validate (will be resolved to follow symlinks).
+        description: Human-readable description for error messages (e.g., "stdin file").
+
+    Returns:
+        The resolved path if validation passes.
+
+    Raises:
+        RuntimeError: If the resolved path is outside the project root.
+    """
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(ROOT.resolve())
+    except ValueError:
+        rel_path = _relativize_path(path)
+        raise RuntimeError(f"{description} '{rel_path}' resolves outside project root") from None
+    return resolved
+
+
 def _apply_fixture_env(env: dict[str, str], fixtures: tuple[str, ...]) -> None:
     if fixtures:
         env["TENZIR_TEST_FIXTURES"] = ",".join(fixtures)
     else:
         env.pop("TENZIR_TEST_FIXTURES", None)
+
+
+def get_stdin_content(env: dict[str, str]) -> bytes | None:
+    """Read stdin content from a file specified by TENZIR_STDIN environment variable.
+
+    This function is intended for runner authors who need to provide stdin content
+    to test processes. The TENZIR_STDIN variable is automatically set by the test
+    harness when a ``.stdin`` file exists alongside the test file.
+
+    Args:
+        env: Environment dictionary, typically from :func:`get_test_env_and_config_args`.
+
+    Returns:
+        The file contents as bytes if TENZIR_STDIN is set and the file exists,
+        otherwise None. Empty files return empty bytes (b"").
+
+    Raises:
+        RuntimeError: If TENZIR_STDIN is set but the file cannot be read
+            (e.g., file not found, permission denied).
+
+    Example:
+        Runner authors can use this with :func:`run_subprocess`::
+
+            env, config_args = get_test_env_and_config_args(test)
+            stdin_content = get_stdin_content(env)
+            completed = run_subprocess(
+                ["my-command"],
+                env=env,
+                stdin_data=stdin_content,
+                ...
+            )
+    """
+    stdin_path = env.get("TENZIR_STDIN")
+    if not stdin_path:
+        return None
+    try:
+        return Path(stdin_path).read_bytes()
+    except OSError as e:
+        raise RuntimeError(f"Failed to read stdin file '{stdin_path}': {e.strerror}") from e
 
 
 def set_debug_logging(enabled: bool) -> None:
@@ -3064,12 +3150,14 @@ def run_simple_test(
                 "-f",
                 str(test),
             ]
+            stdin_content = get_stdin_content(env)
             completed = run_subprocess(
                 cmd,
                 timeout=timeout,
                 env=env,
                 capture_output=not passthrough_mode,
                 cwd=str(ROOT),
+                stdin_data=stdin_content,
             )
         good = completed.returncode == 0
         output = b""

@@ -72,6 +72,7 @@ write_json
         "inputs": None,
         "retry": 1,
         "package_dirs": tuple(),
+        "pre_compare": tuple(),
     }
 
 
@@ -102,6 +103,7 @@ write_json
         "inputs": None,
         "retry": 1,
         "package_dirs": tuple(),
+        "pre_compare": tuple(),
     }
 
 
@@ -341,6 +343,7 @@ print("ok")
         "inputs": None,
         "retry": 1,
         "package_dirs": tuple(),
+        "pre_compare": tuple(),
     }
 
 

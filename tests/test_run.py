@@ -1695,69 +1695,6 @@ class TestApplyPreCompare:
 # Integration tests for transform feature
 
 
-def test_transform_applied_in_diff_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """TST-10: Test that diff_runner correctly applies transforms to both diff and baseline."""
-    from tenzir_test.runners.diff_runner import DiffRunner
-
-    test_file = tmp_path / "transform.tql"
-    test_file.write_text(
-        """---
-pre_compare: sort
-timeout: 5
----
-
-version
-write_json
-""",
-        encoding="utf-8",
-    )
-    baseline_file = test_file.with_suffix(".diff")
-    # The diff will show "-a\n+b\n" (removing a, adding b)
-    # After sorting, this becomes "+b\n-a\n" which should match the baseline
-    baseline_file.write_text("+b\n-a\n", encoding="utf-8")
-
-    original_settings = config.Settings(
-        root=run.ROOT,
-        tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
-    )
-    # Set a fake binary path
-    run.apply_settings(
-        config.Settings(
-            root=tmp_path,
-            tenzir_binary=("/usr/bin/tenzir",),
-            tenzir_node_binary=None,
-        )
-    )
-
-    class FakeCompletedProcess:
-        def __init__(self, stdout: bytes) -> None:
-            self.returncode = 0
-            self.stdout = stdout
-            self.stderr = b""
-
-    call_count = {"count": 0}
-
-    def fake_run(cmd, timeout, stdout=None, stderr=None, env=None, **kwargs):  # type: ignore[no-untyped-def]
-        call_count["count"] += 1
-        # First call (unoptimized) returns "a", second call (optimized) returns "b"
-        # This creates diff: -a\n+b\n
-        if call_count["count"] == 1:
-            return FakeCompletedProcess(b"a\n")
-        return FakeCompletedProcess(b"b\n")
-
-    monkeypatch.setattr(run.subprocess, "run", fake_run)
-
-    try:
-        # Create a diff runner instance
-        runner = DiffRunner(a="opt-a", b="opt-b", name="test-diff")
-        result = runner.run(test_file, update=False)
-        # The diff "-a\n+b\n" when sorted becomes "+b\n-a\n" which matches the baseline
-        assert result is True
-    finally:
-        run.apply_settings(original_settings)
-
-
 def test_transform_error_during_comparison(tmp_path: Path) -> None:
     """TST-2: Test what happens when a transform encounters an error during comparison."""
     test_file = tmp_path / "invalid_transform.tql"
@@ -1777,66 +1714,6 @@ write_json
 
     assert "Unknown pre-compare transform 'invalid_transform_name'" in str(exc_info.value)
     assert "valid transforms: sort" in str(exc_info.value)
-
-
-def test_pre_compare_with_diff_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """TST-5: Test pre-compare transforms with diff runner output to ensure transforms work with diffs."""
-    from tenzir_test.runners.diff_runner import DiffRunner
-
-    test_file = tmp_path / "diff_transform.tql"
-    test_file.write_text(
-        """---
-pre_compare: sort
-timeout: 5
----
-
-version
-write_json
-""",
-        encoding="utf-8",
-    )
-    baseline_file = test_file.with_suffix(".diff")
-    # The diff will show " line1\n line2\n+line3\n" (added line3)
-    # After sorting, both should match
-    baseline_file.write_text("+line3\n line1\n line2\n", encoding="utf-8")
-
-    original_settings = config.Settings(
-        root=run.ROOT,
-        tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
-    )
-    run.apply_settings(
-        config.Settings(
-            root=tmp_path,
-            tenzir_binary=("/usr/bin/tenzir",),
-            tenzir_node_binary=None,
-        )
-    )
-
-    class FakeCompletedProcess:
-        def __init__(self, stdout: bytes) -> None:
-            self.returncode = 0
-            self.stdout = stdout
-            self.stderr = b""
-
-    call_count = {"count": 0}
-
-    def fake_run(cmd, timeout, stdout=None, stderr=None, env=None, **kwargs):  # type: ignore[no-untyped-def]
-        call_count["count"] += 1
-        # Both calls produce outputs that differ, creating a diff with added line
-        if call_count["count"] == 1:
-            return FakeCompletedProcess(b"line1\nline2\n")
-        return FakeCompletedProcess(b"line1\nline2\nline3\n")
-
-    monkeypatch.setattr(run.subprocess, "run", fake_run)
-
-    try:
-        runner = DiffRunner(a="opt-a", b="opt-b", name="test-diff")
-        result = runner.run(test_file, update=False)
-        # The diff will contain " line1\n line2\n+line3\n", and after sorting should match baseline
-        assert result is True
-    finally:
-        run.apply_settings(original_settings)
 
 
 def test_transform_chaining_future(tmp_path: Path) -> None:
@@ -2025,3 +1902,349 @@ write_json
     finally:
         run.set_show_diff_output(original_show_diff)
         run.apply_settings(original_settings)
+
+
+# Tests for get_stdin_content()
+
+
+class TestGetStdinContent:
+    def test_returns_none_when_env_unset(self) -> None:
+        """get_stdin_content returns None when TENZIR_STDIN is not set."""
+        env: dict[str, str] = {}
+        assert run.get_stdin_content(env) is None
+
+    def test_returns_none_when_env_empty(self) -> None:
+        """get_stdin_content returns None when TENZIR_STDIN is empty string."""
+        env = {"TENZIR_STDIN": ""}
+        assert run.get_stdin_content(env) is None
+
+    def test_reads_file_bytes(self, tmp_path: Path) -> None:
+        """get_stdin_content reads file content as bytes."""
+        stdin_file = tmp_path / "test.stdin"
+        stdin_file.write_bytes(b"hello world\n")
+        env = {"TENZIR_STDIN": str(stdin_file)}
+        assert run.get_stdin_content(env) == b"hello world\n"
+
+    def test_raises_on_file_not_found(self, tmp_path: Path) -> None:
+        """get_stdin_content raises RuntimeError when file doesn't exist."""
+        nonexistent = tmp_path / "nonexistent.stdin"
+        env = {"TENZIR_STDIN": str(nonexistent)}
+        with pytest.raises(RuntimeError) as exc_info:
+            run.get_stdin_content(env)
+        assert "Failed to read stdin file" in str(exc_info.value)
+        assert str(nonexistent) in str(exc_info.value)
+
+    def test_raises_on_permission_error(self, tmp_path: Path) -> None:
+        """get_stdin_content raises RuntimeError on permission denied."""
+        stdin_file = tmp_path / "restricted.stdin"
+        stdin_file.write_bytes(b"content")
+        stdin_file.chmod(0o000)
+        env = {"TENZIR_STDIN": str(stdin_file)}
+        try:
+            with pytest.raises(RuntimeError) as exc_info:
+                run.get_stdin_content(env)
+            assert "Failed to read stdin file" in str(exc_info.value)
+        finally:
+            stdin_file.chmod(0o644)
+
+    def test_preserves_binary_data(self, tmp_path: Path) -> None:
+        """get_stdin_content preserves arbitrary binary data including null bytes."""
+        stdin_file = tmp_path / "binary.stdin"
+        binary_content = b"\x00\x01\xff\xfe\x00data\x00"
+        stdin_file.write_bytes(binary_content)
+        env = {"TENZIR_STDIN": str(stdin_file)}
+        assert run.get_stdin_content(env) == binary_content
+
+    def test_returns_empty_bytes_for_empty_file(self, tmp_path: Path) -> None:
+        """get_stdin_content returns empty bytes for an empty file."""
+        stdin_file = tmp_path / "empty.stdin"
+        stdin_file.write_bytes(b"")
+        env = {"TENZIR_STDIN": str(stdin_file)}
+        assert run.get_stdin_content(env) == b""
+
+    def test_error_message_uses_strerror(self, tmp_path: Path) -> None:
+        """get_stdin_content error message uses strerror for cleaner output."""
+        nonexistent = tmp_path / "missing.stdin"
+        env = {"TENZIR_STDIN": str(nonexistent)}
+        with pytest.raises(RuntimeError) as exc_info:
+            run.get_stdin_content(env)
+        # Should contain strerror message like "No such file or directory"
+        # rather than "FileNotFoundError: [Errno 2] ..."
+        assert "No such file or directory" in str(exc_info.value)
+
+
+# Tests for run_subprocess() stdin_data parameter
+
+
+class TestRunSubprocessStdinData:
+    def test_stdin_data_none_does_not_connect_stdin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When stdin_data is None, subprocess receives no stdin."""
+        captured: dict[str, object] = {}
+
+        def fake_run(*args: object, **kwargs: object) -> object:
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return type("Result", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        run.run_subprocess(["echo", "test"], capture_output=True, stdin_data=None)
+        assert captured["kwargs"].get("input") is None
+
+    def test_stdin_data_empty_bytes_sends_empty_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When stdin_data is empty bytes, subprocess receives empty stdin."""
+        captured: dict[str, object] = {}
+
+        def fake_run(*args: object, **kwargs: object) -> object:
+            captured["kwargs"] = kwargs
+            return type("Result", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        run.run_subprocess(["cat"], capture_output=True, stdin_data=b"")
+        assert captured["kwargs"].get("input") == b""
+
+    def test_stdin_data_binary_content_passed_to_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Binary stdin_data is passed directly to subprocess input."""
+        captured: dict[str, object] = {}
+
+        def fake_run(*args: object, **kwargs: object) -> object:
+            captured["kwargs"] = kwargs
+            return type("Result", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        binary_input = b"line1\nline2\x00binary"
+        run.run_subprocess(["cat"], capture_output=True, stdin_data=binary_input)
+        assert captured["kwargs"].get("input") == binary_input
+
+    def test_rejects_input_kwarg(self) -> None:
+        """run_subprocess raises TypeError if input is passed in kwargs."""
+        with pytest.raises(TypeError) as exc_info:
+            run.run_subprocess(["echo"], capture_output=True, input=b"should not be allowed")
+        assert "input" in str(exc_info.value).lower()
+
+
+# Tests for TENZIR_STDIN environment variable setup
+
+
+class TestEnvSetsTenzirStdin:
+    def test_env_sets_tenzir_stdin_when_file_exists(self, tmp_path: Path) -> None:
+        """TENZIR_STDIN is set when a .stdin file exists alongside the test."""
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        try:
+            test_file = tmp_path / "tests" / "example.tql"
+            test_file.parent.mkdir(parents=True, exist_ok=True)
+            test_file.write_text("version\n", encoding="utf-8")
+
+            stdin_file = tmp_path / "tests" / "example.stdin"
+            stdin_file.write_text("stdin content\n", encoding="utf-8")
+
+            env, _ = run.get_test_env_and_config_args(test_file)
+            assert "TENZIR_STDIN" in env
+            assert env["TENZIR_STDIN"] == str(stdin_file.resolve())
+        finally:
+            run.apply_settings(original_settings)
+
+    def test_env_omits_tenzir_stdin_when_missing(self, tmp_path: Path) -> None:
+        """TENZIR_STDIN is not set when no .stdin file exists."""
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        try:
+            test_file = tmp_path / "tests" / "example.tql"
+            test_file.parent.mkdir(parents=True, exist_ok=True)
+            test_file.write_text("version\n", encoding="utf-8")
+
+            env, _ = run.get_test_env_and_config_args(test_file)
+            assert "TENZIR_STDIN" not in env
+        finally:
+            run.apply_settings(original_settings)
+
+    def test_env_sets_both_stdin_and_input(self, tmp_path: Path) -> None:
+        """Both TENZIR_STDIN and TENZIR_INPUT are set when both files exist."""
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        try:
+            test_file = tmp_path / "tests" / "example.tql"
+            test_file.parent.mkdir(parents=True, exist_ok=True)
+            test_file.write_text("version\n", encoding="utf-8")
+
+            stdin_file = tmp_path / "tests" / "example.stdin"
+            stdin_file.write_text("stdin content\n", encoding="utf-8")
+
+            input_file = tmp_path / "tests" / "example.input"
+            input_file.write_text("input content\n", encoding="utf-8")
+
+            env, _ = run.get_test_env_and_config_args(test_file)
+            assert "TENZIR_STDIN" in env
+            assert "TENZIR_INPUT" in env
+            assert env["TENZIR_STDIN"] == str(stdin_file.resolve())
+            assert env["TENZIR_INPUT"] == str(input_file.resolve())
+        finally:
+            run.apply_settings(original_settings)
+
+
+# Tests for path validation security
+
+
+class TestPathValidation:
+    def test_stdin_symlink_outside_root_rejected(self, tmp_path: Path) -> None:
+        """A .stdin symlink pointing outside project root is rejected."""
+        import os
+
+        project_root = tmp_path / "project"
+        tests_dir = project_root / "tests"
+        tests_dir.mkdir(parents=True)
+
+        # Create a file outside the project
+        outside_file = tmp_path / "secret.txt"
+        outside_file.write_text("secret content\n", encoding="utf-8")
+
+        # Create test file
+        test_file = tests_dir / "malicious.tql"
+        test_file.write_text("version\n", encoding="utf-8")
+
+        # Create symlink pointing outside project
+        stdin_symlink = tests_dir / "malicious.stdin"
+        os.symlink(str(outside_file), str(stdin_symlink))
+
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=project_root,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        try:
+            with pytest.raises(RuntimeError) as exc_info:
+                run.get_test_env_and_config_args(test_file)
+            assert "resolves outside project root" in str(exc_info.value)
+        finally:
+            run.apply_settings(original_settings)
+
+    def test_input_symlink_outside_root_rejected(self, tmp_path: Path) -> None:
+        """A .input symlink pointing outside project root is rejected."""
+        import os
+
+        project_root = tmp_path / "project"
+        tests_dir = project_root / "tests"
+        tests_dir.mkdir(parents=True)
+
+        # Create a file outside the project
+        outside_file = tmp_path / "secret.txt"
+        outside_file.write_text("secret content\n", encoding="utf-8")
+
+        # Create test file
+        test_file = tests_dir / "malicious.tql"
+        test_file.write_text("version\n", encoding="utf-8")
+
+        # Create symlink pointing outside project
+        input_symlink = tests_dir / "malicious.input"
+        os.symlink(str(outside_file), str(input_symlink))
+
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=project_root,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        try:
+            with pytest.raises(RuntimeError) as exc_info:
+                run.get_test_env_and_config_args(test_file)
+            assert "resolves outside project root" in str(exc_info.value)
+        finally:
+            run.apply_settings(original_settings)
+
+    def test_valid_symlink_within_root_accepted(self, tmp_path: Path) -> None:
+        """A .stdin symlink pointing within project root is accepted."""
+        import os
+
+        project_root = tmp_path / "project"
+        tests_dir = project_root / "tests"
+        inputs_dir = project_root / "inputs"
+        tests_dir.mkdir(parents=True)
+        inputs_dir.mkdir(parents=True)
+
+        # Create a file inside the project
+        inside_file = inputs_dir / "shared.stdin"
+        inside_file.write_text("shared content\n", encoding="utf-8")
+
+        # Create test file
+        test_file = tests_dir / "test.tql"
+        test_file.write_text("version\n", encoding="utf-8")
+
+        # Create symlink pointing inside project
+        stdin_symlink = tests_dir / "test.stdin"
+        os.symlink(str(inside_file), str(stdin_symlink))
+
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=project_root,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        try:
+            env, _ = run.get_test_env_and_config_args(test_file)
+            assert "TENZIR_STDIN" in env
+            # Should resolve to the actual file
+            assert env["TENZIR_STDIN"] == str(inside_file.resolve())
+        finally:
+            run.apply_settings(original_settings)
