@@ -360,3 +360,74 @@ def test_fixture_activation_teardown_log_suppressed_when_empty(
 
     assert "activating fixture 'sink'" in caplog.text
     assert "tearing down fixture 'sink'" not in caplog.text
+
+
+def test_python_runner_passes_stdin_data(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Python runner reads .stdin file and passes it via stdin_data."""
+    script = python_fixture_root / "python" / "stdin_test.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        """#!/usr/bin/env python3
+import sys
+data = sys.stdin.read()
+print(data.upper(), end='')
+""",
+        encoding="utf-8",
+    )
+    script.parent.joinpath("test.yaml").write_text(
+        "timeout: 30\nfixtures:\n  - sink\n",
+        encoding="utf-8",
+    )
+
+    # Create .stdin file
+    stdin_file = script.with_suffix(".stdin")
+    stdin_file.write_bytes(b"hello world")
+
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, input=None, **kwargs):  # noqa: ANN001
+        captured["input"] = input
+        # Simulate the expected output
+        return _DummyCompleted(stdout=b"HELLO WORLD")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    runner = run.CustomPythonFixture()
+    assert runner.run(script, update=True, coverage=False)
+    # Verify stdin_data was passed
+    assert captured["input"] == b"hello world"
+
+
+def test_python_runner_no_stdin_when_file_missing(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Python runner passes None for stdin when no .stdin file exists."""
+    script = python_fixture_root / "python" / "no_stdin.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        """#!/usr/bin/env python3
+print('ok')
+""",
+        encoding="utf-8",
+    )
+    script.parent.joinpath("test.yaml").write_text(
+        "timeout: 30\nfixtures:\n  - sink\n",
+        encoding="utf-8",
+    )
+
+    # No .stdin file created
+
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, input=None, **kwargs):  # noqa: ANN001
+        captured["input"] = input
+        return _DummyCompleted(stdout=b"ok\n")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    runner = run.CustomPythonFixture()
+    runner.run(script, update=True, coverage=False)
+    # Verify no stdin was passed
+    assert captured["input"] is None

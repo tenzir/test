@@ -190,3 +190,94 @@ def test_shell_runner_reports_stderr_on_failure(
     assert run.ANSI_ESCAPE.sub("", lines[3]) == "│ stderr"
     assert lines[4].startswith("└─▶ ")
     assert "got unexpected exit code 42" in lines[4]
+
+
+def test_shell_runner_passes_stdin_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ShellRunner reads .stdin file and passes it to subprocess via stdin_data."""
+    script = tmp_path / "tests" / "read_stdin.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("cat\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    # Create the .stdin file
+    stdin_file = tmp_path / "tests" / "read_stdin.stdin"
+    stdin_file.write_bytes(b"stdin content from file\n")
+
+    # Create baseline
+    baseline = tmp_path / "tests" / "read_stdin.txt"
+    baseline.write_bytes(b"stdin content from file\n")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_subprocess(cmd, *, stdin_data=None, **kwargs):  # noqa: ANN001
+        captured["stdin_data"] = stdin_data
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": stdin_data or b"", "stderr": b""},
+        )()
+
+    monkeypatch.setattr(run, "run_subprocess", fake_run_subprocess)
+
+    try:
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+        runner = run.ShellRunner()
+        result = runner.run(script, update=False, coverage=False)
+    finally:
+        run.apply_settings(original_settings)
+
+    assert result is True
+    assert captured["stdin_data"] == b"stdin content from file\n"
+
+
+def test_shell_runner_no_stdin_when_file_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ShellRunner passes None for stdin_data when no .stdin file exists."""
+    script = tmp_path / "tests" / "no_stdin.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("echo ok\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    # No .stdin file created
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_subprocess(cmd, *, stdin_data=None, **kwargs):  # noqa: ANN001
+        captured["stdin_data"] = stdin_data
+        return type("Result", (), {"returncode": 0, "stdout": b"ok\n", "stderr": b""})()
+
+    monkeypatch.setattr(run, "run_subprocess", fake_run_subprocess)
+
+    try:
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+        runner = run.ShellRunner()
+        runner.run(script, update=True, coverage=False)
+    finally:
+        run.apply_settings(original_settings)
+
+    assert captured["stdin_data"] is None

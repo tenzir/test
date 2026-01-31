@@ -1,0 +1,4 @@
+from stdin:
+stdin content
+from TENZIR_INPUT:
+input file content

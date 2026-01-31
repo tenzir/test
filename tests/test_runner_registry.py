@@ -161,3 +161,80 @@ def test_missing_runner_raises(tmp_path: Path) -> None:
             run.parse_test_config(test_file)
     finally:
         run.apply_settings(original)
+
+
+# Tests for reserved extensions
+
+
+class TestReservedExtensions:
+    def test_ext_runner_rejects_reserved_stdin_extension(self) -> None:
+        """ExtRunner raises ValueError when registering with .stdin extension."""
+
+        class BadStdinRunner(runners.ExtRunner):
+            def __init__(self) -> None:
+                super().__init__(name="bad-stdin", ext="stdin")
+
+            def run(self, test: Path, update: bool, coverage: bool = False) -> bool:
+                return True
+
+        with pytest.raises(ValueError) as exc_info:
+            BadStdinRunner()
+        assert "reserved extension" in str(exc_info.value)
+        assert ".stdin" in str(exc_info.value)
+
+    def test_ext_runner_rejects_reserved_input_extension(self) -> None:
+        """ExtRunner raises ValueError when registering with .input extension."""
+
+        class BadInputRunner(runners.ExtRunner):
+            def __init__(self) -> None:
+                super().__init__(name="bad-input", ext="input")
+
+            def run(self, test: Path, update: bool, coverage: bool = False) -> bool:
+                return True
+
+        with pytest.raises(ValueError) as exc_info:
+            BadInputRunner()
+        assert "reserved extension" in str(exc_info.value)
+        assert ".input" in str(exc_info.value)
+
+    def test_ext_runner_rejects_reserved_txt_extension(self) -> None:
+        """ExtRunner raises ValueError when registering with .txt extension."""
+
+        class BadTxtRunner(runners.ExtRunner):
+            def __init__(self) -> None:
+                super().__init__(name="bad-txt", ext="txt")
+
+            def run(self, test: Path, update: bool, coverage: bool = False) -> bool:
+                return True
+
+        with pytest.raises(ValueError) as exc_info:
+            BadTxtRunner()
+        assert "reserved extension" in str(exc_info.value)
+        assert ".txt" in str(exc_info.value)
+
+    def test_ext_runner_accepts_non_reserved_extension(self) -> None:
+        """ExtRunner accepts extensions that are not reserved."""
+
+        class TestRunner(runners.ExtRunner):
+            def __init__(self) -> None:
+                super().__init__(name="test-runner", ext="custom")
+
+            def run(self, test: Path, update: bool, coverage: bool = False) -> bool:
+                return True
+
+        # Should not raise
+        runner = TestRunner()
+        assert runner.name == "test-runner"
+
+    def test_reserved_extensions_is_immutable(self) -> None:
+        """RESERVED_EXTENSIONS is a frozenset and cannot be modified."""
+        from tenzir_test.runners.ext_runner import RESERVED_EXTENSIONS
+
+        assert isinstance(RESERVED_EXTENSIONS, frozenset)
+        # frozenset doesn't have add/remove methods
+        assert not hasattr(RESERVED_EXTENSIONS, "add")
+        assert not hasattr(RESERVED_EXTENSIONS, "remove")
+        # Verify contents
+        assert "stdin" in RESERVED_EXTENSIONS
+        assert "input" in RESERVED_EXTENSIONS
+        assert "txt" in RESERVED_EXTENSIONS
