@@ -11,6 +11,15 @@ import click
 from . import __version__, run as runtime
 
 
+class _UnindentedEpilogCommand(click.Command):
+    """Command that renders the epilog without indentation."""
+
+    def format_epilog(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        if self.epilog:
+            formatter.write_paragraph()
+            formatter.write(self.epilog)
+
+
 def _normalize_exit_code(value: object) -> int:
     """Cast arbitrary exit codes to integers."""
 
@@ -22,7 +31,18 @@ def _normalize_exit_code(value: object) -> int:
 
 
 @click.command(
+    cls=_UnindentedEpilogCommand,
     context_settings={"help_option_names": ["-h", "--help"]},
+    epilog="""\
+Examples:
+  tenzir-test                       Run all tests in the project
+  tenzir-test tests/alerts/         Run all tests in a directory
+  tenzir-test tests/basic.tql       Run a specific test file
+  tenzir-test -u tests/new.tql      Run test and update its baseline
+  tenzir-test -p -k tests/debug/    Debug with output streaming and kept temps
+
+Documentation: https://docs.tenzir.com/reference/test-framework/
+""",
 )
 @click.version_option(
     __version__,
@@ -51,6 +71,7 @@ def _normalize_exit_code(value: object) -> int:
 @click.argument(
     "tests",
     nargs=-1,
+    metavar="[TEST]...",
     type=click.Path(path_type=Path, resolve_path=False),
 )
 @click.option("-u", "--update", is_flag=True, help="Update reference outputs.")
@@ -156,7 +177,17 @@ def cli(
     verbose: bool,
     all_projects: bool,
 ) -> int:
-    """Execute tenzir-test scenarios."""
+    """Execute test scenarios and compare output against baselines.
+
+    Discovers and runs tests under the project root, comparing actual output
+    against reference .txt files. Use --update to regenerate baselines.
+
+    \b
+    TEST paths can be:
+      - Individual test files (e.g., tests/basic.tql)
+      - Directories to run all tests within (e.g., tests/alerts/)
+      - Omitted to run all discovered tests in the project
+    """
 
     package_paths: list[Path] = []
     for entry in package_dirs:
