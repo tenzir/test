@@ -10,4 +10,4 @@ created: 2026-02-02T16:39:09.760492Z
 
 The help text for the `tenzir-test` command now provides more context and guidance.
 
-The command description now explains the baseline comparison behavior and shows how to regenerate baselines with the `--update` flag. The help now includes common usage examples and a link to the full documentation at <https://docs.tenzir.com/reference/test-framework/>.
+The command description now explains the baseline comparison behavior and shows how to regenerate baselines with the `--update` flag.
