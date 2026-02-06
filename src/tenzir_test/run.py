@@ -3862,23 +3862,15 @@ def run_cli(
                 if match_patterns:
                     active_patterns = [p for p in match_patterns if p]
                     if active_patterns:
-                        if selection.run_all:
-                            collected_paths = _filter_paths_by_patterns(
-                                collected_paths,
-                                active_patterns,
-                                project_root=selection.root,
-                            )
-                        else:
-                            all_project_paths: set[Path] = set()
-                            for tests_dir in _iter_project_test_directories(selection.root):
-                                for test_path in collect_all_tests(tests_dir):
-                                    all_project_paths.add(test_path.resolve())
-                            pattern_matched = _filter_paths_by_patterns(
-                                all_project_paths,
-                                active_patterns,
-                                project_root=selection.root,
-                            )
-                            collected_paths |= pattern_matched
+                        # Filter collected tests to those matching the
+                        # patterns.  When path args are given this is an
+                        # intersection; without path args it filters all
+                        # discovered tests.
+                        collected_paths = _filter_paths_by_patterns(
+                            collected_paths,
+                            active_patterns,
+                            project_root=selection.root,
+                        )
                         collected_paths = _expand_suites(collected_paths)
                         if not collected_paths:
                             print(

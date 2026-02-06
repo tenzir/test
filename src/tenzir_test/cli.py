@@ -35,14 +35,14 @@ def _normalize_exit_code(value: object) -> int:
     context_settings={"help_option_names": ["-h", "--help"]},
     epilog="""\
 Examples:
-  tenzir-test                             Run all tests in the project
-  tenzir-test tests/alerts/               Run all tests in a directory
-  tenzir-test tests/basic.tql             Run a specific test file
-  tenzir-test -m '*context*'              Run tests matching a name pattern
-  tenzir-test -m '*create*' -m '*update*' Run tests matching either pattern
-  tenzir-test tests/foo.tql -m '*bar*'    Merge path and pattern selections
-  tenzir-test -u tests/new.tql            Run test and update its baseline
-  tenzir-test -p -k tests/debug/          Debug with output streaming and kept temps
+  tenzir-test                          Run all tests in the project
+  tenzir-test tests/alerts/            Run all tests in a directory
+  tenzir-test tests/basic.tql          Run a specific test file
+  tenzir-test -m '*ctx*'               Run tests matching a name pattern
+  tenzir-test -m '*add*' -m '*del*'    Run tests matching either pattern
+  tenzir-test tests/ctx/ -m '*create*' Filter a directory by pattern
+  tenzir-test -u tests/new.tql         Run test and update its baseline
+  tenzir-test -p -k tests/debug/       Debug with output streaming and kept temps
 
 Documentation: https://docs.tenzir.com/reference/test-framework/
 """,
@@ -166,7 +166,7 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     help=(
         "Run tests whose relative path matches a glob pattern (fnmatch syntax). "
         "Repeatable; tests matching any pattern are selected. "
-        "Combined with TEST paths, both selections are merged."
+        "Combined with TEST paths, only tests matching both are run."
     ),
 )
 @click.pass_context
@@ -206,7 +206,8 @@ def cli(
 
     Use -m/--match to select tests by name pattern (fnmatch glob syntax).
     Patterns match against relative paths shown in test output.
-    When both TEST paths and -m patterns are given, their selections are merged.
+    When both TEST paths and -m patterns are given, only tests matching both
+    are run (intersection).
     """
 
     package_paths: list[Path] = []
