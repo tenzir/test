@@ -1,0 +1,5 @@
+created: 2026-02-06
+title: Simpler Substring Matching
+intro: >-
+  This patch release improves the `-m`/`--match` flag with automatic substring matching
+  and centralizes skip handling in the engine for more consistent test reporting.
