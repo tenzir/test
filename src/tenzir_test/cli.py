@@ -38,9 +38,9 @@ Examples:
   tenzir-test                          Run all tests in the project
   tenzir-test tests/alerts/            Run all tests in a directory
   tenzir-test tests/basic.tql          Run a specific test file
-  tenzir-test -m '*ctx*'               Run tests matching a name pattern
+  tenzir-test -m '*ctx*'               Run tests matching a path pattern
   tenzir-test -m '*add*' -m '*del*'    Run tests matching either pattern
-  tenzir-test tests/ctx/ -m '*create*' Filter a directory by pattern
+  tenzir-test tests/ctx/ -m '*create*' Intersect directory with pattern
   tenzir-test -u tests/new.tql         Run test and update its baseline
   tenzir-test -p -k tests/debug/       Debug with output streaming and kept temps
 
@@ -165,8 +165,12 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     type=str,
     help=(
         "Run tests whose relative path matches a glob pattern (fnmatch syntax). "
+        "Useful for selecting tests by name across different directories. "
         "Repeatable; tests matching any pattern are selected. "
-        "Combined with TEST paths, only tests matching both are run."
+        "If TEST paths are also given, only tests matching both the path and "
+        "pattern are run (intersection). "
+        "Note: if a matched test belongs to a suite (configured via test.yaml), "
+        "all tests in that suite are included automatically."
     ),
 )
 @click.pass_context
@@ -204,10 +208,12 @@ def cli(
       - Directories to run all tests within (e.g., tests/alerts/)
       - Omitted to run all discovered tests in the project
 
-    Use -m/--match to select tests by name pattern (fnmatch glob syntax).
+    Use -m/--match to select tests by glob pattern (fnmatch syntax).
     Patterns match against relative paths shown in test output.
     When both TEST paths and -m patterns are given, only tests matching both
-    are run (intersection).
+    are run (intersection). Empty pattern strings are silently ignored.
+    If a matched test belongs to a suite (configured via test.yaml), all
+    tests in that suite are included automatically.
     """
 
     package_paths: list[Path] = []

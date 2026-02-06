@@ -9,6 +9,7 @@ import contextlib
 import dataclasses
 import difflib
 import enum
+import fnmatch
 import importlib.util
 import logging
 import os
@@ -3557,20 +3558,26 @@ def _filter_paths_by_patterns(
     *,
     project_root: Path,
 ) -> set[Path]:
-    """Return the subset of *paths* whose relative POSIX name matches any pattern."""
-    import fnmatch as _fnmatch
+    """Return the subset of *paths* whose relative POSIX name matches any pattern.
 
+    Paths are resolved and converted to forward-slash (POSIX) format relative
+    to *project_root* before matching.  Matching is case-sensitive
+    (``fnmatch.fnmatchcase``).  Empty or whitespace-only patterns are silently
+    skipped.  A path is included if it matches **any** non-empty pattern (OR
+    semantics).
+    """
     matched: set[Path] = set()
     resolved_root = project_root.resolve()
     for path in paths:
         try:
             rel = path.resolve().relative_to(resolved_root).as_posix()
         except ValueError:
+            _CLI_LOGGER.debug("skipping path %s outside project root %s", path, resolved_root)
             continue
         for pattern in patterns:
-            if not pattern:
+            if not pattern or not pattern.strip():
                 continue
-            if _fnmatch.fnmatchcase(rel, pattern):
+            if fnmatch.fnmatchcase(rel, pattern):
                 matched.add(path)
                 break
     return matched
@@ -3621,7 +3628,10 @@ def run_cli(
         verbose: Print individual test results (pass/skip) as they complete.
             When False (default), only failures are printed during execution.
         match_patterns: Glob patterns (fnmatch syntax) matched against relative
-            test paths.  Tests matching any pattern are selected.
+            test paths.  Tests matching any pattern are selected.  When path
+            arguments are also provided via *tests*, only tests matching both
+            are run (intersection).  Empty or whitespace-only patterns are
+            silently ignored.
     """
     from tenzir_test.engine import state as engine_state
 
@@ -3859,24 +3869,28 @@ def run_cli(
                     else:
                         raise HarnessError(f"error: `{test}` is neither a file nor a directory")
 
-                if match_patterns:
-                    active_patterns = [p for p in match_patterns if p]
-                    if active_patterns:
-                        # Filter collected tests to those matching the
-                        # patterns.  When path args are given this is an
-                        # intersection; without path args it filters all
-                        # discovered tests.
-                        collected_paths = _filter_paths_by_patterns(
-                            collected_paths,
-                            active_patterns,
-                            project_root=selection.root,
-                        )
-                        collected_paths = _expand_suites(collected_paths)
-                        if not collected_paths:
+                active_patterns = [p.strip() for p in match_patterns if p and p.strip()]
+                if active_patterns:
+                    # Filter collected tests to those matching any
+                    # pattern.  This acts as an intersection when path
+                    # args were given (since collected_paths was
+                    # pre-populated above), or filters all discovered
+                    # tests when no paths were specified.
+                    collected_paths = _filter_paths_by_patterns(
+                        collected_paths,
+                        active_patterns,
+                        project_root=selection.root,
+                    )
+                    collected_paths = _expand_suites(collected_paths)
+                    if not collected_paths:
+                        pattern_list = ", ".join(repr(p) for p in active_patterns)
+                        if not selection.run_all:
                             print(
-                                f"{INFO} no tests matched pattern(s): "
-                                + ", ".join(repr(p) for p in active_patterns)
+                                f"{INFO} no tests matched pattern(s) {pattern_list}"
+                                f" within the selected paths"
                             )
+                        else:
+                            print(f"{INFO} no tests matched pattern(s): {pattern_list}")
 
                 if interrupt_requested():
                     break
@@ -4074,7 +4088,10 @@ def execute(
         verbose: Print individual test results (pass/skip) as they complete.
             When False (default), only failures are printed during execution.
         match_patterns: Glob patterns (fnmatch syntax) matched against relative
-            test paths.  Tests matching any pattern are selected.
+            test paths.  Tests matching any pattern are selected.  When path
+            arguments are also provided via *tests*, only tests matching both
+            are run (intersection).  Empty or whitespace-only patterns are
+            silently ignored.
     """
     resolved_jobs = jobs if jobs is not None else get_default_jobs()
     return run_cli(
