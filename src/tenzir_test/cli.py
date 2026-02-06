@@ -164,9 +164,10 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     multiple=True,
     type=str,
     help=(
-        "Run tests whose relative path matches a glob pattern (fnmatch syntax). "
-        "Useful for selecting tests by name across different directories. "
-        "Repeatable; tests matching any pattern are selected. "
+        "Run tests whose relative path matches a substring or glob pattern. "
+        "Bare strings match as substrings (e.g. 'mysql' matches any path "
+        "containing 'mysql'). Glob metacharacters (*, ?, [) trigger fnmatch "
+        "mode. Repeatable; tests matching any pattern are selected. "
         "If TEST paths are also given, only tests matching both the path and "
         "pattern are run (intersection). "
         "Note: if a matched test belongs to a suite (configured via test.yaml), "
@@ -208,8 +209,9 @@ def cli(
       - Directories to run all tests within (e.g., tests/alerts/)
       - Omitted to run all discovered tests in the project
 
-    Use -m/--match to select tests by glob pattern (fnmatch syntax).
-    Patterns match against relative paths shown in test output.
+    Use -m/--match to select tests by substring or glob pattern.
+    Bare strings match as substrings; glob metacharacters (*, ?, [) trigger
+    fnmatch mode. Patterns match against relative paths shown in test output.
     When both TEST paths and -m patterns are given, only tests matching both
     are run (intersection). Empty pattern strings are silently ignored.
     If a matched test belongs to a suite (configured via test.yaml), all

@@ -3779,6 +3779,20 @@ def collect_all_tests(directory: Path) -> Iterator[Path]:
             yield candidate
 
 
+_FNMATCH_META = set("*?[")
+
+
+def _normalize_pattern(pattern: str) -> str:
+    """Auto-wrap bare strings in ``*…*`` so they act as substring matches.
+
+    Patterns that already contain fnmatch metacharacters (``*``, ``?``, ``[``)
+    are returned unchanged.
+    """
+    if not _FNMATCH_META.intersection(pattern):
+        return f"*{pattern}*"
+    return pattern
+
+
 def _filter_paths_by_patterns(
     paths: Iterable[Path],
     patterns: Sequence[str],
@@ -3792,6 +3806,9 @@ def _filter_paths_by_patterns(
     (``fnmatch.fnmatchcase``).  Empty or whitespace-only patterns are silently
     skipped.  A path is included if it matches **any** non-empty pattern (OR
     semantics).
+
+    Bare strings without glob metacharacters (``*``, ``?``, ``[``) are
+    automatically treated as substring matches by wrapping them in ``*…*``.
     """
     matched: set[Path] = set()
     resolved_root = project_root.resolve()
@@ -3804,7 +3821,7 @@ def _filter_paths_by_patterns(
         for pattern in patterns:
             if not pattern or not pattern.strip():
                 continue
-            if fnmatch.fnmatchcase(rel, pattern):
+            if fnmatch.fnmatchcase(rel, _normalize_pattern(pattern)):
                 matched.add(path)
                 break
     return matched
@@ -3854,11 +3871,12 @@ def run_cli(
     Args:
         verbose: Print individual test results (pass/skip) as they complete.
             When False (default), only failures are printed during execution.
-        match_patterns: Glob patterns (fnmatch syntax) matched against relative
-            test paths.  Tests matching any pattern are selected.  When path
-            arguments are also provided via *tests*, only tests matching both
-            are run (intersection).  Empty or whitespace-only patterns are
-            silently ignored.
+        match_patterns: Substring or glob patterns matched against relative
+            test paths.  Bare strings without glob metacharacters (``*``,
+            ``?``, ``[``) are treated as substring matches.  Tests matching
+            any pattern are selected.  When path arguments are also provided
+            via *tests*, only tests matching both are run (intersection).
+            Empty or whitespace-only patterns are silently ignored.
     """
     from tenzir_test.engine import state as engine_state
 
@@ -4314,11 +4332,12 @@ def execute(
     Args:
         verbose: Print individual test results (pass/skip) as they complete.
             When False (default), only failures are printed during execution.
-        match_patterns: Glob patterns (fnmatch syntax) matched against relative
-            test paths.  Tests matching any pattern are selected.  When path
-            arguments are also provided via *tests*, only tests matching both
-            are run (intersection).  Empty or whitespace-only patterns are
-            silently ignored.
+        match_patterns: Substring or glob patterns matched against relative
+            test paths.  Bare strings without glob metacharacters (``*``,
+            ``?``, ``[``) are treated as substring matches.  Tests matching
+            any pattern are selected.  When path arguments are also provided
+            via *tests*, only tests matching both are run (intersection).
+            Empty or whitespace-only patterns are silently ignored.
     """
     resolved_jobs = jobs if jobs is not None else get_default_jobs()
     return run_cli(
