@@ -1,0 +1,5 @@
+created: 2026-02-06
+title: Name-Based Test Selection
+intro: >-
+  This release adds support for selecting tests by name using glob patterns via the
+  new `-m`/`--match` CLI option.
