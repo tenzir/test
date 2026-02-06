@@ -2431,6 +2431,45 @@ class TestFilterPathsByPatterns:
         result = run._filter_paths_by_patterns({symlink_test}, ["*common*"], project_root=root)
         assert result == {symlink_test}
 
+    def test_bare_substring_match(self, tmp_path: Path) -> None:
+        """A bare string without glob metacharacters matches as a substring."""
+        root = tmp_path / "project"
+        tests_dir = root / "tests" / "mysql"
+        tests_dir.mkdir(parents=True)
+        connect = tests_dir / "connect.tql"
+        connect.touch()
+
+        result = run._filter_paths_by_patterns({connect}, ["mysql"], project_root=root)
+        assert result == {connect}
+
+    def test_bare_substring_case_sensitive(self, tmp_path: Path) -> None:
+        """Bare substring matching is case-sensitive."""
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        mysql = tests_dir / "MySQL.tql"
+        mysql.touch()
+
+        result = run._filter_paths_by_patterns({mysql}, ["mysql"], project_root=root)
+        assert result == set()
+
+        result = run._filter_paths_by_patterns({mysql}, ["MySQL"], project_root=root)
+        assert result == {mysql}
+
+    def test_glob_metacharacters_not_double_wrapped(self, tmp_path: Path) -> None:
+        """Patterns with glob metacharacters are used as-is (no *…* wrapping)."""
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        foo = tests_dir / "foo.tql"
+        foobar = tests_dir / "foobar.tql"
+        for f in (foo, foobar):
+            f.touch()
+
+        # '*foo.tql' should match foo.tql but not foobar.tql
+        result = run._filter_paths_by_patterns({foo, foobar}, ["*foo.tql"], project_root=root)
+        assert result == {foo}
+
 
 # Tests for _expand_suites
 
