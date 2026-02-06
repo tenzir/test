@@ -16,7 +16,7 @@ from tenzir_test.fixtures import FixtureUnavailable, fixture
 
 @fixture()
 def container() -> Iterator[dict[str, str]]:
-    binary = shutil.which("container-runtime-example")
-    if binary is None:
+    runtime_path = shutil.which("container-runtime-example")
+    if runtime_path is None:
         raise FixtureUnavailable("container-runtime-example not found")
-    yield {"CONTAINER_RUNTIME": binary}
+    yield {"CONTAINER_RUNTIME": runtime_path}
