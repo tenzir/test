@@ -9,6 +9,7 @@ import contextlib
 import dataclasses
 import difflib
 import enum
+import fnmatch
 import importlib.util
 import logging
 import os
@@ -3551,6 +3552,53 @@ def collect_all_tests(directory: Path) -> Iterator[Path]:
             yield candidate
 
 
+def _filter_paths_by_patterns(
+    paths: Iterable[Path],
+    patterns: Sequence[str],
+    *,
+    project_root: Path,
+) -> set[Path]:
+    """Return the subset of *paths* whose relative POSIX name matches any pattern.
+
+    Paths are resolved and converted to forward-slash (POSIX) format relative
+    to *project_root* before matching.  Matching is case-sensitive
+    (``fnmatch.fnmatchcase``).  Empty or whitespace-only patterns are silently
+    skipped.  A path is included if it matches **any** non-empty pattern (OR
+    semantics).
+    """
+    matched: set[Path] = set()
+    resolved_root = project_root.resolve()
+    for path in paths:
+        try:
+            rel = path.resolve().relative_to(resolved_root).as_posix()
+        except ValueError:
+            _CLI_LOGGER.debug("skipping path %s outside project root %s", path, resolved_root)
+            continue
+        for pattern in patterns:
+            if not pattern or not pattern.strip():
+                continue
+            if fnmatch.fnmatchcase(rel, pattern):
+                matched.add(path)
+                break
+    return matched
+
+
+def _expand_suites(paths: set[Path]) -> set[Path]:
+    """If any test in a suite was selected, include all tests from that suite."""
+    suite_dirs: set[Path] = set()
+    for path in paths:
+        suite_info = _resolve_suite_for_test(path)
+        if suite_info is not None:
+            suite_dirs.add(suite_info.directory)
+    if not suite_dirs:
+        return paths
+    expanded = set(paths)
+    for suite_dir in suite_dirs:
+        for test_path in collect_all_tests(suite_dir):
+            expanded.add(test_path.resolve())
+    return expanded
+
+
 def run_cli(
     *,
     root: Path | None,
@@ -3572,12 +3620,18 @@ def run_cli(
     verbose: bool = False,
     jobs_overridden: bool = False,
     all_projects: bool = False,
+    match_patterns: Sequence[str] = (),
 ) -> ExecutionResult:
     """Execute the harness and return a structured result for library consumers.
 
     Args:
         verbose: Print individual test results (pass/skip) as they complete.
             When False (default), only failures are printed during execution.
+        match_patterns: Glob patterns (fnmatch syntax) matched against relative
+            test paths.  Tests matching any pattern are selected.  When path
+            arguments are also provided via *tests*, only tests matching both
+            are run (intersection).  Empty or whitespace-only patterns are
+            silently ignored.
     """
     from tenzir_test.engine import state as engine_state
 
@@ -3815,6 +3869,29 @@ def run_cli(
                     else:
                         raise HarnessError(f"error: `{test}` is neither a file nor a directory")
 
+                active_patterns = [p.strip() for p in match_patterns if p and p.strip()]
+                if active_patterns:
+                    # Filter collected tests to those matching any
+                    # pattern.  This acts as an intersection when path
+                    # args were given (since collected_paths was
+                    # pre-populated above), or filters all discovered
+                    # tests when no paths were specified.
+                    collected_paths = _filter_paths_by_patterns(
+                        collected_paths,
+                        active_patterns,
+                        project_root=selection.root,
+                    )
+                    collected_paths = _expand_suites(collected_paths)
+                    if not collected_paths:
+                        pattern_list = ", ".join(repr(p) for p in active_patterns)
+                        if not selection.run_all:
+                            print(
+                                f"{INFO} no tests matched pattern(s) {pattern_list}"
+                                f" within the selected paths"
+                            )
+                        else:
+                            print(f"{INFO} no tests matched pattern(s): {pattern_list}")
+
                 if interrupt_requested():
                     break
 
@@ -4003,12 +4080,18 @@ def execute(
     verbose: bool = False,
     jobs_overridden: bool = False,
     all_projects: bool = False,
+    match_patterns: Sequence[str] = (),
 ) -> ExecutionResult:
     """Library-oriented wrapper around `run_cli` with defaulted parameters.
 
     Args:
         verbose: Print individual test results (pass/skip) as they complete.
             When False (default), only failures are printed during execution.
+        match_patterns: Glob patterns (fnmatch syntax) matched against relative
+            test paths.  Tests matching any pattern are selected.  When path
+            arguments are also provided via *tests*, only tests matching both
+            are run (intersection).  Empty or whitespace-only patterns are
+            silently ignored.
     """
     resolved_jobs = jobs if jobs is not None else get_default_jobs()
     return run_cli(
@@ -4030,6 +4113,7 @@ def execute(
         verbose=verbose,
         jobs_overridden=jobs_overridden,
         all_projects=all_projects,
+        match_patterns=match_patterns,
     )
 
 

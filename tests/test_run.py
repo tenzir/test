@@ -2248,3 +2248,566 @@ class TestPathValidation:
             assert env["TENZIR_STDIN"] == str(inside_file.resolve())
         finally:
             run.apply_settings(original_settings)
+
+
+# Tests for _filter_paths_by_patterns
+
+
+class TestFilterPathsByPatterns:
+    def test_basic_matching(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        context_create = tests_dir / "context-create.tql"
+        context_update = tests_dir / "context-update.tql"
+        non_matching = tests_dir / "other.tql"
+        for f in (context_create, context_update, non_matching):
+            f.touch()
+
+        result = run._filter_paths_by_patterns(
+            {context_create, context_update, non_matching},
+            ["*context*"],
+            project_root=root,
+        )
+        assert result == {context_create, context_update}
+
+    def test_or_semantics(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        create = tests_dir / "create.tql"
+        update = tests_dir / "update.tql"
+        delete = tests_dir / "delete.tql"
+        for f in (create, update, delete):
+            f.touch()
+
+        result = run._filter_paths_by_patterns(
+            {create, update, delete}, ["*create*", "*delete*"], project_root=root
+        )
+        assert result == {create, delete}
+
+    def test_no_match(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        foo = tests_dir / "foo.tql"
+        foo.touch()
+
+        result = run._filter_paths_by_patterns({foo}, ["*nonexistent*"], project_root=root)
+        assert result == set()
+
+    def test_empty_patterns_skipped(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        foo = tests_dir / "foo.tql"
+        foo.touch()
+
+        result = run._filter_paths_by_patterns({foo}, ["", "  ", "*foo*"], project_root=root)
+        assert result == {foo}
+
+    def test_case_sensitive(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        capitalized_foo = tests_dir / "Foo.tql"
+        capitalized_foo.touch()
+
+        result = run._filter_paths_by_patterns({capitalized_foo}, ["*foo*"], project_root=root)
+        assert result == set()
+
+        result = run._filter_paths_by_patterns({capitalized_foo}, ["*Foo*"], project_root=root)
+        assert result == {capitalized_foo}
+
+    def test_question_mark_wildcard(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        single_digit = tests_dir / "test1.tql"
+        single_digit_2 = tests_dir / "test2.tql"
+        double_digit = tests_dir / "test10.tql"
+        for f in (single_digit, single_digit_2, double_digit):
+            f.touch()
+
+        result = run._filter_paths_by_patterns(
+            {single_digit, single_digit_2, double_digit},
+            ["*test?.tql"],
+            project_root=root,
+        )
+        # ? matches exactly one character, so test10.tql should not match
+        assert result == {single_digit, single_digit_2}
+
+    def test_bracket_expression(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        test0 = tests_dir / "test0.tql"
+        test1 = tests_dir / "test1.tql"
+        test2 = tests_dir / "test2.tql"
+        test_x = tests_dir / "testX.tql"
+        for f in (test0, test1, test2, test_x):
+            f.touch()
+
+        result = run._filter_paths_by_patterns(
+            {test0, test1, test2, test_x}, ["*test[12].tql"], project_root=root
+        )
+        # [12] matches '1' or '2' only
+        assert result == {test1, test2}
+
+    def test_negated_bracket_expression(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        test0 = tests_dir / "test0.tql"
+        test1 = tests_dir / "test1.tql"
+        test2 = tests_dir / "test2.tql"
+        for f in (test0, test1, test2):
+            f.touch()
+
+        result = run._filter_paths_by_patterns(
+            {test0, test1, test2}, ["*test[!0].tql"], project_root=root
+        )
+        # [!0] matches any single character except '0'
+        assert result == {test1, test2}
+
+    def test_bracket_range(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        files = [tests_dir / f"test{i}.tql" for i in range(5)]
+        for f in files:
+            f.touch()
+
+        result = run._filter_paths_by_patterns(set(files), ["*test[1-3].tql"], project_root=root)
+        # [1-3] matches '1', '2', or '3'
+        assert result == {files[1], files[2], files[3]}
+
+    def test_symlink_outside_root_excluded(self, tmp_path: Path) -> None:
+        """A symlink resolving outside the project root is silently excluded."""
+        import os
+
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+
+        # Create a real test file inside the project
+        real_test = tests_dir / "legit.tql"
+        real_test.touch()
+
+        # Create a file outside the project
+        outside_file = tmp_path / "outside" / "sneaky.tql"
+        outside_file.parent.mkdir(parents=True)
+        outside_file.touch()
+
+        # Create a symlink inside the project that points outside
+        symlink_test = tests_dir / "sneaky.tql"
+        os.symlink(str(outside_file), str(symlink_test))
+
+        # The symlink matches the pattern but resolves outside the root,
+        # so _filter_paths_by_patterns must exclude it.
+        result = run._filter_paths_by_patterns(
+            {real_test, symlink_test}, ["*sneaky*"], project_root=root
+        )
+        assert result == set()
+
+    def test_symlink_inside_root_included(self, tmp_path: Path) -> None:
+        """A symlink resolving within the project root is included normally."""
+        import os
+
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        shared_dir = root / "shared"
+        tests_dir.mkdir(parents=True)
+        shared_dir.mkdir(parents=True)
+
+        # Create a real file inside the project
+        shared_file = shared_dir / "common.tql"
+        shared_file.touch()
+
+        # Create a symlink inside the project pointing to another file inside the project
+        symlink_test = tests_dir / "common.tql"
+        os.symlink(str(shared_file), str(symlink_test))
+
+        result = run._filter_paths_by_patterns({symlink_test}, ["*common*"], project_root=root)
+        assert result == {symlink_test}
+
+
+# Tests for _expand_suites
+
+
+class TestExpandSuites:
+    def test_partial_suite_match_expands_to_full_suite(self, tmp_path: Path) -> None:
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        suite_dir = tmp_path / "tests" / "context"
+        suite_dir.mkdir(parents=True)
+        (suite_dir / "test.yaml").write_text("suite: context\n", encoding="utf-8")
+        suite_create = suite_dir / "01-create.tql"
+        suite_update = suite_dir / "02-update.tql"
+        suite_delete = suite_dir / "03-delete.tql"
+        for f in (suite_create, suite_update, suite_delete):
+            f.write_text("version\n", encoding="utf-8")
+
+        run._clear_directory_config_cache()
+        run.refresh_runner_metadata()
+
+        try:
+            result = run._expand_suites({suite_create.resolve()})
+            resolved = {p.resolve() for p in result}
+            assert suite_create.resolve() in resolved
+            assert suite_update.resolve() in resolved
+            assert suite_delete.resolve() in resolved
+        finally:
+            run._clear_directory_config_cache()
+            run.apply_settings(original_settings)
+
+    def test_non_suite_tests_unchanged(self, tmp_path: Path) -> None:
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir(parents=True)
+        standalone = tests_dir / "standalone.tql"
+        standalone.write_text("version\n", encoding="utf-8")
+
+        run._clear_directory_config_cache()
+
+        try:
+            result = run._expand_suites({standalone.resolve()})
+            assert result == {standalone.resolve()}
+        finally:
+            run._clear_directory_config_cache()
+            run.apply_settings(original_settings)
+
+    def test_pattern_filtered_non_suite_paths_unchanged(self, tmp_path: Path) -> None:
+        """Matching non-suite tests by pattern and expanding keeps the set unchanged."""
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        standalone_dir = tmp_path / "tests" / "standalone"
+        standalone_dir.mkdir(parents=True)
+        foo = standalone_dir / "foo.tql"
+        bar = standalone_dir / "bar.tql"
+        for f in (foo, bar):
+            f.write_text("version\n", encoding="utf-8")
+
+        run._clear_directory_config_cache()
+
+        try:
+            # Filter by pattern so only foo.tql is selected.
+            filtered = run._filter_paths_by_patterns(
+                [foo.resolve(), bar.resolve()],
+                ["*foo*"],
+                project_root=tmp_path,
+            )
+            assert filtered == {foo.resolve()}
+
+            # Expanding suites should return the same set since there is no suite.
+            result = run._expand_suites(filtered)
+            assert result == {foo.resolve()}
+        finally:
+            run._clear_directory_config_cache()
+            run.apply_settings(original_settings)
+
+
+def _make_project(tmp_path: Path) -> dict[str, Path]:
+    """Create a minimal project with test files in multiple directories.
+
+    Returns a dict mapping short names to the created .tql file paths.
+    """
+    project = tmp_path / "project"
+    tests_dir = project / "tests"
+    ctx_dir = tests_dir / "ctx"
+    other_dir = tests_dir / "other"
+    ctx_dir.mkdir(parents=True)
+    other_dir.mkdir(parents=True)
+    # Create ancillary directories so _is_project_root succeeds.
+    (project / "fixtures").mkdir(parents=True, exist_ok=True)
+    (project / "fixtures" / "__init__.py").write_text("", encoding="utf-8")
+    (project / "runners").mkdir(parents=True, exist_ok=True)
+    (project / "runners" / "__init__.py").write_text("", encoding="utf-8")
+    (project / "inputs").mkdir(parents=True, exist_ok=True)
+
+    files: dict[str, Path] = {}
+    for name, parent in [
+        ("ctx_create", ctx_dir),
+        ("ctx_delete", ctx_dir),
+        ("other_create", other_dir),
+    ]:
+        tql = parent / f"{name.split('_', 1)[1]}.tql"
+        tql.write_text("version\n", encoding="utf-8")
+        files[name] = tql
+    return {"root": project, **files}
+
+
+def _make_satellite_project(parent: Path, name: str, test_names: list[str]) -> Path:
+    """Create a minimal satellite project under *parent* with the given test files.
+
+    Returns the satellite project root.
+    """
+    satellite = parent / name
+    tests_dir = satellite / "tests"
+    tests_dir.mkdir(parents=True)
+    for test_name in test_names:
+        tql = tests_dir / f"{test_name}.tql"
+        tql.write_text("version\n", encoding="utf-8")
+    return satellite
+
+
+def _run_cli_kwargs(
+    root: Path,
+    *,
+    tests: list[Path] | None = None,
+    match_patterns: tuple[str, ...] = (),
+    all_projects: bool = False,
+) -> dict:
+    """Return the full set of keyword arguments for ``run.run_cli``."""
+    return dict(
+        root=root,
+        tests=tests or [],
+        update=False,
+        debug=False,
+        purge=False,
+        coverage=False,
+        coverage_source_dir=None,
+        runner_summary=False,
+        fixture_summary=False,
+        show_summary=False,
+        show_diff_output=True,
+        show_diff_stat=True,
+        jobs=1,
+        keep_tmp_dirs=False,
+        passthrough=False,
+        jobs_overridden=False,
+        all_projects=all_projects,
+        match_patterns=match_patterns,
+    )
+
+
+class TestMatchPatternIntegration:
+    """Integration tests for -m/--match pattern filtering through ``run_cli``."""
+
+    @staticmethod
+    def _setup_project(tmp_path: Path) -> dict[str, Path]:
+        info = _make_project(tmp_path)
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=info["root"],
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+        run.refresh_runner_metadata()
+        info["_original_settings"] = original_settings
+        return info
+
+    @staticmethod
+    def _teardown(info: dict) -> None:
+        run._clear_directory_config_cache()
+        run.apply_settings(info["_original_settings"])
+
+    # -- intersection: path args + match patterns -------------------------
+
+    def test_intersection_filters_to_matching_subset(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When both TEST paths and -m patterns are given, only tests matching
+        both are collected (intersection semantics).
+
+        The ctx/ directory contains create.tql and delete.tql.  Intersecting
+        with ``*create*`` should collect only create.tql (queue_size == 1).
+        """
+        info = self._setup_project(tmp_path)
+        ctx_dir = info["root"] / "tests" / "ctx"
+        try:
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    info["root"],
+                    tests=[ctx_dir],
+                    match_patterns=("*create*",),
+                )
+            )
+            # Exactly one test should have been collected: ctx/create.tql.
+            # ctx/delete.tql is in the path but does not match the pattern;
+            # other/create.tql matches the pattern but is outside the path.
+            assert result.queue_size == 1
+            assert result.summary.total == 1
+        finally:
+            self._teardown(info)
+
+    def test_intersection_no_match_reports_empty(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When the intersection of path args and pattern is empty, no tests
+        are collected and the user sees an informative message that clarifies
+        the intersection semantics."""
+        info = self._setup_project(tmp_path)
+        ctx_dir = info["root"] / "tests" / "ctx"
+        try:
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    info["root"],
+                    tests=[ctx_dir],
+                    match_patterns=("*nonexistent*",),
+                )
+            )
+            assert result.queue_size == 0
+            output = capsys.readouterr().out
+            assert "no tests matched pattern(s)" in output
+            assert "within the selected paths" in output
+        finally:
+            self._teardown(info)
+
+    # -- pattern-only: -m without TEST paths ------------------------------
+
+    def test_pattern_only_discovers_and_filters(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Using only -m (no TEST paths) discovers all tests and filters them
+        by the pattern.
+
+        The project has create.tql in both ctx/ and other/, plus delete.tql
+        in ctx/.  Pattern ``*create*`` should collect the two create files
+        (queue_size == 2).
+        """
+        info = self._setup_project(tmp_path)
+        try:
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    info["root"],
+                    tests=[],
+                    match_patterns=("*create*",),
+                )
+            )
+            # Both create.tql files should be collected; delete.tql excluded.
+            assert result.queue_size == 2
+            assert result.summary.total == 2
+        finally:
+            self._teardown(info)
+
+    def test_pattern_only_no_match_reports_empty(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When -m is used without TEST paths and no tests match, the user
+        sees the appropriate message without intersection context."""
+        info = self._setup_project(tmp_path)
+        try:
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    info["root"],
+                    tests=[],
+                    match_patterns=("*nonexistent*",),
+                )
+            )
+            assert result.queue_size == 0
+            output = capsys.readouterr().out
+            assert "no tests matched pattern(s):" in output
+            assert "'*nonexistent*'" in output
+            assert "within the selected paths" not in output
+        finally:
+            self._teardown(info)
+
+    # -- multiple projects: match patterns with all_projects ---------------
+
+    def test_match_patterns_across_multiple_projects(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When --all-projects is used with -m patterns, pattern filtering is
+        applied independently to each project.
+
+        Sets up a root project (with ctx/create.tql, ctx/delete.tql,
+        other/create.tql) and a satellite project (with create.tql and
+        list.tql).  Pattern ``*create*`` should collect the two create files
+        from the root AND the one create file from the satellite (total 3).
+        """
+        info = self._setup_project(tmp_path)
+        root = info["root"]
+
+        # Create a satellite project inside the root project directory.
+        _make_satellite_project(root, "satellite", ["create", "list"])
+        monkeypatch.chdir(root)
+
+        try:
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    root,
+                    tests=[Path("satellite")],
+                    match_patterns=("*create*",),
+                    all_projects=True,
+                )
+            )
+            # Root project: ctx/create.tql + other/create.tql = 2 matches.
+            # Satellite:    tests/create.tql = 1 match.
+            # Total across both projects: 3.
+            assert result.queue_size == 3
+            assert result.summary.total == 3
+        finally:
+            self._teardown(info)
+
+    def test_match_patterns_multiple_projects_no_cross_interference(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A pattern that matches tests only in one project does not produce
+        false positives or suppress results in the other project.
+
+        The satellite has a unique test ``deploy.tql`` that does not exist in
+        the root project.  Pattern ``*deploy*`` should collect only that single
+        test from the satellite while the root contributes zero matches.
+        """
+        info = self._setup_project(tmp_path)
+        root = info["root"]
+
+        _make_satellite_project(root, "satellite", ["deploy", "list"])
+        monkeypatch.chdir(root)
+
+        try:
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    root,
+                    tests=[Path("satellite")],
+                    match_patterns=("*deploy*",),
+                    all_projects=True,
+                )
+            )
+            # Root project has no "deploy" test -> 0 matches.
+            # Satellite has tests/deploy.tql -> 1 match.
+            assert result.queue_size == 1
+            assert result.summary.total == 1
+        finally:
+            self._teardown(info)
