@@ -2248,3 +2248,138 @@ class TestPathValidation:
             assert env["TENZIR_STDIN"] == str(inside_file.resolve())
         finally:
             run.apply_settings(original_settings)
+
+
+# Tests for _filter_paths_by_patterns
+
+
+class TestFilterPathsByPatterns:
+    def test_basic_matching(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        a = tests_dir / "context-create.tql"
+        b = tests_dir / "context-update.tql"
+        c = tests_dir / "other.tql"
+        for f in (a, b, c):
+            f.touch()
+
+        result = run._filter_paths_by_patterns({a, b, c}, ["*context*"], project_root=root)
+        assert result == {a, b}
+
+    def test_or_semantics(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        a = tests_dir / "create.tql"
+        b = tests_dir / "update.tql"
+        c = tests_dir / "delete.tql"
+        for f in (a, b, c):
+            f.touch()
+
+        result = run._filter_paths_by_patterns(
+            {a, b, c}, ["*create*", "*delete*"], project_root=root
+        )
+        assert result == {a, c}
+
+    def test_no_match(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        a = tests_dir / "foo.tql"
+        a.touch()
+
+        result = run._filter_paths_by_patterns({a}, ["*nonexistent*"], project_root=root)
+        assert result == set()
+
+    def test_empty_patterns_skipped(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        a = tests_dir / "foo.tql"
+        a.touch()
+
+        result = run._filter_paths_by_patterns({a}, ["", "  ", "*foo*"], project_root=root)
+        assert result == {a}
+
+    def test_case_sensitive(self, tmp_path: Path) -> None:
+        root = tmp_path / "project"
+        tests_dir = root / "tests"
+        tests_dir.mkdir(parents=True)
+        a = tests_dir / "Foo.tql"
+        a.touch()
+
+        result = run._filter_paths_by_patterns({a}, ["*foo*"], project_root=root)
+        assert result == set()
+
+        result = run._filter_paths_by_patterns({a}, ["*Foo*"], project_root=root)
+        assert result == {a}
+
+
+# Tests for _expand_suites
+
+
+class TestExpandSuites:
+    def test_partial_suite_match_expands_to_full_suite(self, tmp_path: Path) -> None:
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        suite_dir = tmp_path / "tests" / "context"
+        suite_dir.mkdir(parents=True)
+        (suite_dir / "test.yaml").write_text("suite: context\n", encoding="utf-8")
+        a = suite_dir / "01-create.tql"
+        b = suite_dir / "02-update.tql"
+        c = suite_dir / "03-delete.tql"
+        for f in (a, b, c):
+            f.write_text("version\n", encoding="utf-8")
+
+        run._clear_directory_config_cache()
+        run.refresh_runner_metadata()
+
+        try:
+            result = run._expand_suites({a.resolve()})
+            resolved = {p.resolve() for p in result}
+            assert a.resolve() in resolved
+            assert b.resolve() in resolved
+            assert c.resolve() in resolved
+        finally:
+            run._clear_directory_config_cache()
+            run.apply_settings(original_settings)
+
+    def test_non_suite_tests_unchanged(self, tmp_path: Path) -> None:
+        original_settings = config.Settings(
+            root=run.ROOT,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir(parents=True)
+        a = tests_dir / "standalone.tql"
+        a.write_text("version\n", encoding="utf-8")
+
+        run._clear_directory_config_cache()
+
+        try:
+            result = run._expand_suites({a.resolve()})
+            assert result == {a.resolve()}
+        finally:
+            run._clear_directory_config_cache()
+            run.apply_settings(original_settings)

@@ -35,11 +35,14 @@ def _normalize_exit_code(value: object) -> int:
     context_settings={"help_option_names": ["-h", "--help"]},
     epilog="""\
 Examples:
-  tenzir-test                       Run all tests in the project
-  tenzir-test tests/alerts/         Run all tests in a directory
-  tenzir-test tests/basic.tql       Run a specific test file
-  tenzir-test -u tests/new.tql      Run test and update its baseline
-  tenzir-test -p -k tests/debug/    Debug with output streaming and kept temps
+  tenzir-test                             Run all tests in the project
+  tenzir-test tests/alerts/               Run all tests in a directory
+  tenzir-test tests/basic.tql             Run a specific test file
+  tenzir-test -m '*context*'              Run tests matching a name pattern
+  tenzir-test -m '*create*' -m '*update*' Run tests matching either pattern
+  tenzir-test tests/foo.tql -m '*bar*'    Merge path and pattern selections
+  tenzir-test -u tests/new.tql            Run test and update its baseline
+  tenzir-test -p -k tests/debug/          Debug with output streaming and kept temps
 
 Documentation: https://docs.tenzir.com/reference/test-framework/
 """,
@@ -154,6 +157,18 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     is_flag=True,
     help="Run the root project alongside any selected satellites.",
 )
+@click.option(
+    "-m",
+    "--match",
+    "match_patterns",
+    multiple=True,
+    type=str,
+    help=(
+        "Run tests whose relative path matches a glob pattern (fnmatch syntax). "
+        "Repeatable; tests matching any pattern are selected. "
+        "Combined with TEST paths, both selections are merged."
+    ),
+)
 @click.pass_context
 def cli(
     ctx: click.Context,
@@ -161,6 +176,7 @@ def cli(
     root: Path | None,
     package_dirs: tuple[str, ...],
     tests: tuple[Path, ...],
+    match_patterns: tuple[str, ...],
     update: bool,
     debug: bool,
     purge: bool,
@@ -187,6 +203,10 @@ def cli(
       - Individual test files (e.g., tests/basic.tql)
       - Directories to run all tests within (e.g., tests/alerts/)
       - Omitted to run all discovered tests in the project
+
+    Use -m/--match to select tests by name pattern (fnmatch glob syntax).
+    Patterns match against relative paths shown in test output.
+    When both TEST paths and -m patterns are given, their selections are merged.
     """
 
     package_paths: list[Path] = []
@@ -221,6 +241,7 @@ def cli(
             verbose=verbose,
             jobs_overridden=jobs_overridden,
             all_projects=all_projects,
+            match_patterns=list(match_patterns),
         )
     except runtime.HarnessError as exc:
         if exc.show_message and exc.args:
