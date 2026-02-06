@@ -3665,6 +3665,23 @@ class Worker:
                 )
             if suite_fixtures is None:
                 configured_fixtures = config_fixtures
+            skip_cfg = cast(SkipConfig | None, config.get("skip"))
+            if skip_cfg is not None and skip_cfg.is_static:
+                assert skip_cfg.reason is not None
+                outcome = handle_skip(
+                    skip_cfg.reason,
+                    test_path,
+                    update=self._update,
+                    output_ext=getattr(runner, "output_ext", "txt"),
+                )
+                summary.total += 1
+                summary.record_runner_outcome(runner.name, "skipped")
+                if fixtures:
+                    summary.record_fixture_outcome(fixtures, "skipped")
+                summary.skipped += 1
+                summary.skipped_paths.append(rel_path)
+                return False
+            # Conditional skips are suite-level — _run_suite handles them.
         if parse_error is not None:
             message = format_failure_message(parse_error)
             report_failure(test_path, message)

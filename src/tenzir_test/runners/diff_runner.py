@@ -5,10 +5,7 @@ import os
 import typing
 from pathlib import Path
 
-if typing.TYPE_CHECKING:
-    from tenzir_test.run import SkipConfig
-
-from tenzir_test import fixtures as fixture_api  # type: ignore[no-redef]
+from tenzir_test import fixtures as fixture_api
 
 from ._utils import get_run_module
 from .tql_runner import TqlRunner
@@ -23,25 +20,6 @@ class DiffRunner(TqlRunner):
     def run(self, test: Path, update: bool, coverage: bool = False) -> bool | str:
         run_mod = get_run_module()
         test_config = run_mod.parse_test_config(test, coverage=coverage)
-        skip_cfg: SkipConfig | None = test_config.get("skip")
-        if skip_cfg is not None:
-            if skip_cfg.is_static:
-                assert skip_cfg.reason is not None
-                return typing.cast(
-                    bool | str,
-                    run_mod.handle_skip(
-                        skip_cfg.reason,
-                        test,
-                        update=update,
-                        output_ext=self.output_ext,
-                    ),
-                )
-            if skip_cfg.is_conditional:
-                raise ValueError(
-                    f"Conditional 'skip' config (on: fixture-unavailable) "
-                    f"is a suite-level directive and cannot be handled by "
-                    f"individual test runners. Test: {test}"
-                )
 
         inputs_override = typing.cast(str | None, test_config.get("inputs"))
         env, config_args = run_mod.get_test_env_and_config_args(test, inputs=inputs_override)
