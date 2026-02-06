@@ -2760,7 +2760,7 @@ class TestMatchPatternIntegration:
         root = info["root"]
 
         # Create a satellite project inside the root project directory.
-        satellite = _make_satellite_project(root, "satellite", ["create", "list"])
+        _make_satellite_project(root, "satellite", ["create", "list"])
         monkeypatch.chdir(root)
 
         try:
@@ -2793,7 +2793,7 @@ class TestMatchPatternIntegration:
         info = self._setup_project(tmp_path)
         root = info["root"]
 
-        satellite = _make_satellite_project(root, "satellite", ["deploy", "list"])
+        _make_satellite_project(root, "satellite", ["deploy", "list"])
         monkeypatch.chdir(root)
 
         try:
