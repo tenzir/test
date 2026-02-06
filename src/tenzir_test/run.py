@@ -1472,14 +1472,38 @@ def _assign_config_option(
         return
 
     if canonical == "skip":
-        if not isinstance(value, str) or not value.strip():
-            _raise_config_error(
-                location,
-                "'skip' value must be a non-empty string",
-                line_number,
-            )
-        config[canonical] = value
-        return
+        if isinstance(value, str):
+            if not value.strip():
+                _raise_config_error(
+                    location,
+                    "'skip' string value must be non-empty",
+                    line_number,
+                )
+            config[canonical] = value
+            return
+        if isinstance(value, dict):
+            on_value = value.get("on")
+            if on_value != "fixture-unavailable":
+                _raise_config_error(
+                    location,
+                    f"'skip.on' must be 'fixture-unavailable', got '{on_value}'",
+                    line_number,
+                )
+            reason = value.get("reason")
+            if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+                _raise_config_error(
+                    location,
+                    "'skip.reason' must be a non-empty string",
+                    line_number,
+                )
+            config[canonical] = value
+            return
+        _raise_config_error(
+            location,
+            f"'skip' must be a string or mapping {{on: ..., reason: ...}}, "
+            f"got '{type(value).__name__}'",
+            line_number,
+        )
 
     if canonical == "error":
         if isinstance(value, bool):
@@ -3413,6 +3437,39 @@ class Worker:
                     )
                     if interrupted:
                         break
+        except fixtures_impl.FixtureUnavailable as exc:
+            skip_cfg = primary_config.get("skip")
+            if not (isinstance(skip_cfg, dict) and skip_cfg.get("on") == "fixture-unavailable"):
+                raise
+            static_reason = skip_cfg.get("reason")
+            exc_reason = str(exc)
+            if static_reason and exc_reason:
+                reason = f"{static_reason}: {exc_reason}"
+            elif static_reason:
+                reason = static_reason
+            elif exc_reason:
+                reason = exc_reason
+            else:
+                reason = "fixture unavailable"
+            _CLI_LOGGER.warning(
+                "fixture unavailable for suite '%s': %s",
+                suite_item.suite.name,
+                reason,
+            )
+            for test_item in tests:
+                rel_path = _relativize_path(test_item.path)
+                if is_verbose_output():
+                    suite_suffix = _format_suite_suffix()
+                    with stdout_lock:
+                        print(
+                            f"{SKIP} skipped {rel_path}{suite_suffix}: "
+                            f"fixture unavailable: {reason}"
+                        )
+                summary.total += 1
+                summary.skipped += 1
+                summary.skipped_paths.append(rel_path)
+                summary.record_runner_outcome(test_item.runner.name, "skipped")
+                summary.record_fixture_outcome(suite_item.fixtures, "skipped")
         finally:
             _log_suite_event(suite_item.suite, event="teardown", total=total)
             fixtures_impl.pop_context(context_token)

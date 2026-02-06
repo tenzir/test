@@ -14,11 +14,12 @@ class TenzirRunner(TqlRunner):
     def run(self, test: Path, update: bool, coverage: bool = False) -> bool | str:
         run_mod = get_run_module()
         test_config = run_mod.parse_test_config(test, coverage=coverage)
-        if test_config.get("skip"):
+        skip_value = test_config.get("skip")
+        if isinstance(skip_value, str):
             return typing.cast(
                 bool | str,
                 run_mod.handle_skip(
-                    str(test_config["skip"]),
+                    skip_value,
                     test,
                     update=update,
                     output_ext=self.output_ext,
