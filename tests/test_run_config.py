@@ -63,17 +63,18 @@ write_json
 
     config = run.parse_test_config(test_file)
 
-    assert config == {
-        "error": True,
-        "timeout": 90,
-        "runner": "ir",
-        "skip": "reason",
-        "fixtures": tuple(),
-        "inputs": None,
-        "retry": 1,
-        "package_dirs": tuple(),
-        "pre_compare": tuple(),
-    }
+    assert config["error"] is True
+    assert config["timeout"] == 90
+    assert config["runner"] == "ir"
+    skip_cfg = config["skip"]
+    assert isinstance(skip_cfg, run.SkipConfig)
+    assert skip_cfg.is_static
+    assert skip_cfg.reason == "reason"
+    assert config["fixtures"] == tuple()
+    assert config["inputs"] is None
+    assert config["retry"] == 1
+    assert config["package_dirs"] == tuple()
+    assert config["pre_compare"] == tuple()
 
 
 def test_parse_test_config_yaml_frontmatter(tmp_path: Path, configured_root: Path) -> None:
@@ -94,17 +95,18 @@ write_json
 
     config = run.parse_test_config(test_file)
 
-    assert config == {
-        "error": True,
-        "timeout": 75,
-        "runner": "ir",
-        "skip": "maintenance",
-        "fixtures": tuple(),
-        "inputs": None,
-        "retry": 1,
-        "package_dirs": tuple(),
-        "pre_compare": tuple(),
-    }
+    assert config["error"] is True
+    assert config["timeout"] == 75
+    assert config["runner"] == "ir"
+    skip_cfg = config["skip"]
+    assert isinstance(skip_cfg, run.SkipConfig)
+    assert skip_cfg.is_static
+    assert skip_cfg.reason == "maintenance"
+    assert config["fixtures"] == tuple()
+    assert config["inputs"] is None
+    assert config["retry"] == 1
+    assert config["package_dirs"] == tuple()
+    assert config["pre_compare"] == tuple()
 
 
 def test_parse_test_config_allows_fixtures_frontmatter_without_suite(
@@ -834,3 +836,205 @@ write_json
     config = run.parse_test_config(test_file)
 
     assert config["fixtures"] == ("node", "sink")
+
+
+# --- Tests for dict-based skip config validation (TST-2) ---
+
+
+def test_skip_dict_fixture_unavailable_without_reason(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    """Dict skip format with only 'on' field succeeds in directory config."""
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite: demo\nskip:\n  on: fixture-unavailable\nfixtures:\n  - node\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    config = run.parse_test_config(test_file)
+
+    skip_cfg = config["skip"]
+    assert isinstance(skip_cfg, run.SkipConfig)
+    assert skip_cfg.is_conditional
+    assert not skip_cfg.is_static
+    assert skip_cfg.on_fixture_unavailable is True
+    assert skip_cfg.reason is None
+
+
+def test_skip_dict_fixture_unavailable_with_reason(tmp_path: Path, configured_root: Path) -> None:
+    """Dict skip format with 'on' and 'reason' fields succeeds."""
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite: demo\nskip:\n  on: fixture-unavailable\n  reason: docker not found\nfixtures:\n  - node\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    config = run.parse_test_config(test_file)
+
+    skip_cfg = config["skip"]
+    assert isinstance(skip_cfg, run.SkipConfig)
+    assert skip_cfg.is_conditional
+    assert skip_cfg.on_fixture_unavailable is True
+    assert skip_cfg.reason == "docker not found"
+
+
+def test_skip_dict_rejects_invalid_on_value() -> None:
+    """Dict skip with invalid 'on' value raises ValueError."""
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip.on' must be one of 'fixture-unavailable'"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            {"on": "invalid-value"},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_dict_rejects_missing_on_value() -> None:
+    """Dict skip without 'on' key raises ValueError."""
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip' mapping contains unknown keys: unexpected-key"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            {"unexpected-key": "value"},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_dict_rejects_empty_reason_string() -> None:
+    """Dict skip with empty reason raises ValueError."""
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip.reason' must be a non-empty string"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            {"on": "fixture-unavailable", "reason": ""},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_dict_rejects_non_string_reason() -> None:
+    """Dict skip with non-string reason raises ValueError."""
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip.reason' must be a non-empty string"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            {"on": "fixture-unavailable", "reason": 123},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_dict_rejected_in_frontmatter(tmp_path: Path, configured_root: Path) -> None:
+    """Dict skip format is only valid in directory-level test.yaml, not in frontmatter."""
+    test_file = tmp_path / "case.tql"
+    test_file.write_text(
+        """---
+skip:
+  on: fixture-unavailable
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="'skip' mapping form.*only valid in directory-level"):
+        run.parse_test_config(test_file)
+
+
+def test_skip_rejects_list_type() -> None:
+    """Skip as a list raises ValueError."""
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip' must be a string or mapping"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            ["fixture-unavailable"],
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_rejects_integer_type() -> None:
+    """Skip as an integer raises ValueError."""
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip' must be a string or mapping"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            42,
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_rejects_empty_string() -> None:
+    """Skip as an empty string raises ValueError."""
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip' string value must be non-empty"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            "   ",
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_dict_rejects_unknown_keys() -> None:
+    """Dict skip with extra keys beyond 'on' and 'reason' raises ValueError."""
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip' mapping contains unknown keys: extra"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            {"on": "fixture-unavailable", "extra": "value"},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_dict_rejects_multiple_unknown_keys() -> None:
+    """Dict skip with multiple unknown keys lists them all in the error."""
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip' mapping contains unknown keys"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            {"on": "fixture-unavailable", "alpha": 1, "beta": 2},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_config_static_properties() -> None:
+    """SkipConfig correctly reports static vs conditional properties."""
+    static = run.SkipConfig(reason="maintenance")
+    assert static.is_static
+    assert not static.is_conditional
+    assert static.reason == "maintenance"
+
+    conditional = run.SkipConfig(reason="docker missing", on_fixture_unavailable=True)
+    assert not conditional.is_static
+    assert conditional.is_conditional
+    assert conditional.reason == "docker missing"
+
+    conditional_no_reason = run.SkipConfig(on_fixture_unavailable=True)
+    assert not conditional_no_reason.is_static
+    assert conditional_no_reason.is_conditional
+    assert conditional_no_reason.reason is None

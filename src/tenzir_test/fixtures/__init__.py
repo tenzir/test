@@ -362,6 +362,28 @@ class FixtureHandle:
     hooks: Mapping[str, Callable[..., Any]] | None = None
 
 
+class FixtureUnavailable(Exception):
+    """Raised by a fixture when it cannot provide its service.
+
+    When a fixture raises this during initialization (before yielding)
+    and the suite has ``skip: {on: fixture-unavailable}`` in its
+    ``test.yaml``, all tests in the suite are marked as skipped.
+
+    Without the opt-in config, the exception propagates normally and
+    causes a test failure.
+
+    Example::
+
+        @fixture()
+        def my_fixture() -> Iterator[dict[str, str]]:
+            if not shutil.which("docker"):
+                raise FixtureUnavailable(
+                    "container runtime (docker) required but not found"
+                )
+            # ... normal setup ...
+    """
+
+
 class _FactoryCallable(Protocol):
     def __call__(
         self,
@@ -599,6 +621,7 @@ __all__ = [
     "FixtureSelection",
     "FixturesAccessor",
     "FixtureController",
+    "FixtureUnavailable",
     "activate",
     "acquire_fixture",
     "fixture",

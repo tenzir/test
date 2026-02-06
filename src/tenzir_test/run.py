@@ -47,6 +47,139 @@ from .runners import (
 
 TestConfig = dict[str, object]
 
+#: YAML value for the ``skip.on`` key that opts in to skipping a suite
+#: when a fixture raises :class:`FixtureUnavailable`.
+SKIP_ON_FIXTURE_UNAVAILABLE: typing.Final[str] = "fixture-unavailable"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SkipConfig:
+    """Typed wrapper for the ``skip`` test configuration value.
+
+    Replaces the raw ``str | dict | None`` representation with an explicit
+    type so that consumers never need to perform ``isinstance`` checks
+    themselves.
+
+    Two forms are supported:
+
+    * **Static skip** -- the test is unconditionally skipped with a reason
+      string (``skip: "reason"`` in YAML).
+    * **Conditional skip** -- the test is skipped only when a fixture
+      raises ``FixtureUnavailable`` (``skip: {on: fixture-unavailable}``
+      in YAML, directory-level only).
+    """
+
+    reason: str | None = None
+    on_fixture_unavailable: bool = False
+
+    # -- query helpers -------------------------------------------------------
+
+    @property
+    def is_static(self) -> bool:
+        """Return ``True`` when the test should be unconditionally skipped."""
+        return self.reason is not None and not self.on_fixture_unavailable
+
+    @property
+    def is_conditional(self) -> bool:
+        """Return ``True`` when this is a fixture-unavailable guard."""
+        return self.on_fixture_unavailable
+
+    # -- factory -------------------------------------------------------------
+
+    _VALID_DICT_KEYS: typing.ClassVar[frozenset[str]] = frozenset({"on", "reason"})
+    _VALID_ON_VALUES: typing.ClassVar[frozenset[str]] = frozenset({SKIP_ON_FIXTURE_UNAVAILABLE})
+
+    # PyYAML (YAML 1.1) parses bare ``on`` as the boolean ``True``.
+    # Map such keys back to the intended string form before validation.
+    _YAML_BOOL_KEY_MAP: typing.ClassVar[dict[object, str]] = {True: "on", False: "off"}
+
+    @classmethod
+    def _normalize_dict_keys(cls, raw: dict[object, object]) -> dict[str, object]:
+        """Return a copy with YAML boolean keys replaced by their string equivalents."""
+        out: dict[str, object] = {}
+        for k, v in raw.items():
+            if isinstance(k, bool):
+                normalized = cls._YAML_BOOL_KEY_MAP.get(k)
+                if normalized is None:
+                    normalized = str(k).lower()
+                out[normalized] = v
+            else:
+                out[str(k)] = v
+        return out
+
+    @classmethod
+    def from_raw(
+        cls,
+        value: object,
+        *,
+        origin: Literal["directory", "test"],
+        location: "Path | str",
+        line_number: int | None = None,
+    ) -> "SkipConfig | None":
+        """Parse a raw YAML value into a ``SkipConfig``.
+
+        Returns ``None`` when *value* is ``None`` (skip not configured).
+        Raises ``ValueError`` via ``_raise_config_error`` on invalid input.
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            if not value.strip():
+                _raise_config_error(
+                    location,
+                    "'skip' string value must be non-empty",
+                    line_number,
+                )
+            return cls(reason=value)
+
+        if isinstance(value, dict):
+            if origin != "directory":
+                _raise_config_error(
+                    location,
+                    f"'skip' mapping form (e.g. {{on: {SKIP_ON_FIXTURE_UNAVAILABLE}}}) "
+                    "is only valid in directory-level test.yaml files, "
+                    "not in test frontmatter",
+                    line_number,
+                )
+            normalized = cls._normalize_dict_keys(value)
+            unknown_keys = set(normalized.keys()) - cls._VALID_DICT_KEYS
+            if unknown_keys:
+                _raise_config_error(
+                    location,
+                    f"'skip' mapping contains unknown keys: "
+                    f"{', '.join(sorted(unknown_keys))}; "
+                    f"allowed keys are: {', '.join(sorted(cls._VALID_DICT_KEYS))}",
+                    line_number,
+                )
+            on_value = normalized.get("on")
+            if on_value not in cls._VALID_ON_VALUES:
+                _raise_config_error(
+                    location,
+                    f"'skip.on' must be one of "
+                    f"{', '.join(repr(v) for v in sorted(cls._VALID_ON_VALUES))}, "
+                    f"got '{on_value}'",
+                    line_number,
+                )
+            reason = normalized.get("reason")
+            if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+                _raise_config_error(
+                    location,
+                    "'skip.reason' must be a non-empty string",
+                    line_number,
+                )
+            return cls(
+                reason=reason if isinstance(reason, str) else None,
+                on_fixture_unavailable=True,
+            )
+
+        _raise_config_error(
+            location,
+            f"'skip' must be a string or mapping {{on: ..., reason: ...}}, "
+            f"got '{type(value).__name__}'",
+            line_number,
+        )
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TestQueueItem:
@@ -313,6 +446,22 @@ def format_failure_message(message: str) -> str:
 
 _apply_color_palette()
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+# Broader pattern covering all common ANSI escape sequences (CSI, OSC, etc.).
+_ANSI_ESCAPE_FULL = re.compile(r"\x1b(?:\[[0-9;]*[A-Za-z]|\][^\x07]*\x07|\[[^\x1b]*)")
+# ASCII C0 control characters except tab (0x09) which is benign.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+
+
+def _sanitize_message(value: str) -> str:
+    """Remove ANSI escape sequences and control characters from *value*.
+
+    This is used to prevent untrusted exception messages from injecting
+    terminal escape sequences or newlines into log/stdout output.
+    """
+    value = _ANSI_ESCAPE_FULL.sub("", value)
+    value = _CONTROL_CHARS.sub("", value)
+    return value
+
 
 stdout_lock = threading.RLock()
 
@@ -1238,7 +1387,7 @@ def _canonical_config_key(key: str) -> str:
     return key
 
 
-ConfigOrigin = Literal["directory", "frontmatter"]
+ConfigOrigin = Literal["directory", "test"]
 
 
 def _raise_config_error(
@@ -1472,13 +1621,15 @@ def _assign_config_option(
         return
 
     if canonical == "skip":
-        if not isinstance(value, str) or not value.strip():
-            _raise_config_error(
-                location,
-                "'skip' value must be a non-empty string",
-                line_number,
-            )
-        config[canonical] = value
+        # Delegate all validation and parsing to SkipConfig.from_raw which
+        # raises ValueError (via _raise_config_error) on invalid input.
+        parsed = SkipConfig.from_raw(
+            value,
+            origin=origin,
+            location=location,
+            line_number=line_number,
+        )
+        config[canonical] = parsed
         return
 
     if canonical == "error":
@@ -1518,7 +1669,7 @@ def _assign_config_option(
 
     if canonical == "fixtures":
         suite_value = config.get("suite")
-        if origin == "frontmatter" and isinstance(suite_value, str) and suite_value.strip():
+        if origin == "test" and isinstance(suite_value, str) and suite_value.strip():
             _raise_config_error(
                 location,
                 "'fixtures' cannot be specified in test frontmatter within a suite; configure fixtures in test.yaml",
@@ -1546,7 +1697,7 @@ def _assign_config_option(
         )
         return
     if canonical == "retry":
-        if origin == "frontmatter" and isinstance(config.get("suite"), str):
+        if origin == "test" and isinstance(config.get("suite"), str):
             _raise_config_error(
                 location,
                 "'retry' cannot be overridden in test frontmatter within a suite",
@@ -2115,7 +2266,7 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
                     str(key),
                     value,
                     location=test_file,
-                    origin="frontmatter",
+                    origin="test",
                 )
 
     if not consumed_frontmatter and is_comment_frontmatter:
@@ -2142,7 +2293,7 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
                 value,
                 location=test_file,
                 line_number=line_number,
-                origin="frontmatter",
+                origin="test",
             )
 
     if coverage:
@@ -3245,6 +3396,36 @@ def run_simple_test(
     return True
 
 
+def _compose_skip_reason(
+    static_reason: str | None,
+    exception_reason: str | None,
+    *,
+    fallback: str = "fixture unavailable",
+) -> str:
+    """Build a human-readable skip reason from up to two sources.
+
+    Handles four cases:
+    - Both a static config reason and an exception message are present: join
+      them with ``": "``.
+    - Only a static config reason is present: use it as-is.
+    - Only an exception message is present: use it as-is.
+    - Neither is present: return the *fallback* string.
+    The *exception_reason* is sanitized to strip ANSI escape sequences
+    and control characters before use.
+    """
+    if exception_reason:
+        exception_reason = _sanitize_message(exception_reason)
+    has_static = bool(static_reason)
+    has_exc = bool(exception_reason)
+    if has_static and has_exc:
+        return f"{static_reason}: {exception_reason}"
+    if has_static:
+        return static_reason  # type: ignore[return-value]
+    if has_exc:
+        return exception_reason  # type: ignore[return-value]
+    return fallback
+
+
 def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool | str:
     if is_verbose_output():
         rel_path = _relativize_path(test)
@@ -3413,6 +3594,35 @@ class Worker:
                     )
                     if interrupted:
                         break
+        except fixtures_impl.FixtureUnavailable as exc:
+            skip_cfg: SkipConfig | None = primary_config.get("skip")  # type: ignore[assignment]
+            if not (isinstance(skip_cfg, SkipConfig) and skip_cfg.is_conditional):
+                raise
+            reason = _compose_skip_reason(skip_cfg.reason, str(exc))
+            _CLI_LOGGER.warning(
+                "fixture unavailable for suite '%s': %s",
+                suite_item.suite.name,
+                reason,
+            )
+            for skip_index, test_item in enumerate(tests, start=1):
+                rel_path = _relativize_path(test_item.path)
+                if is_verbose_output():
+                    with _push_suite_context(
+                        name=suite_item.suite.name,
+                        index=skip_index,
+                        total=total,
+                    ):
+                        suite_suffix = _format_suite_suffix()
+                    with stdout_lock:
+                        print(
+                            f"{SKIP} skipped {rel_path}{suite_suffix}: "
+                            f"fixture unavailable: {reason}"
+                        )
+                summary.total += 1
+                summary.skipped += 1
+                summary.skipped_paths.append(rel_path)
+                summary.record_runner_outcome(test_item.runner.name, "skipped")
+                summary.record_fixture_outcome(suite_item.fixtures, "skipped")
         finally:
             _log_suite_event(suite_item.suite, event="teardown", total=total)
             fixtures_impl.pop_context(context_token)
