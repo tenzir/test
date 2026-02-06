@@ -3,6 +3,6 @@
 from __future__ import annotations
 
 # Import submodules so their @fixture decorators run at import time.
-from . import http, server  # noqa: F401
+from . import container, http, server  # noqa: F401
 
-__all__ = ["http", "server"]
+__all__ = ["container", "http", "server"]

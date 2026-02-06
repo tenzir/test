@@ -20,6 +20,7 @@ pieces fit together.
 example-project/
 ├── fixtures/
 │   ├── __init__.py
+│   ├── container.py
 │   ├── http.py
 │   └── server.py
 ├── inputs/
@@ -27,6 +28,9 @@ example-project/
 ├── runners/
 │   └── __init__.py
 └── tests/
+    ├── container/
+    │   ├── test.yaml
+    │   └── check.{sh,txt}
     ├── context/
     │   ├── test.yaml
     │   ├── 01-context-create.{tql,txt}
@@ -82,6 +86,11 @@ example-project/
   frontmatter can request fixtures directly from shell scripts.
 - **Skip demo** (`tests/lazy.tql`): uses `skip:` frontmatter to illustrate how
   the harness reports intentionally skipped tests along with custom messages.
+- **Fixture unavailability** (`tests/container`): the `container` fixture
+  raises `FixtureUnavailable` because it checks for a binary that does not
+  exist. The suite's `test.yaml` opts into graceful skipping via
+  `skip: {on: fixture-unavailable}`, so the test is reported as skipped rather
+  than failing the run.
 - **Satellite demo** (`../example-satellite/`): a self-contained project that
   reuses the root fixtures **and** the `xxd` runner while adding its own
   `satellite_marker` fixture. Invoke `uvx tenzir-test --root example-project
