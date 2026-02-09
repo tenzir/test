@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
+import shutil
 import shlex
 import subprocess
 import sys
+import threading
+import tomllib
 import typing
 from pathlib import Path
 
@@ -14,8 +18,17 @@ from ._utils import get_run_module, resolve_run_module_dir
 from .ext_runner import ExtRunner
 
 
+_DEPENDENCY_INSTALL_LOCK = threading.RLock()
+_INSTALLED_SCRIPT_DEPENDENCIES: set[str] = set()
+
+
 def _jsonify_config(config: dict[str, typing.Any]) -> dict[str, typing.Any]:
     def _convert(value: typing.Any) -> typing.Any:
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            return {
+                field.name: _convert(getattr(value, field.name))
+                for field in dataclasses.fields(value)
+            }
         if isinstance(value, tuple):
             return [_convert(item) for item in value]
         if isinstance(value, list):
@@ -25,6 +38,116 @@ def _jsonify_config(config: dict[str, typing.Any]) -> dict[str, typing.Any]:
         return value
 
     return {str(key): _convert(val) for key, val in config.items()}
+
+
+def _extract_script_dependencies(test: Path) -> tuple[str, ...]:
+    """Extract inline PEP 723 dependencies from a Python test script.
+
+    The runner recognizes a metadata block of the form:
+
+        # /// script
+        # dependencies = ["pkg", "other>=1.0"]
+        # ///
+    """
+
+    raw = test.read_text(encoding="utf-8")
+    lines = raw.splitlines()
+
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip() == "# /// script":
+            start = index + 1
+            break
+    if start is None:
+        return tuple()
+
+    end = None
+    for index in range(start, len(lines)):
+        if lines[index].strip() == "# ///":
+            end = index
+            break
+    if end is None:
+        raise RuntimeError(f"invalid script metadata in {test}: missing closing '# ///' marker")
+
+    metadata_lines: list[str] = []
+    for line in lines[start:end]:
+        stripped = line.lstrip()
+        if not stripped.startswith("#"):
+            raise RuntimeError(
+                f"invalid script metadata in {test}: each metadata line must start with '#'"
+            )
+        payload = stripped[1:]
+        if payload.startswith(" "):
+            payload = payload[1:]
+        metadata_lines.append(payload)
+
+    metadata_toml = "\n".join(metadata_lines)
+    try:
+        metadata = tomllib.loads(metadata_toml) if metadata_toml.strip() else {}
+    except tomllib.TOMLDecodeError as exc:
+        raise RuntimeError(f"invalid script metadata in {test}: {exc}") from exc
+
+    raw_dependencies = metadata.get("dependencies")
+    if raw_dependencies is None:
+        return tuple()
+    if not isinstance(raw_dependencies, list) or not all(
+        isinstance(dep, str) for dep in raw_dependencies
+    ):
+        raise RuntimeError(
+            f"invalid script metadata in {test}: 'dependencies' must be a list of strings"
+        )
+
+    deduplicated: list[str] = []
+    seen: set[str] = set()
+    for dep in raw_dependencies:
+        normalized = dep.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduplicated.append(normalized)
+    return tuple(deduplicated)
+
+
+def _install_script_dependencies(
+    test: Path,
+    dependencies: tuple[str, ...],
+    *,
+    timeout: int,
+    run_mod: typing.Any,
+) -> None:
+    if not dependencies:
+        return
+    uv_binary = shutil.which("uv")
+    if uv_binary is None:
+        raise RuntimeError(
+            f"python test {test} declares dependencies {dependencies!r}, "
+            "but 'uv' is not available on PATH"
+        )
+
+    environment_key_prefix = f"{sys.executable}:"
+    with _DEPENDENCY_INSTALL_LOCK:
+        missing_dependencies = [
+            dep
+            for dep in dependencies
+            if f"{environment_key_prefix}{dep}" not in _INSTALLED_SCRIPT_DEPENDENCIES
+        ]
+        if not missing_dependencies:
+            return
+        run_mod.run_subprocess(
+            [
+                uv_binary,
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                *missing_dependencies,
+            ],
+            timeout=max(timeout, 60),
+            capture_output=not run_mod.is_passthrough_enabled(),
+            check=True,
+        )
+        for dep in missing_dependencies:
+            _INSTALLED_SCRIPT_DEPENDENCIES.add(f"{environment_key_prefix}{dep}")
 
 
 class CustomPythonFixture(ExtRunner):
@@ -50,6 +173,13 @@ class CustomPythonFixture(ExtRunner):
             fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
             node_requested = "node" in fixtures
             timeout = typing.cast(int, test_config["timeout"])
+            script_dependencies = _extract_script_dependencies(test)
+            _install_script_dependencies(
+                test,
+                script_dependencies,
+                timeout=timeout,
+                run_mod=run_mod,
+            )
             fixture_context = fixture_api.FixtureContext(
                 test=test,
                 config=typing.cast(dict[str, typing.Any], test_config),

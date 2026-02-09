@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
+import shutil
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -10,6 +13,8 @@ import signal
 
 from tenzir_test import _python_runner as python_runner
 from tenzir_test import config, run, fixtures
+from tenzir_test.runners import custom_python_fixture_runner as python_runner_impl
+from tenzir_test.runners.custom_python_fixture_runner import _jsonify_config
 
 
 @pytest.fixture()
@@ -54,6 +59,102 @@ class _DummyCompleted:
         self.returncode = 0
 
 
+def test_jsonify_config_converts_skip_config() -> None:
+    config_payload = {
+        "fixtures": ("sink", "mysql"),
+        "skip": run.SkipConfig(on_fixture_unavailable=True),
+        "nested": {"skip": run.SkipConfig(reason="maintenance")},
+    }
+
+    converted = _jsonify_config(config_payload)
+
+    assert converted["fixtures"] == ["sink", "mysql"]
+    assert converted["skip"] == {"reason": None, "on_fixture_unavailable": True}
+    assert converted["nested"]["skip"] == {
+        "reason": "maintenance",
+        "on_fixture_unavailable": False,
+    }
+    json.dumps({"config": converted})
+
+
+def test_extract_script_dependencies(tmp_path: Path) -> None:
+    script = tmp_path / "script.py"
+    script.write_text(
+        "\n".join(
+            [
+                "# runner: python",
+                "# /// script",
+                '# dependencies = ["pymysql", "certifi>=2025.0"]',
+                "# ///",
+                "print('ok')",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    dependencies = python_runner_impl._extract_script_dependencies(script)
+    assert dependencies == ("pymysql", "certifi>=2025.0")
+
+
+def test_python_runner_installs_inline_dependencies(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = python_fixture_root / "python" / "fixture.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["pymysql"]',
+                "# ///",
+                "print('ok')",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    script.parent.joinpath("test.yaml").write_text(
+        "timeout: 30\nfixtures:\n  - sink\n",
+        encoding="utf-8",
+    )
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):  # noqa: ANN001
+        cmd = [str(part) for part in args]
+        calls.append(cmd)
+        if len(cmd) >= 3 and Path(cmd[0]).name == "uv" and cmd[1:3] == ["pip", "install"]:
+            return _DummyCompleted()
+        if (
+            len(cmd) >= 3
+            and cmd[0].endswith("python")
+            and cmd[1:3]
+            == [
+                "-m",
+                "tenzir_test._python_runner",
+            ]
+        ):
+            return _DummyCompleted(stdout=b"payload")
+        return _DummyCompleted()
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+    monkeypatch.setattr(shutil, "which", lambda name: "uv" if name == "uv" else None)
+    python_runner_impl._INSTALLED_SCRIPT_DEPENDENCIES.clear()
+
+    runner = run.CustomPythonFixture()
+    assert runner.run(script, update=True, coverage=False)
+
+    uv_install_calls = [
+        cmd
+        for cmd in calls
+        if len(cmd) >= 3 and Path(cmd[0]).name == "uv" and cmd[1:3] == ["pip", "install"]
+    ]
+    assert len(uv_install_calls) == 1
+    assert uv_install_calls[0][3:5] == ["--python", sys.executable]
+    assert uv_install_calls[0][-1] == "pymysql"
+
+
 def test_python_runner_update_writes_reference(
     python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -71,6 +172,31 @@ def test_python_runner_update_writes_reference(
     runner = run.CustomPythonFixture()
     assert runner.run(script, update=True, coverage=False)
     assert script.with_suffix(".txt").read_bytes() == b"payload"
+
+
+def test_python_runner_context_serializes_skip_config(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = python_fixture_root / "python" / "fixture.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text('print("ok")\n', encoding="utf-8")
+    script.parent.joinpath("test.yaml").write_text(
+        "timeout: 30\nfixtures:\n  - sink\nskip:\n  on: fixture-unavailable\n",
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
+        payload = json.loads(env["TENZIR_PYTHON_FIXTURE_CONTEXT"])
+        assert payload["config"]["skip"] == {
+            "reason": None,
+            "on_fixture_unavailable": True,
+        }
+        return _DummyCompleted(stdout=b"payload", stderr=b"")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    runner = run.CustomPythonFixture()
+    assert runner.run(script, update=True, coverage=False)
 
 
 def test_python_runner_detects_mismatch(
