@@ -1,0 +1,6 @@
+created: 2026-02-09
+title: SkipConfig Serialization Fix
+intro: >-
+  This release fixes a serialization bug where Python fixture tests with `skip`
+
+  configurations in `test.yaml` failed with a JSON serialization error.
