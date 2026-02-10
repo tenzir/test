@@ -1204,6 +1204,30 @@ def test_fixture_decorator_registers_options_class() -> None:
         _OPTIONS_CLASSES.pop("_test_demo_opts", None)
 
 
+def test_register_rejects_dataclass_instance_for_options() -> None:
+    import dataclasses as dc
+
+    from tenzir_test.fixtures import _FACTORIES, _OPTIONS_CLASSES, register
+
+    @dc.dataclass(frozen=True)
+    class DemoOpts:
+        flag: bool = False
+
+    def _fixture():  # type: ignore[no-untyped-def]
+        return {}
+
+    with pytest.raises(TypeError, match="dataclass type"):
+        register(
+            "_test_bad_opts_instance",
+            _fixture,
+            replace=True,
+            options=DemoOpts(),
+        )
+
+    _FACTORIES.pop("_test_bad_opts_instance", None)
+    _OPTIONS_CLASSES.pop("_test_bad_opts_instance", None)
+
+
 def test_current_options_returns_empty_without_context() -> None:
     from tenzir_test.fixtures import current_options
 

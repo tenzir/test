@@ -199,6 +199,36 @@ def test_python_runner_context_serializes_skip_config(
     assert runner.run(script, update=True, coverage=False)
 
 
+def test_python_runner_sets_endpoint_for_node_fixture_spec(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = python_fixture_root / "python" / "fixture.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text('print("ok")\n', encoding="utf-8")
+    script.parent.joinpath("test.yaml").write_text(
+        "timeout: 30\nfixtures:\n  - node:\n      tls: true\n",
+        encoding="utf-8",
+    )
+
+    endpoint = "localhost:18200"
+
+    @contextmanager
+    def fake_activate(_specs):  # noqa: ANN001
+        yield {"TENZIR_NODE_CLIENT_ENDPOINT": endpoint}
+
+    monkeypatch.setattr(python_runner_impl.fixture_api, "activate", fake_activate)
+
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
+        assert env["TENZIR_TEST_FIXTURES"] == "node"
+        assert env["TENZIR_PYTHON_FIXTURE_ENDPOINT"] == endpoint
+        return _DummyCompleted(stdout=b"payload", stderr=b"")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    runner = run.CustomPythonFixture()
+    assert runner.run(script, update=True, coverage=False)
+
+
 def test_python_runner_detects_mismatch(
     python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

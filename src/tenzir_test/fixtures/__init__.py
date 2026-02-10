@@ -566,6 +566,43 @@ def _activate_into_stack(
     return combined
 
 
+def _build_fixture_options_for_context(
+    specs: tuple[FixtureSpec, ...],
+    existing: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a fixture-options mapping for context-aware fixture activation.
+
+    Existing fixture options take precedence. Missing entries are populated from
+    fixture specs, using a registered dataclass options type when available.
+    """
+    merged: dict[str, Any] = dict(existing)
+    for spec in specs:
+        if spec.name in merged:
+            continue
+        options_cls = _OPTIONS_CLASSES.get(spec.name)
+        if options_cls is not None:
+            try:
+                merged[spec.name] = options_cls(**spec.options) if spec.options else options_cls()
+            except TypeError as exc:
+                raise ValueError(f"invalid options for fixture '{spec.name}': {exc}") from exc
+            continue
+        if spec.options:
+            merged[spec.name] = spec.options
+    return merged
+
+
+def _push_fixture_options_context(specs: tuple[FixtureSpec, ...]) -> Token[FixtureContext | None] | None:
+    """Push a derived FixtureContext that includes options from fixture specs."""
+    ctx = _CONTEXT.get()
+    if ctx is None:
+        return None
+    existing_options = dict(ctx.fixture_options)
+    merged_options = _build_fixture_options_for_context(specs, existing_options)
+    if merged_options == existing_options:
+        return None
+    return _CONTEXT.set(dataclasses.replace(ctx, fixture_options=merged_options))
+
+
 def _infer_name(func: Callable[..., object], explicit: str | None) -> str:
     if explicit:
         return explicit
@@ -589,13 +626,14 @@ def register(
     resolved_name = _infer_name(factory, name)
     if resolved_name in _FACTORIES and not replace:
         raise ValueError(f"fixture '{resolved_name}' already registered")
-    _FACTORIES[resolved_name] = _normalize_factory(factory)
     if options is not None:
-        if not dataclasses.is_dataclass(options):
+        if not isinstance(options, type) or not dataclasses.is_dataclass(options):
             raise TypeError(
-                f"'options' for fixture '{resolved_name}' must be a dataclass, "
+                f"'options' for fixture '{resolved_name}' must be a dataclass type, "
                 f"got {type(options).__name__}"
             )
+    _FACTORIES[resolved_name] = _normalize_factory(factory)
+    if options is not None:
         _OPTIONS_CLASSES[resolved_name] = options
 
 
@@ -654,12 +692,15 @@ def activate(names: Iterable[FixtureSpec | str]) -> Iterator[dict[str, str]]:
             scope.depth -= 1
         return
 
+    context_token = _push_fixture_options_context(normalized)
     stack = ExitStack()
     try:
         combined = _activate_into_stack(normalized, stack)
         yield combined
     finally:
         stack.close()
+        if context_token is not None:
+            _CONTEXT.reset(context_token)
 
 
 @contextmanager
@@ -669,6 +710,7 @@ def suite_scope(names: Iterable[FixtureSpec | str]) -> Iterator[dict[str, str]]:
     if existing is not None:
         raise RuntimeError("nested fixture suite scopes are not supported")
 
+    context_token = _push_fixture_options_context(normalized)
     stack = ExitStack()
     combined = _activate_into_stack(normalized, stack)
     scope = _SuiteScope(fixtures=normalized, stack=stack, env=combined)
@@ -678,6 +720,8 @@ def suite_scope(names: Iterable[FixtureSpec | str]) -> Iterator[dict[str, str]]:
     finally:
         _SUITE_SCOPE.reset(token)
         stack.close()
+        if context_token is not None:
+            _CONTEXT.reset(context_token)
 
 
 # Import built-in fixtures so they self-register on package import.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses as dc
 import os
 from pathlib import Path
 
@@ -92,6 +93,50 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
             os.remove(script_dir / "fixture.txt")
         if (script_dir / "tmp-dir.txt").exists():
             os.remove(script_dir / "tmp-dir.txt")
+
+
+def test_shell_runner_threads_fixture_options_into_context(tmp_path: Path) -> None:
+    script_dir = tmp_path / "tests" / "shell"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    script = script_dir / "options-check.sh"
+    script.write_text('printf %s "$DEMO_MESSAGE"\n', encoding="utf-8")
+    script.chmod(0o755)
+    script.with_suffix(".txt").write_text("hello", encoding="utf-8")
+    script_dir.joinpath("test.yaml").write_text(
+        "timeout: 10\nfixtures:\n  - demo_options:\n      message: hello\n",
+        encoding="utf-8",
+    )
+
+    @dc.dataclass(frozen=True)
+    class DemoOptions:
+        message: str = ""
+
+    @fixtures.fixture(name="demo_options", replace=True, options=DemoOptions)
+    def _demo_options_fixture():
+        options = fixtures.current_options("demo_options")
+        yield {"DEMO_MESSAGE": options.message}
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    try:
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+        runner = run.ShellRunner()
+        assert runner.run(script, update=False, coverage=False)
+    finally:
+        run.apply_settings(original_settings)
+        fixtures._FACTORIES.pop("demo_options", None)  # type: ignore[attr-defined]
+        fixtures._OPTIONS_CLASSES.pop("demo_options", None)  # type: ignore[attr-defined]
+        run.refresh_runner_metadata()
 
 
 def test_shell_runner_passthrough_streams_output(
