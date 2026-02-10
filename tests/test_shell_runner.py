@@ -73,7 +73,7 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
             )
         )
         parsed = run.parse_test_config(script)
-        assert parsed["fixtures"] == ("demo",)
+        assert parsed["fixtures"] == (fixtures.FixtureSpec(name="demo"),)
         runner = run.ShellRunner()
         assert runner.run(script, update=False, coverage=False)
         assert runner.run(script, update=True, coverage=False)

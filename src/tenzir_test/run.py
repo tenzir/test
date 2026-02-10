@@ -197,19 +197,19 @@ class SuiteInfo:
 class SuiteQueueItem:
     suite: SuiteInfo
     tests: list[TestQueueItem]
-    fixtures: tuple[str, ...]
+    fixtures: tuple[fixtures_impl.FixtureSpec, ...]
 
 
 @dataclasses.dataclass(slots=True)
 class SuiteCandidate:
     tests: list[TestQueueItem]
-    fixtures: tuple[str, ...] | None = None
+    fixtures: tuple[fixtures_impl.FixtureSpec, ...] | None = None
     parse_error: bool = False
     fixture_mismatch: bool = False
-    mismatch_example: tuple[str, ...] | None = None
+    mismatch_example: tuple[fixtures_impl.FixtureSpec, ...] | None = None
     mismatch_path: Path | None = None
 
-    def record_fixtures(self, fixtures: tuple[str, ...]) -> None:
+    def record_fixtures(self, fixtures: tuple[fixtures_impl.FixtureSpec, ...]) -> None:
         if self.fixtures is None:
             self.fixtures = fixtures
             return
@@ -1404,7 +1404,7 @@ def _normalize_fixtures_value(
     *,
     location: Path | str,
     line_number: int | None = None,
-) -> tuple[str, ...]:
+) -> tuple[fixtures_impl.FixtureSpec, ...]:
     raw: typing.Any
     if isinstance(value, list):
         raw = value
@@ -1424,23 +1424,75 @@ def _normalize_fixtures_value(
             line_number,
         )
 
-    fixtures: list[str] = []
+    specs: list[fixtures_impl.FixtureSpec] = []
     for entry in raw:
-        if not isinstance(entry, str):
+        if isinstance(entry, str):
+            name = entry.strip()
+            if not name:
+                _raise_config_error(
+                    location,
+                    "Fixture names must be non-empty strings",
+                    line_number,
+                )
+            specs.append(fixtures_impl.FixtureSpec(name=name))
+        elif isinstance(entry, dict):
+            if len(entry) != 1:
+                _raise_config_error(
+                    location,
+                    f"Fixture mapping must have exactly one key (the fixture name), got {list(entry.keys())}",
+                    line_number,
+                )
+            name = next(iter(entry))
+            if not isinstance(name, str) or not name.strip():
+                _raise_config_error(
+                    location,
+                    f"Fixture name must be a non-empty string, got '{name}'",
+                    line_number,
+                )
+            opts = entry[name]
+            if not isinstance(opts, dict):
+                _raise_config_error(
+                    location,
+                    f"Fixture options for '{name}' must be a mapping, got '{type(opts).__name__}'",
+                    line_number,
+                )
+            specs.append(fixtures_impl.FixtureSpec(name=name.strip(), options=opts))
+        else:
             _raise_config_error(
                 location,
-                f"Invalid fixture entry '{entry}', expected string",
+                f"Invalid fixture entry '{entry}', expected string or mapping",
                 line_number,
             )
-        name = entry.strip()
-        if not name:
-            _raise_config_error(
-                location,
-                "Fixture names must be non-empty strings",
-                line_number,
-            )
-        fixtures.append(name)
-    return tuple(fixtures)
+    return tuple(specs)
+
+
+def _fixture_names(specs: Iterable[fixtures_impl.FixtureSpec]) -> tuple[str, ...]:
+    """Extract fixture names from a sequence of specs."""
+    return tuple(spec.name for spec in specs)
+
+
+def _build_fixture_options(
+    specs: tuple[fixtures_impl.FixtureSpec, ...],
+) -> dict[str, typing.Any]:
+    """Convert fixture specs into the ``fixture_options`` mapping for FixtureContext.
+
+    For every spec:
+    - If the fixture has a registered options class: construct a typed instance
+      via ``options_cls(**spec.options)`` (or ``options_cls()`` for bare names).
+    - If no options class but options were provided: store the raw dict.
+    - If no options class and no options: omit from the dict.
+    """
+    result: dict[str, typing.Any] = {}
+    for spec in specs:
+        options_cls = fixtures_impl.get_options_class(spec.name)
+        if options_cls is not None:
+            try:
+                result[spec.name] = options_cls(**spec.options) if spec.options else options_cls()
+            except TypeError as exc:
+                raise ValueError(f"invalid options for fixture '{spec.name}': {exc}") from exc
+        elif spec.options:
+            result[spec.name] = spec.options
+    return result
 
 
 def _extract_location_path(location: Path | str) -> Path:
@@ -2141,9 +2193,11 @@ def _validate_path_within_root(path: Path, description: str) -> Path:
     return resolved
 
 
-def _apply_fixture_env(env: dict[str, str], fixtures: tuple[str, ...]) -> None:
+def _apply_fixture_env(
+    env: dict[str, str], fixtures: tuple[fixtures_impl.FixtureSpec, ...]
+) -> None:
     if fixtures:
-        env["TENZIR_TEST_FIXTURES"] = ",".join(fixtures)
+        env["TENZIR_TEST_FIXTURES"] = ",".join(spec.name for spec in fixtures)
     else:
         env.pop("TENZIR_TEST_FIXTURES", None)
 
@@ -2551,7 +2605,7 @@ def _build_queue_from_paths(
         except ValueError:
             candidate.mark_parse_error()
             continue
-        fixtures = cast(tuple[str, ...], config.get("fixtures", tuple()))
+        fixtures = cast(tuple[fixtures_impl.FixtureSpec, ...], config.get("fixtures", tuple()))
         candidate.record_fixtures(fixtures)
 
     queue: list[RunnerQueueItem] = []
@@ -2560,8 +2614,8 @@ def _build_queue_from_paths(
             example = candidate.mismatch_example or tuple()
             expected = candidate.fixtures or tuple()
             config_path = suite_info.directory / _CONFIG_FILE_NAME
-            expected_list = ", ".join(expected) or "<none>"
-            example_list = ", ".join(example) or "<none>"
+            expected_list = ", ".join(str(s) for s in expected) or "<none>"
+            example_list = ", ".join(str(s) for s in example) or "<none>"
             mismatch_path = candidate.mismatch_path or (
                 candidate.tests[-1].path if candidate.tests else None
             )
@@ -2702,15 +2756,15 @@ def _relativize_path(path: Path) -> Path:
         return Path(relative)
 
 
-def _get_test_fixtures(test: Path, *, coverage: bool) -> tuple[str, ...]:
+def _get_test_fixtures(test: Path, *, coverage: bool) -> tuple[fixtures_impl.FixtureSpec, ...]:
     try:
         config = parse_test_config(test, coverage=coverage)
     except ValueError:
         return tuple()
     fixtures = config.get("fixtures", tuple())
     if isinstance(fixtures, tuple):
-        return typing.cast(tuple[str, ...], fixtures)
-    return tuple(typing.cast(Iterable[str], fixtures))
+        return typing.cast(tuple[fixtures_impl.FixtureSpec, ...], fixtures)
+    return tuple(typing.cast(Iterable[fixtures_impl.FixtureSpec], fixtures))
 
 
 def _build_path_tree(paths: Iterable[Path]) -> dict[str, dict[str, Any]]:
@@ -3220,7 +3274,9 @@ def run_simple_test(
 
     inputs_override = typing.cast(str | None, test_config.get("inputs"))
     env, config_args = get_test_env_and_config_args(test, inputs=inputs_override)
-    fixtures = cast(tuple[str, ...], test_config.get("fixtures", tuple()))
+    fixture_specs = cast(
+        tuple[fixtures_impl.FixtureSpec, ...], test_config.get("fixtures", tuple())
+    )
     timeout = cast(int, test_config["timeout"])
     expect_error = bool(test_config.get("error", False))
     passthrough_mode = is_passthrough_enabled()
@@ -3252,6 +3308,7 @@ def run_simple_test(
         env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
         package_args.append(f"--package-dirs={','.join(merged_dirs)}")
 
+    fixture_options = _build_fixture_options(fixture_specs)
     context_token = fixtures_impl.push_context(
         fixtures_impl.FixtureContext(
             test=test,
@@ -3261,12 +3318,13 @@ def run_simple_test(
             config_args=tuple(config_args),
             tenzir_binary=TENZIR_BINARY,
             tenzir_node_binary=TENZIR_NODE_BINARY,
+            fixture_options=fixture_options,
         )
     )
     try:
-        with fixtures_impl.activate(fixtures) as fixture_env:
+        with fixtures_impl.activate(fixture_specs) as fixture_env:
             env.update(fixture_env)
-            _apply_fixture_env(env, fixtures)
+            _apply_fixture_env(env, fixture_specs)
 
             # Set up environment for code coverage if enabled
             if coverage:
@@ -3281,7 +3339,8 @@ def run_simple_test(
                 env["COVERAGE_SOURCE_DIR"] = source_dir
 
             node_args: list[str] = []
-            node_requested = "node" in fixtures
+            fixture_names = _fixture_names(fixture_specs)
+            node_requested = "node" in fixture_names
             if node_requested:
                 endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
                 if not endpoint:
@@ -3567,6 +3626,7 @@ class Worker:
             merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
             env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
             config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
+        suite_fixture_options = _build_fixture_options(suite_item.fixtures)
         context_token = fixtures_impl.push_context(
             fixtures_impl.FixtureContext(
                 test=primary_test,
@@ -3576,6 +3636,7 @@ class Worker:
                 config_args=tuple(config_args),
                 tenzir_binary=TENZIR_BINARY,
                 tenzir_node_binary=TENZIR_NODE_BINARY,
+                fixture_options=suite_fixture_options,
             )
         )
         _log_suite_event(suite_item.suite, event="setup", total=total)
@@ -3622,7 +3683,7 @@ class Worker:
                 summary.skipped += 1
                 summary.skipped_paths.append(rel_path)
                 summary.record_runner_outcome(test_item.runner.name, "skipped")
-                summary.record_fixture_outcome(suite_item.fixtures, "skipped")
+                summary.record_fixture_outcome(_fixture_names(suite_item.fixtures), "skipped")
         finally:
             _log_suite_event(suite_item.suite, event="teardown", total=total)
             fixtures_impl.pop_context(context_token)
@@ -3636,7 +3697,7 @@ class Worker:
         summary: Summary,
         *,
         suite_progress: tuple[str, int, int] | None = None,
-        suite_fixtures: tuple[str, ...] | None = None,
+        suite_fixtures: tuple[fixtures_impl.FixtureSpec, ...] | None = None,
     ) -> bool:
         test_path = test_item.path
         runner = test_item.runner
@@ -3657,7 +3718,9 @@ class Worker:
             raw_retry = config.get("retry", 0)
             if isinstance(raw_retry, int):
                 retry_limit = max(1, raw_retry)
-            config_fixtures = cast(tuple[str, ...], config.get("fixtures", tuple()))
+            config_fixtures = cast(
+                tuple[fixtures_impl.FixtureSpec, ...], config.get("fixtures", tuple())
+            )
             if suite_fixtures is not None and config_fixtures != suite_fixtures:
                 raise RuntimeError(
                     f"fixture mismatch for suite test {test_path}: "
@@ -3677,7 +3740,7 @@ class Worker:
                 summary.total += 1
                 summary.record_runner_outcome(runner.name, "skipped")
                 if fixtures:
-                    summary.record_fixture_outcome(fixtures, "skipped")
+                    summary.record_fixture_outcome(_fixture_names(fixtures), "skipped")
                 summary.skipped += 1
                 summary.skipped_paths.append(rel_path)
                 return False
@@ -3688,13 +3751,13 @@ class Worker:
             summary.total += 1
             summary.record_runner_outcome(runner.name, False)
             if fixtures:
-                summary.record_fixture_outcome(fixtures, False)
+                summary.record_fixture_outcome(_fixture_names(fixtures), False)
             summary.failed += 1
             summary.failed_paths.append(rel_path)
             return False
         detail_bits = [f"runner={runner.name}"]
         if fixtures:
-            detail_bits.append(f"fixtures={', '.join(fixtures)}")
+            detail_bits.append(f"fixtures={', '.join(str(s) for s in fixtures)}")
         if suite_progress:
             name, index, total = suite_progress
             detail_bits.append(f"suite={name} ({index}/{total})")
@@ -3749,7 +3812,7 @@ class Worker:
         summary.total += 1
         summary.record_runner_outcome(runner.name, final_outcome)
         if fixtures:
-            summary.record_fixture_outcome(fixtures, final_outcome)
+            summary.record_fixture_outcome(_fixture_names(fixtures), final_outcome)
         if final_outcome == "skipped":
             summary.skipped += 1
             summary.skipped_paths.append(rel_path)
