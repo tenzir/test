@@ -3,8 +3,16 @@
 import signal
 import subprocess
 import sys
+from dataclasses import dataclass
 
-from tenzir_test import FixtureHandle, fixture
+from tenzir_test import FixtureHandle, current_options, fixture
+
+
+@dataclass(frozen=True)
+class ServerOptions:
+    """Optional configuration for the server fixture."""
+
+    greeting: str = "hello"
 
 
 def _spawn() -> subprocess.Popen:
@@ -12,13 +20,14 @@ def _spawn() -> subprocess.Popen:
     return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"])
 
 
-@fixture(name="server")
+@fixture(name="server", options=ServerOptions)
 def server() -> FixtureHandle:
     """Start the dummy server process and return a handle for tests."""
     # Custom startup logic belongs here; returning the handle hands control to
     # tests, which use acquire_fixture() to call the hooks.
+    opts = current_options("server")
     process = _spawn()
-    env = {"SERVER_PID": str(process.pid)}
+    env = {"SERVER_PID": str(process.pid), "SERVER_GREETING": opts.greeting}
 
     def _teardown() -> None:
         if process.poll() is None:
