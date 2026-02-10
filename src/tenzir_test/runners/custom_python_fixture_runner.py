@@ -170,8 +170,10 @@ class CustomPythonFixture(ExtRunner):
             ]
             inputs_override = typing.cast(str | None, test_config.get("inputs"))
             env, _config_args = run_mod.get_test_env_and_config_args(test, inputs=inputs_override)
-            fixtures = typing.cast(tuple[str, ...], test_config.get("fixtures", tuple()))
-            node_requested = "node" in fixtures
+            fixtures = typing.cast(
+                tuple[fixture_api.FixtureSpec, ...], test_config.get("fixtures", tuple())
+            )
+            node_requested = any(spec.name == "node" for spec in fixtures)
             timeout = typing.cast(int, test_config["timeout"])
             script_dependencies = _extract_script_dependencies(test)
             _install_script_dependencies(

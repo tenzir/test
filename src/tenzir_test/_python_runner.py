@@ -23,8 +23,10 @@ _EXPORTED_HELPERS: dict[str, Any] = {
     "FixtureContext": _fixtures.FixtureContext,
     "FixtureHandle": _fixtures.FixtureHandle,
     "FixtureSelection": _fixtures.FixtureSelection,
+    "FixtureSpec": _fixtures.FixtureSpec,
     "FixtureController": _fixtures.FixtureController,
     "Executor": _fixtures.Executor,
+    "current_options": _fixtures.current_options,
 }
 
 _EXPORTED_HELPERS["acquire_fixture"] = _acquire_fixture

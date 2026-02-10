@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 import inspect
+import json
 import logging
 import os
 import shlex
@@ -10,7 +12,7 @@ import threading
 import time
 from contextlib import ExitStack, AbstractContextManager, contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from functools import wraps
 from typing import (
@@ -33,6 +35,31 @@ _TMP_DIR_CLEANUP: dict[Path, Callable[[], None]] = {}
 _TMP_DIR_CLEANUP_LOCK = threading.RLock()
 
 
+@dataclass(frozen=True, slots=True)
+class FixtureSpec:
+    """Pair a fixture name with an optional options dict."""
+
+    name: str
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def __hash__(self) -> int:
+        return hash((self.name, json.dumps(self.options, sort_keys=True)))
+
+    def __str__(self) -> str:
+        if not self.options:
+            return self.name
+        items = ", ".join(f"{k}={v!r}" for k, v in sorted(self.options.items()))
+        return f"{self.name}({items})"
+
+
+_OPTIONS_CLASSES: dict[str, type] = {}
+
+
+def get_options_class(name: str) -> type | None:
+    """Return the registered options dataclass for the named fixture, if any."""
+    return _OPTIONS_CLASSES.get(name)
+
+
 @dataclass(frozen=True)
 class FixtureContext:
     """Describe the invocation context available to fixture factories."""
@@ -44,6 +71,7 @@ class FixtureContext:
     config_args: Sequence[str]
     tenzir_binary: tuple[str, ...] | None
     tenzir_node_binary: tuple[str, ...] | None
+    fixture_options: Mapping[str, Any] = field(default_factory=dict)
 
 
 _CONTEXT: ContextVar[FixtureContext | None] = ContextVar(
@@ -350,6 +378,19 @@ def current_context() -> FixtureContext | None:
     return _CONTEXT.get()
 
 
+def current_options(name: str) -> Any:
+    """Return options for the named fixture from the active context.
+
+    Returns the typed dataclass instance if the fixture declared one,
+    otherwise the raw dict. Returns an empty dict if no context is active
+    or no options were provided and no options class is registered.
+    """
+    ctx = _CONTEXT.get()
+    if ctx is None:
+        return {}
+    return ctx.fixture_options.get(name, {})
+
+
 FixtureFactory = Callable[[], ContextManager[dict[str, str] | None]]
 
 
@@ -401,7 +442,7 @@ _FACTORIES: dict[str, FixtureFactory] = {}
 
 @dataclass(slots=True)
 class _SuiteScope:
-    fixtures: tuple[str, ...]
+    fixtures: tuple[FixtureSpec, ...]
     stack: ExitStack
     env: dict[str, str]
     depth: int = 0
@@ -495,23 +536,73 @@ def _wrap_factory(
     return _logged_context()
 
 
+def _coerce_specs(items: Iterable[FixtureSpec | str]) -> tuple[FixtureSpec, ...]:
+    """Normalize an iterable of fixture names or specs into a tuple of FixtureSpec."""
+    result: list[FixtureSpec] = []
+    for item in items:
+        if isinstance(item, str):
+            result.append(FixtureSpec(name=item))
+        else:
+            result.append(item)
+    return tuple(result)
+
+
 def _activate_into_stack(
-    names: tuple[str, ...],
+    specs: tuple[FixtureSpec, ...],
     stack: ExitStack,
 ) -> dict[str, str]:
     combined: dict[str, str] = {}
-    for name in names:
-        factory = _FACTORIES.get(name)
+    for spec in specs:
+        factory = _FACTORIES.get(spec.name)
         if not factory:
-            logger.debug("requested fixture '%s' has no registered factory", name)
+            logger.debug("requested fixture '%s' has no registered factory", spec.name)
             continue
         force_teardown_log = bool(getattr(factory, "tenzir_log_teardown", False))
         env: dict[str, str] | None = stack.enter_context(
-            _wrap_factory(factory, name=name, force_teardown_log=force_teardown_log)
+            _wrap_factory(factory, name=spec.name, force_teardown_log=force_teardown_log)
         )
         if env:
             combined.update(env)
     return combined
+
+
+def _build_fixture_options_for_context(
+    specs: tuple[FixtureSpec, ...],
+    existing: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a fixture-options mapping for context-aware fixture activation.
+
+    Existing fixture options take precedence. Missing entries are populated from
+    fixture specs, using a registered dataclass options type when available.
+    """
+    merged: dict[str, Any] = dict(existing)
+    for spec in specs:
+        if spec.name in merged:
+            continue
+        options_cls = _OPTIONS_CLASSES.get(spec.name)
+        if options_cls is not None:
+            try:
+                merged[spec.name] = options_cls(**spec.options) if spec.options else options_cls()
+            except TypeError as exc:
+                raise ValueError(f"invalid options for fixture '{spec.name}': {exc}") from exc
+            continue
+        if spec.options:
+            merged[spec.name] = spec.options
+    return merged
+
+
+def _push_fixture_options_context(
+    specs: tuple[FixtureSpec, ...],
+) -> Token[FixtureContext | None] | None:
+    """Push a derived FixtureContext that includes options from fixture specs."""
+    ctx = _CONTEXT.get()
+    if ctx is None:
+        return None
+    existing_options = dict(ctx.fixture_options)
+    merged_options = _build_fixture_options_for_context(specs, existing_options)
+    if merged_options == existing_options:
+        return None
+    return _CONTEXT.set(dataclasses.replace(ctx, fixture_options=merged_options))
 
 
 def _infer_name(func: Callable[..., object], explicit: str | None) -> str:
@@ -527,11 +618,25 @@ def _infer_name(func: Callable[..., object], explicit: str | None) -> str:
     raise ValueError("Unable to infer fixture name; please provide one explicitly")
 
 
-def register(name: str | None, factory: _FactoryCallable, *, replace: bool = False) -> None:
+def register(
+    name: str | None,
+    factory: _FactoryCallable,
+    *,
+    replace: bool = False,
+    options: type | None = None,
+) -> None:
     resolved_name = _infer_name(factory, name)
     if resolved_name in _FACTORIES and not replace:
         raise ValueError(f"fixture '{resolved_name}' already registered")
+    if options is not None:
+        if not isinstance(options, type) or not dataclasses.is_dataclass(options):
+            raise TypeError(
+                f"'options' for fixture '{resolved_name}' must be a dataclass type, "
+                f"got {type(options).__name__}"
+            )
     _FACTORIES[resolved_name] = _normalize_factory(factory)
+    if options is not None:
+        _OPTIONS_CLASSES[resolved_name] = options
 
 
 def fixture(
@@ -540,6 +645,7 @@ def fixture(
     name: str | None = None,
     replace: bool = False,
     log_teardown: bool = False,
+    options: type | None = None,
 ) -> Callable[[_FactoryCallable], _FactoryCallable] | _FactoryCallable:
     """Decorator registering a fixture factory.
 
@@ -547,6 +653,10 @@ def fixture(
     return any of the supported fixture factory types. When used on a generator
     function, the decorator implicitly wraps it with :func:`contextlib.contextmanager`
     so authors can ``yield`` environments directly.
+
+    The optional ``options`` parameter accepts a frozen dataclass type. When
+    provided, test authors can pass structured options in ``test.yaml`` and the
+    fixture receives a typed instance via :func:`current_options`.
     """
 
     def _decorator(inner: _FactoryCallable) -> _FactoryCallable:
@@ -557,7 +667,7 @@ def fixture(
         else:
             candidate = inner
 
-        register(resolved_name, candidate, replace=replace)
+        register(resolved_name, candidate, replace=replace, options=options)
 
         if log_teardown:
             registered = _FACTORIES.get(resolved_name)
@@ -573,8 +683,8 @@ def fixture(
 
 
 @contextmanager
-def activate(names: Iterable[str]) -> Iterator[dict[str, str]]:
-    normalized = tuple(names)
+def activate(names: Iterable[FixtureSpec | str]) -> Iterator[dict[str, str]]:
+    normalized = _coerce_specs(names)
     scope = _SUITE_SCOPE.get()
     if scope is not None and scope.fixtures == normalized:
         scope.depth += 1
@@ -584,21 +694,25 @@ def activate(names: Iterable[str]) -> Iterator[dict[str, str]]:
             scope.depth -= 1
         return
 
+    context_token = _push_fixture_options_context(normalized)
     stack = ExitStack()
     try:
         combined = _activate_into_stack(normalized, stack)
         yield combined
     finally:
         stack.close()
+        if context_token is not None:
+            _CONTEXT.reset(context_token)
 
 
 @contextmanager
-def suite_scope(names: Iterable[str]) -> Iterator[dict[str, str]]:
-    normalized = tuple(names)
+def suite_scope(names: Iterable[FixtureSpec | str]) -> Iterator[dict[str, str]]:
+    normalized = _coerce_specs(names)
     existing = _SUITE_SCOPE.get()
     if existing is not None:
         raise RuntimeError("nested fixture suite scopes are not supported")
 
+    context_token = _push_fixture_options_context(normalized)
     stack = ExitStack()
     combined = _activate_into_stack(normalized, stack)
     scope = _SuiteScope(fixtures=normalized, stack=stack, env=combined)
@@ -608,6 +722,8 @@ def suite_scope(names: Iterable[str]) -> Iterator[dict[str, str]]:
     finally:
         _SUITE_SCOPE.reset(token)
         stack.close()
+        if context_token is not None:
+            _CONTEXT.reset(context_token)
 
 
 # Import built-in fixtures so they self-register on package import.
@@ -619,14 +735,17 @@ __all__ = [
     "FixtureContext",
     "FixtureHandle",
     "FixtureSelection",
+    "FixtureSpec",
     "FixturesAccessor",
     "FixtureController",
     "FixtureUnavailable",
     "activate",
     "acquire_fixture",
+    "current_options",
     "fixture",
     "fixtures",
     "fixtures_api",
+    "get_options_class",
     "suite_scope",
     "has",
     "register",

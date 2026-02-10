@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from tenzir_test import config, run
+from tenzir_test.fixtures import FixtureSpec  # noqa: F811
 from tenzir_test.run import ExecutionMode
 
 
@@ -40,7 +41,7 @@ def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> No
     assert config["runner"] == "tenzir"
     assert "node" not in config
     assert config["skip"] is None
-    assert config["fixtures"] == tuple()
+    assert config["fixtures"] == ()
     assert config["inputs"] is None
     assert config["retry"] == 1
 
@@ -70,7 +71,7 @@ write_json
     assert isinstance(skip_cfg, run.SkipConfig)
     assert skip_cfg.is_static
     assert skip_cfg.reason == "reason"
-    assert config["fixtures"] == tuple()
+    assert config["fixtures"] == ()
     assert config["inputs"] is None
     assert config["retry"] == 1
     assert config["package_dirs"] == tuple()
@@ -102,7 +103,7 @@ write_json
     assert isinstance(skip_cfg, run.SkipConfig)
     assert skip_cfg.is_static
     assert skip_cfg.reason == "maintenance"
-    assert config["fixtures"] == tuple()
+    assert config["fixtures"] == ()
     assert config["inputs"] is None
     assert config["retry"] == 1
     assert config["package_dirs"] == tuple()
@@ -127,7 +128,7 @@ write_json
 
     config = run.parse_test_config(test_file)
 
-    assert config["fixtures"] == ("shared",)
+    assert config["fixtures"] == (FixtureSpec(name="shared"),)
 
 
 def test_parse_test_config_forbids_fixtures_frontmatter_with_suite(
@@ -341,7 +342,7 @@ print("ok")
         "timeout": 45,
         "runner": "python",
         "skip": None,
-        "fixtures": tuple(),
+        "fixtures": (),
         "inputs": None,
         "retry": 1,
         "package_dirs": tuple(),
@@ -817,7 +818,7 @@ write_json
 
     config = run.parse_test_config(test_file)
 
-    assert config["fixtures"] == ("sink",)
+    assert config["fixtures"] == (FixtureSpec(name="sink"),)
 
 
 def test_parse_fixtures_list(tmp_path: Path, configured_root: Path) -> None:
@@ -835,7 +836,7 @@ write_json
 
     config = run.parse_test_config(test_file)
 
-    assert config["fixtures"] == ("node", "sink")
+    assert config["fixtures"] == (FixtureSpec(name="node"), FixtureSpec(name="sink"))
 
 
 # --- Tests for dict-based skip config validation (TST-2) ---
@@ -1038,3 +1039,196 @@ def test_skip_config_static_properties() -> None:
     assert not conditional_no_reason.is_static
     assert conditional_no_reason.is_conditional
     assert conditional_no_reason.reason is None
+
+
+# --- Tests for FixtureSpec and structured fixture options ---
+
+
+def test_fixture_spec_str_bare() -> None:
+    spec = FixtureSpec(name="node")
+    assert str(spec) == "node"
+
+
+def test_fixture_spec_str_with_options() -> None:
+    spec = FixtureSpec(name="node", options={"tls": True, "port": 8443})
+    result = str(spec)
+    assert result.startswith("node(")
+    assert "port=8443" in result
+    assert "tls=True" in result
+
+
+def test_fixture_spec_equality() -> None:
+    a = FixtureSpec(name="http", options={"port": 80})
+    b = FixtureSpec(name="http", options={"port": 80})
+    c = FixtureSpec(name="http", options={"port": 443})
+    assert a == b
+    assert a != c
+
+
+def test_fixture_spec_hash() -> None:
+    a = FixtureSpec(name="http", options={"port": 80})
+    b = FixtureSpec(name="http", options={"port": 80})
+    assert hash(a) == hash(b)
+    assert {a, b} == {a}
+
+
+def test_normalize_fixtures_value_bare_strings(tmp_path: Path, configured_root: Path) -> None:
+    test_file = tmp_path / "bare.tql"
+    test_file.write_text(
+        "---\nfixtures: [node, http]\n---\nversion\nwrite_json\n",
+        encoding="utf-8",
+    )
+    config = run.parse_test_config(test_file)
+    assert config["fixtures"] == (FixtureSpec(name="node"), FixtureSpec(name="http"))
+
+
+def test_normalize_fixtures_value_with_options(tmp_path: Path, configured_root: Path) -> None:
+    test_file = tmp_path / "opts.tql"
+    test_file.write_text(
+        "---\nfixtures:\n  - node:\n      tls: true\n      port: 8443\n  - http\n---\nversion\nwrite_json\n",
+        encoding="utf-8",
+    )
+    config = run.parse_test_config(test_file)
+    expected = (
+        FixtureSpec(name="node", options={"tls": True, "port": 8443}),
+        FixtureSpec(name="http"),
+    )
+    assert config["fixtures"] == expected
+
+
+def test_normalize_fixtures_value_rejects_multi_key_mapping(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    test_file = tmp_path / "bad.tql"
+    test_file.write_text(
+        "---\nfixtures:\n  - node:\n      tls: true\n    http:\n      port: 80\n---\nversion\nwrite_json\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="exactly one key"):
+        run.parse_test_config(test_file)
+
+
+def test_normalize_fixtures_value_rejects_non_dict_options(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    test_file = tmp_path / "bad2.tql"
+    test_file.write_text(
+        "---\nfixtures:\n  - node: just-a-string\n---\nversion\nwrite_json\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must be a mapping"):
+        run.parse_test_config(test_file)
+
+
+def test_build_fixture_options_without_options_class() -> None:
+    from tenzir_test.run import _build_fixture_options
+
+    specs = (FixtureSpec(name="custom", options={"key": "val"}),)
+    result = _build_fixture_options(specs)
+    assert result == {"custom": {"key": "val"}}
+
+
+def test_build_fixture_options_with_options_class() -> None:
+    import dataclasses as dc
+
+    from tenzir_test.fixtures import _OPTIONS_CLASSES
+    from tenzir_test.run import _build_fixture_options
+
+    @dc.dataclass(frozen=True)
+    class TestOpts:
+        port: int = 0
+        tls: bool = False
+
+    _OPTIONS_CLASSES["_test_build"] = TestOpts
+    try:
+        specs = (FixtureSpec(name="_test_build", options={"port": 443, "tls": True}),)
+        result = _build_fixture_options(specs)
+        assert isinstance(result["_test_build"], TestOpts)
+        assert result["_test_build"].port == 443
+        assert result["_test_build"].tls is True
+
+        # Bare name gets default-constructed typed instance
+        specs_bare = (FixtureSpec(name="_test_build"),)
+        result_bare = _build_fixture_options(specs_bare)
+        assert isinstance(result_bare["_test_build"], TestOpts)
+        assert result_bare["_test_build"].port == 0
+    finally:
+        _OPTIONS_CLASSES.pop("_test_build", None)
+
+
+def test_build_fixture_options_invalid_fields() -> None:
+    import dataclasses as dc
+
+    from tenzir_test.fixtures import _OPTIONS_CLASSES
+    from tenzir_test.run import _build_fixture_options
+
+    @dc.dataclass(frozen=True)
+    class StrictOpts:
+        port: int = 0
+
+    _OPTIONS_CLASSES["_test_strict"] = StrictOpts
+    try:
+        specs = (FixtureSpec(name="_test_strict", options={"nonexistent": True}),)
+        with pytest.raises(ValueError, match="invalid options for fixture"):
+            _build_fixture_options(specs)
+    finally:
+        _OPTIONS_CLASSES.pop("_test_strict", None)
+
+
+def test_build_fixture_options_omits_empty() -> None:
+    from tenzir_test.run import _build_fixture_options
+
+    specs = (FixtureSpec(name="plain"),)
+    result = _build_fixture_options(specs)
+    assert result == {}
+
+
+def test_fixture_decorator_registers_options_class() -> None:
+    import dataclasses as dc
+
+    from tenzir_test.fixtures import _FACTORIES, _OPTIONS_CLASSES, fixture, get_options_class
+
+    @dc.dataclass(frozen=True)
+    class DemoOpts:
+        flag: bool = False
+
+    @fixture(name="_test_demo_opts", options=DemoOpts, replace=True)
+    def _demo_fixture():  # type: ignore[no-untyped-def]
+        yield {}
+
+    try:
+        assert "_test_demo_opts" in _FACTORIES
+        assert get_options_class("_test_demo_opts") is DemoOpts
+    finally:
+        _FACTORIES.pop("_test_demo_opts", None)
+        _OPTIONS_CLASSES.pop("_test_demo_opts", None)
+
+
+def test_register_rejects_dataclass_instance_for_options() -> None:
+    import dataclasses as dc
+
+    from tenzir_test.fixtures import _FACTORIES, _OPTIONS_CLASSES, register
+
+    @dc.dataclass(frozen=True)
+    class DemoOpts:
+        flag: bool = False
+
+    def _fixture():  # type: ignore[no-untyped-def]
+        return {}
+
+    with pytest.raises(TypeError, match="dataclass type"):
+        register(
+            "_test_bad_opts_instance",
+            _fixture,
+            replace=True,
+            options=DemoOpts(),
+        )
+
+    _FACTORIES.pop("_test_bad_opts_instance", None)
+    _OPTIONS_CLASSES.pop("_test_bad_opts_instance", None)
+
+
+def test_current_options_returns_empty_without_context() -> None:
+    from tenzir_test.fixtures import current_options
+
+    assert current_options("nonexistent") == {}

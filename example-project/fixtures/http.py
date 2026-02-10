@@ -9,16 +9,30 @@ Usage overview:
 
 The fixture showcases the concise ``@fixture`` decorator: the generator starts
 the server, yields the environment, and tears everything down automatically.
+
+Structured options are supported via ``HttpOptions``::
+
+    fixtures:
+      - http:
+          port: 9090
 """
 
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Iterator
 
-from tenzir_test import fixture
+from tenzir_test import current_options, fixture
+
+
+@dataclass(frozen=True)
+class HttpOptions:
+    """Optional configuration for the HTTP echo fixture."""
+
+    port: int = 0
 
 
 class EchoHandler(BaseHTTPRequestHandler):
@@ -43,9 +57,10 @@ class EchoHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-@fixture()
+@fixture(options=HttpOptions)
 def run() -> Iterator[dict[str, str]]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), EchoHandler)
+    opts = current_options("http")
+    server = ThreadingHTTPServer(("127.0.0.1", opts.port), EchoHandler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
 
