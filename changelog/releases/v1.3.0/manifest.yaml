@@ -1,0 +1,6 @@
+created: 2026-02-10
+title: Structured Fixture Options
+intro: >-
+  This release adds structured configuration options for fixtures, letting tests
+
+  pass typed parameters through YAML frontmatter using frozen dataclasses.

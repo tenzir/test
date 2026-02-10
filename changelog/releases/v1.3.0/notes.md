@@ -1,0 +1,24 @@
+This release adds structured configuration options for fixtures, letting tests pass typed parameters through YAML frontmatter using frozen dataclasses.
+
+## 🚀 Features
+
+### Structured options for fixtures
+
+Fixtures can now receive typed configuration options passed from test YAML files.
+
+Declare options on a fixture with `@fixture(options=MyDataclass)`, where `MyDataclass` is a frozen dataclass. Tests can then provide structured options in their frontmatter using either compact syntax (for simple cases) or expanded syntax (for clarity):
+
+```yaml
+fixtures:
+  - node:
+      tls: true
+      port: 8443
+  - http:
+      port: 9090
+```
+
+The `@fixture` decorator validates that option keys match the dataclass fields, and the fixture retrieves its typed instance using `current_options(name)`. When options aren't provided, fixtures receive a default-constructed instance of their options class.
+
+The feature maintains backward compatibility with the existing `fixtures: [node, http]` syntax for fixtures without options.
+
+*By @mavam and @claude in #17.*
