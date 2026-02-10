@@ -591,7 +591,9 @@ def _build_fixture_options_for_context(
     return merged
 
 
-def _push_fixture_options_context(specs: tuple[FixtureSpec, ...]) -> Token[FixtureContext | None] | None:
+def _push_fixture_options_context(
+    specs: tuple[FixtureSpec, ...],
+) -> Token[FixtureContext | None] | None:
     """Push a derived FixtureContext that includes options from fixture specs."""
     ctx = _CONTEXT.get()
     if ctx is None:
