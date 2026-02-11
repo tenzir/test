@@ -28,9 +28,12 @@ The `server` fixture spawns a controllable subprocess and exposes hooks:
 
 - Python-mode tests simply `import fixtures` and use `acquire_fixture("server")`
   to obtain a controller without declaring the fixture in frontmatter.
+- Declarative tests can pass nested options, for example:
+  `fixtures: [{server: {message: {greeting: world}}}]`.
 - `start()` launches the subprocess, `stop()` tears it down, and optional hooks
   such as `kill()` surface on the controller object.
-- The fixture yields a `SERVER_PID` environment variable for diagnostics.
+- The fixture yields `SERVER_PID` and `SERVER_GREETING` environment variables
+  for diagnostics.
 - Teardown still executes even if tests forget to stop the controller manually.
 
 ```python

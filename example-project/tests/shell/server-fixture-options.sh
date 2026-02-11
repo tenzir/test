@@ -1,4 +1,4 @@
 #!/bin/sh
-# fixtures: [{server: {greeting: world}}]
+# fixtures: [{server: {message: {greeting: world}}}]
 
 echo "${SERVER_GREETING}"

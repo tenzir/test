@@ -10,6 +10,8 @@ import subprocess
 import sys
 import threading
 import time
+import types
+import typing
 from contextlib import ExitStack, AbstractContextManager, contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -53,6 +55,38 @@ class FixtureSpec:
 
 
 _OPTIONS_CLASSES: dict[str, type] = {}
+
+
+def _unwrap_optional(tp: Any) -> Any:
+    """Return inner type for Optional[T] or T | None annotations."""
+    origin = typing.get_origin(tp)
+    if origin not in (typing.Union, types.UnionType):
+        return tp
+    non_none_args = [arg for arg in typing.get_args(tp) if arg is not type(None)]
+    return non_none_args[0] if len(non_none_args) == 1 else tp
+
+
+def _instantiate_options(cls: type, data: Mapping[str, Any]) -> Any:
+    """Recursively instantiate nested dataclass options from mapping data."""
+    try:
+        hints = typing.get_type_hints(cls)
+    except NameError:
+        # Fall back to non-recursive construction when forward refs are unavailable.
+        hints = {}
+    processed: dict[str, Any] = {}
+    for key, value in data.items():
+        raw_type = hints.get(key)
+        field_type = _unwrap_optional(raw_type) if raw_type is not None else None
+        if (
+            field_type is not None
+            and isinstance(field_type, type)
+            and dataclasses.is_dataclass(field_type)
+            and isinstance(value, Mapping)
+        ):
+            processed[key] = _instantiate_options(field_type, value)
+        else:
+            processed[key] = value
+    return cls(**processed)
 
 
 def get_options_class(name: str) -> type | None:
@@ -582,7 +616,7 @@ def _build_fixture_options_for_context(
         options_cls = _OPTIONS_CLASSES.get(spec.name)
         if options_cls is not None:
             try:
-                merged[spec.name] = options_cls(**spec.options) if spec.options else options_cls()
+                merged[spec.name] = _instantiate_options(options_cls, spec.options)
             except TypeError as exc:
                 raise ValueError(f"invalid options for fixture '{spec.name}': {exc}") from exc
             continue

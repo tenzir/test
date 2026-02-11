@@ -1,15 +1,50 @@
 from __future__ import annotations
 
+import dataclasses as dc
 from pathlib import Path
 import shlex
 import shutil
 import sys
+import typing
 
 import pytest
 
 from tenzir_test import config, run
 from tenzir_test.fixtures import FixtureSpec  # noqa: F811
 from tenzir_test.run import ExecutionMode
+
+
+@dc.dataclass(frozen=True)
+class _NestedTlsOptions:
+    cert: str = ""
+    key: str = ""
+
+
+@dc.dataclass(frozen=True)
+class _NestedNodeOptions:
+    port: int = 8443
+    tls: _NestedTlsOptions = dc.field(default_factory=_NestedTlsOptions)
+
+
+@dc.dataclass(frozen=True)
+class _NestedEndpointOptions:
+    host: str = "127.0.0.1"
+    tls: _NestedTlsOptions = dc.field(default_factory=_NestedTlsOptions)
+
+
+@dc.dataclass(frozen=True)
+class _NestedClusterOptions:
+    endpoint: _NestedEndpointOptions = dc.field(default_factory=_NestedEndpointOptions)
+
+
+@dc.dataclass(frozen=True)
+class _OptionalTypingNestedOptions:
+    tls: typing.Optional[_NestedTlsOptions] = None
+
+
+@dc.dataclass(frozen=True)
+class _OptionalUnionNestedOptions:
+    tls: _NestedTlsOptions | None = None
 
 
 @pytest.fixture()
@@ -1129,8 +1164,6 @@ def test_build_fixture_options_without_options_class() -> None:
 
 
 def test_build_fixture_options_with_options_class() -> None:
-    import dataclasses as dc
-
     from tenzir_test.fixtures import _OPTIONS_CLASSES
     from tenzir_test.run import _build_fixture_options
 
@@ -1156,9 +1189,160 @@ def test_build_fixture_options_with_options_class() -> None:
         _OPTIONS_CLASSES.pop("_test_build", None)
 
 
-def test_build_fixture_options_invalid_fields() -> None:
-    import dataclasses as dc
+def test_build_fixture_options_two_level_nested_dataclass() -> None:
+    from tenzir_test.fixtures import _OPTIONS_CLASSES
+    from tenzir_test.run import _build_fixture_options
 
+    _OPTIONS_CLASSES["_test_nested_two"] = _NestedNodeOptions
+    try:
+        specs = (
+            FixtureSpec(
+                name="_test_nested_two",
+                options={"port": 9443, "tls": {"cert": "/tmp/cert.pem"}},
+            ),
+        )
+        result = _build_fixture_options(specs)
+        options = result["_test_nested_two"]
+        assert isinstance(options, _NestedNodeOptions)
+        assert options.port == 9443
+        assert isinstance(options.tls, _NestedTlsOptions)
+        assert options.tls.cert == "/tmp/cert.pem"
+        assert options.tls.key == ""
+    finally:
+        _OPTIONS_CLASSES.pop("_test_nested_two", None)
+
+
+def test_build_fixture_options_three_level_nested_dataclass() -> None:
+    from tenzir_test.fixtures import _OPTIONS_CLASSES
+    from tenzir_test.run import _build_fixture_options
+
+    _OPTIONS_CLASSES["_test_nested_three"] = _NestedClusterOptions
+    try:
+        specs = (
+            FixtureSpec(
+                name="_test_nested_three",
+                options={
+                    "endpoint": {
+                        "host": "localhost",
+                        "tls": {"cert": "/tmp/deep-cert.pem", "key": "/tmp/deep-key.pem"},
+                    }
+                },
+            ),
+        )
+        result = _build_fixture_options(specs)
+        options = result["_test_nested_three"]
+        assert isinstance(options, _NestedClusterOptions)
+        assert isinstance(options.endpoint, _NestedEndpointOptions)
+        assert options.endpoint.host == "localhost"
+        assert isinstance(options.endpoint.tls, _NestedTlsOptions)
+        assert options.endpoint.tls.cert == "/tmp/deep-cert.pem"
+        assert options.endpoint.tls.key == "/tmp/deep-key.pem"
+    finally:
+        _OPTIONS_CLASSES.pop("_test_nested_three", None)
+
+
+def test_build_fixture_options_optional_nested_dataclass_typing_optional() -> None:
+    from tenzir_test.fixtures import _OPTIONS_CLASSES
+    from tenzir_test.run import _build_fixture_options
+
+    _OPTIONS_CLASSES["_test_nested_optional_typing"] = _OptionalTypingNestedOptions
+    try:
+        specs = (
+            FixtureSpec(
+                name="_test_nested_optional_typing",
+                options={"tls": {"cert": "/tmp/optional-cert.pem"}},
+            ),
+        )
+        result = _build_fixture_options(specs)
+        options = result["_test_nested_optional_typing"]
+        assert isinstance(options, _OptionalTypingNestedOptions)
+        assert isinstance(options.tls, _NestedTlsOptions)
+        assert options.tls.cert == "/tmp/optional-cert.pem"
+        assert options.tls.key == ""
+    finally:
+        _OPTIONS_CLASSES.pop("_test_nested_optional_typing", None)
+
+
+def test_build_fixture_options_optional_nested_dataclass_union_syntax() -> None:
+    from tenzir_test.fixtures import _OPTIONS_CLASSES
+    from tenzir_test.run import _build_fixture_options
+
+    _OPTIONS_CLASSES["_test_nested_optional_union"] = _OptionalUnionNestedOptions
+    try:
+        specs = (
+            FixtureSpec(
+                name="_test_nested_optional_union",
+                options={"tls": {"key": "/tmp/union-key.pem"}},
+            ),
+        )
+        result = _build_fixture_options(specs)
+        options = result["_test_nested_optional_union"]
+        assert isinstance(options, _OptionalUnionNestedOptions)
+        assert isinstance(options.tls, _NestedTlsOptions)
+        assert options.tls.cert == ""
+        assert options.tls.key == "/tmp/union-key.pem"
+    finally:
+        _OPTIONS_CLASSES.pop("_test_nested_optional_union", None)
+
+
+def test_build_fixture_options_nested_record_omitted_uses_default() -> None:
+    from tenzir_test.fixtures import _OPTIONS_CLASSES
+    from tenzir_test.run import _build_fixture_options
+
+    _OPTIONS_CLASSES["_test_nested_default"] = _NestedNodeOptions
+    try:
+        specs_partial = (FixtureSpec(name="_test_nested_default", options={"port": 443}),)
+        result_partial = _build_fixture_options(specs_partial)
+        partial_options = result_partial["_test_nested_default"]
+        assert isinstance(partial_options, _NestedNodeOptions)
+        assert partial_options.port == 443
+        assert isinstance(partial_options.tls, _NestedTlsOptions)
+        assert partial_options.tls == _NestedTlsOptions()
+
+        specs_bare = (FixtureSpec(name="_test_nested_default"),)
+        result_bare = _build_fixture_options(specs_bare)
+        bare_options = result_bare["_test_nested_default"]
+        assert isinstance(bare_options, _NestedNodeOptions)
+        assert bare_options == _NestedNodeOptions()
+    finally:
+        _OPTIONS_CLASSES.pop("_test_nested_default", None)
+
+
+def test_build_fixture_options_invalid_nested_field() -> None:
+    from tenzir_test.fixtures import _OPTIONS_CLASSES
+    from tenzir_test.run import _build_fixture_options
+
+    _OPTIONS_CLASSES["_test_nested_invalid"] = _NestedNodeOptions
+    try:
+        specs = (FixtureSpec(name="_test_nested_invalid", options={"tls": {"missing": "value"}}),)
+        with pytest.raises(ValueError, match="invalid options for fixture"):
+            _build_fixture_options(specs)
+    finally:
+        _OPTIONS_CLASSES.pop("_test_nested_invalid", None)
+
+
+def test_build_fixture_options_for_context_with_nested_options_class() -> None:
+    from tenzir_test.fixtures import _OPTIONS_CLASSES, _build_fixture_options_for_context
+
+    _OPTIONS_CLASSES["_test_nested_context"] = _NestedNodeOptions
+    try:
+        specs = (
+            FixtureSpec(
+                name="_test_nested_context",
+                options={"tls": {"cert": "/tmp/context-cert.pem"}},
+            ),
+        )
+        merged = _build_fixture_options_for_context(specs, {})
+        options = merged["_test_nested_context"]
+        assert isinstance(options, _NestedNodeOptions)
+        assert isinstance(options.tls, _NestedTlsOptions)
+        assert options.tls.cert == "/tmp/context-cert.pem"
+        assert options.tls.key == ""
+    finally:
+        _OPTIONS_CLASSES.pop("_test_nested_context", None)
+
+
+def test_build_fixture_options_invalid_fields() -> None:
     from tenzir_test.fixtures import _OPTIONS_CLASSES
     from tenzir_test.run import _build_fixture_options
 
@@ -1184,8 +1368,6 @@ def test_build_fixture_options_omits_empty() -> None:
 
 
 def test_fixture_decorator_registers_options_class() -> None:
-    import dataclasses as dc
-
     from tenzir_test.fixtures import _FACTORIES, _OPTIONS_CLASSES, fixture, get_options_class
 
     @dc.dataclass(frozen=True)
@@ -1205,8 +1387,6 @@ def test_fixture_decorator_registers_options_class() -> None:
 
 
 def test_register_rejects_dataclass_instance_for_options() -> None:
-    import dataclasses as dc
-
     from tenzir_test.fixtures import _FACTORIES, _OPTIONS_CLASSES, register
 
     @dc.dataclass(frozen=True)
