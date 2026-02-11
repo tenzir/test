@@ -1478,7 +1478,7 @@ def _build_fixture_options(
 
     For every spec:
     - If the fixture has a registered options class: construct a typed instance
-      via ``options_cls(**spec.options)`` (or ``options_cls()`` for bare names).
+      with recursive nested dataclass instantiation.
     - If no options class but options were provided: store the raw dict.
     - If no options class and no options: omit from the dict.
     """
@@ -1487,7 +1487,7 @@ def _build_fixture_options(
         options_cls = fixtures_impl.get_options_class(spec.name)
         if options_cls is not None:
             try:
-                result[spec.name] = options_cls(**spec.options) if spec.options else options_cls()
+                result[spec.name] = fixtures_impl._instantiate_options(options_cls, spec.options)
             except TypeError as exc:
                 raise ValueError(f"invalid options for fixture '{spec.name}': {exc}") from exc
         elif spec.options:

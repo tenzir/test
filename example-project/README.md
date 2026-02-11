@@ -84,6 +84,9 @@ example-project/
   calls.
 - **Shell scenarios** (`tests/shell/http-fixture-check.sh`): show how inline
   frontmatter can request fixtures directly from shell scripts.
+- **Nested fixture options** (`tests/shell/server-fixture-options.sh`): shows a
+  nested frontmatter record (`server.message.greeting`) flowing into fixture
+  options and exported as `SERVER_GREETING`.
 - **Skip demo** (`tests/lazy.tql`): uses `skip:` frontmatter to illustrate how
   the harness reports intentionally skipped tests along with custom messages.
 - **Fixture unavailability** (`tests/container`): the `container` fixture

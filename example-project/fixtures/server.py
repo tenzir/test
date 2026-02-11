@@ -3,16 +3,23 @@
 import signal
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tenzir_test import FixtureHandle, current_options, fixture
+
+
+@dataclass(frozen=True)
+class ServerGreetingOptions:
+    """Nested greeting configuration for the server fixture."""
+
+    greeting: str = "hello"
 
 
 @dataclass(frozen=True)
 class ServerOptions:
     """Optional configuration for the server fixture."""
 
-    greeting: str = "hello"
+    message: ServerGreetingOptions = field(default_factory=ServerGreetingOptions)
 
 
 def _spawn() -> subprocess.Popen:
@@ -27,7 +34,7 @@ def server() -> FixtureHandle:
     # tests, which use acquire_fixture() to call the hooks.
     opts = current_options("server")
     process = _spawn()
-    env = {"SERVER_PID": str(process.pid), "SERVER_GREETING": opts.greeting}
+    env = {"SERVER_PID": str(process.pid), "SERVER_GREETING": opts.message.greeting}
 
     def _teardown() -> None:
         if process.poll() is None:
