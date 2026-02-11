@@ -1,0 +1,5 @@
+created: 2026-02-11
+title: Nested Dataclass Options
+intro: >-
+  This release adds support for nested dataclass hierarchies in fixture options, enabling
+  multi-level structured configurations in test frontmatter.
