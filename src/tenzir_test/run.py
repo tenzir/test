@@ -919,14 +919,6 @@ _DEFAULT_RUNNER_BY_SUFFIX: dict[str, str] = {
 }
 
 _CONFIG_FILE_NAME = "test.yaml"
-_CONFIG_LOGGER = logging.getLogger("tenzir_test.config")
-_CONFIG_LOGGER.setLevel(logging.INFO)
-if not _CONFIG_LOGGER.handlers:
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    _CONFIG_LOGGER.addHandler(handler)
-    _CONFIG_LOGGER.propagate = False
 
 
 class _CliDebugHandler(logging.Handler):
@@ -1788,7 +1780,7 @@ def _assign_config_option(
             )
         runner_names = _runner_names or {runner.name for runner in runners_iter_runners()}
         if runner_names and value not in runner_names:
-            _CONFIG_LOGGER.info(
+            _CLI_LOGGER.debug(
                 "Runner '%s' is not registered; proceeding with explicit selection.",
                 value,
             )
@@ -1809,7 +1801,7 @@ def _log_directory_override(
     message = (
         f"{path} overrides '{key}' from {previous!r} (defined in {previous_source}) to {new!r}"
     )
-    _CONFIG_LOGGER.info(message)
+    _CLI_LOGGER.debug(message)
 
 
 def _load_directory_config(directory: Path) -> _DirectoryConfig:
