@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump type
+        required: true
+        type: choice
+        options:
+          - minor
+          - patch
+          - major
+      intro:
+        description: |
+          Intro of the release
+
+          The intro should be 1-2 sentences long, must be written in active
+          voice, and should clearly communicate the theme of the release to the
+          user. Use full sentences and avoid abbreviations.
+        required: true
+        type: string
+      title:
+        description: |
+          User-facing release title (auto-generated if omitted)
+        required: false
+        type: string
+
+jobs:
+  create:
+    name: Create
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Generate an app token
+        id: generate_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.TENZIR_GITHUB_APP_ID }}
+          private-key: ${{ secrets.TENZIR_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Set up GPG for signing
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.TENZIR_BOT_GPG_SIGNING_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_tag_gpgsign: true
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "tenzir-bot"
+          git config --global user.email "engineering@tenzir.com"
+          git remote set-url origin https://x-access-token:${{ steps.generate_token.outputs.token }}@github.com/${{ github.repository }}.git
+
+      - name: Run quality gates
+        run: |
+          uv sync --dev
+          uv run ruff check
+          uv run ruff format --check
+          uv run mypy
+          uv run pytest
+          uv build
+
+      - name: Create release
+        env:
+          RELEASE_INTRO: ${{ inputs.intro }}
+          RELEASE_TITLE: ${{ inputs.title }}
+        run: |
+          uvx tenzir-ship release create \
+            --${{ inputs.bump }} \
+            --intro "$RELEASE_INTRO" \
+            --title "$RELEASE_TITLE" \
+            --yes
+
+      - name: Bump version
+        run: uv version --bump ${{ inputs.bump }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        run: |
+          git add changelog/ pyproject.toml uv.lock
+          uvx tenzir-ship release publish \
+            --commit \
+            --tag \
+            --yes
+
+      - name: Output success message
+        run: |
+          VERSION=$(uvx tenzir-ship release version)
+          echo "🎉 Released ${VERSION} successfully!"
+          echo "🐙 GitHub: https://github.com/${{ github.repository }}/releases/tag/${VERSION}"
