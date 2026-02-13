@@ -1,0 +1,5 @@
+created: 2026-02-13
+title: Readable Config Logs
+intro: >-
+  This release improves the readability of configuration override log messages by
+  using relative paths and human-friendly formatting.
