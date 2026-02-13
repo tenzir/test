@@ -919,14 +919,6 @@ _DEFAULT_RUNNER_BY_SUFFIX: dict[str, str] = {
 }
 
 _CONFIG_FILE_NAME = "test.yaml"
-_CONFIG_LOGGER = logging.getLogger("tenzir_test.config")
-_CONFIG_LOGGER.setLevel(logging.INFO)
-if not _CONFIG_LOGGER.handlers:
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    _CONFIG_LOGGER.addHandler(handler)
-    _CONFIG_LOGGER.propagate = False
 
 
 class _CliDebugHandler(logging.Handler):
@@ -1788,7 +1780,7 @@ def _assign_config_option(
             )
         runner_names = _runner_names or {runner.name for runner in runners_iter_runners()}
         if runner_names and value not in runner_names:
-            _CONFIG_LOGGER.info(
+            _CLI_LOGGER.debug(
                 "Runner '%s' is not registered; proceeding with explicit selection.",
                 value,
             )
@@ -1796,6 +1788,12 @@ def _assign_config_option(
         return
 
     config[canonical] = value
+
+
+def _format_config_value(value: object) -> str:
+    if isinstance(value, tuple):
+        return "[" + ", ".join(str(v) for v in value) + "]"
+    return repr(value)
 
 
 def _log_directory_override(
@@ -1807,9 +1805,11 @@ def _log_directory_override(
     previous_source: Path,
 ) -> None:
     message = (
-        f"{path} overrides '{key}' from {previous!r} (defined in {previous_source}) to {new!r}"
+        f"{_relativize_path(path)} overrides '{key}'"
+        f" from {_format_config_value(previous)} (defined in {_relativize_path(previous_source)})"
+        f" to {_format_config_value(new)}"
     )
-    _CONFIG_LOGGER.info(message)
+    _CLI_LOGGER.debug(message)
 
 
 def _load_directory_config(directory: Path) -> _DirectoryConfig:
