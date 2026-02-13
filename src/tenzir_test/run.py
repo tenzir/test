@@ -1790,6 +1790,12 @@ def _assign_config_option(
     config[canonical] = value
 
 
+def _format_config_value(value: object) -> str:
+    if isinstance(value, tuple):
+        return "[" + ", ".join(str(v) for v in value) + "]"
+    return repr(value)
+
+
 def _log_directory_override(
     *,
     path: Path,
@@ -1799,7 +1805,9 @@ def _log_directory_override(
     previous_source: Path,
 ) -> None:
     message = (
-        f"{path} overrides '{key}' from {previous!r} (defined in {previous_source}) to {new!r}"
+        f"{_relativize_path(path)} overrides '{key}'"
+        f" from {_format_config_value(previous)} (defined in {_relativize_path(previous_source)})"
+        f" to {_format_config_value(new)}"
     )
     _CLI_LOGGER.debug(message)
 
