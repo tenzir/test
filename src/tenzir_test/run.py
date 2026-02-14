@@ -1458,6 +1458,57 @@ def _normalize_fixtures_value(
     return tuple(specs)
 
 
+def _parse_cli_fixture_entry(raw: str) -> typing.Any:
+    """Parse one ``--fixture`` entry into a value accepted by `_normalize_fixtures_value`."""
+
+    text = raw.strip()
+    if not text:
+        return text
+
+    shorthand_name, shorthand_sep, shorthand_remainder = text.partition(":")
+    if (
+        shorthand_sep
+        and shorthand_name.strip()
+        and shorthand_remainder.strip().startswith("{")
+        and text.lstrip()[0] not in "{["
+    ):
+        try:
+            options = yaml.safe_load(shorthand_remainder.strip())
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Invalid fixture options in '{raw}': {exc}") from exc
+        if not isinstance(options, dict):
+            raise ValueError(
+                f"Fixture options in '{raw}' must be a mapping, got '{type(options).__name__}'"
+            )
+        return {shorthand_name.strip(): options}
+
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError:
+        parsed = text
+
+    if isinstance(parsed, (list, dict)):
+        return parsed
+
+    if isinstance(parsed, str):
+        return parsed
+
+    return text
+
+
+def _normalize_cli_fixture_specs(values: Sequence[str]) -> tuple[fixtures_impl.FixtureSpec, ...]:
+    """Normalize repeated CLI ``--fixture`` values into fixture specs."""
+
+    raw_entries: list[typing.Any] = []
+    for raw in values:
+        parsed = _parse_cli_fixture_entry(raw)
+        if isinstance(parsed, list):
+            raw_entries.extend(parsed)
+        else:
+            raw_entries.append(parsed)
+    return _normalize_fixtures_value(raw_entries, location="--fixture")
+
+
 def _fixture_names(specs: Iterable[fixtures_impl.FixtureSpec]) -> tuple[str, ...]:
     """Extract fixture names from a sequence of specs."""
     return tuple(spec.name for spec in specs)
@@ -3906,6 +3957,167 @@ def _expand_suites(paths: set[Path]) -> set[Path]:
     return expanded
 
 
+def _configure_runtime_logging(*, debug_enabled: bool) -> None:
+    """Apply CLI/runtime logger configuration for test and fixture execution paths."""
+
+    set_debug_logging(debug_enabled)
+    _set_discovery_logging(debug_enabled)
+    set_suite_debug_logging(debug_enabled)
+
+    fixture_logger = logging.getLogger("tenzir_test.fixtures")
+    root_logger = logging.getLogger()
+
+    debug_formatter = logging.Formatter(f"{DEBUG_PREFIX} %(message)s")
+    default_formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+
+    if debug_enabled:
+        if not root_logger.handlers:
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(debug_formatter)
+            root_logger.addHandler(stream_handler)
+        else:
+            for existing_handler in list(root_logger.handlers):
+                existing_handler.setFormatter(debug_formatter)
+        root_logger.setLevel(logging.INFO)
+        if not fixture_logger.handlers:
+            fixture_logger.addHandler(logging.StreamHandler())
+        for handler in list(fixture_logger.handlers):
+            handler.setLevel(logging.DEBUG)
+            handler.setFormatter(debug_formatter)
+        fixture_logger.setLevel(logging.DEBUG)
+        fixture_logger.propagate = False
+        return
+
+    for existing_handler in list(root_logger.handlers):
+        existing_handler.setFormatter(default_formatter)
+    root_logger.setLevel(logging.WARNING)
+    for handler in list(fixture_logger.handlers):
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(default_formatter)
+    fixture_logger.setLevel(logging.WARNING)
+    fixture_logger.propagate = True
+
+
+def _print_fixture_env_lines(env: Mapping[str, str]) -> None:
+    """Print fixture-provided environment variables in deterministic order."""
+
+    with stdout_lock:
+        for key in sorted(env.keys()):
+            print(f"{key}={env[key]}")
+        print(f"{INFO} fixture environment is active; press Ctrl+C to stop")
+
+
+def _wait_for_fixture_shutdown() -> None:
+    """Block until SIGINT/SIGTERM is received, then return."""
+
+    stop_event = threading.Event()
+    previous = {
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+    }
+
+    def _handle_signal(signum: int, frame: object | None) -> None:  # pragma: no cover - signal path
+        del signum, frame
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+    try:
+        while not stop_event.wait(0.25):
+            continue
+    except KeyboardInterrupt:  # pragma: no cover - defensive fallback
+        pass
+    finally:
+        signal.signal(signal.SIGINT, previous[signal.SIGINT])
+        signal.signal(signal.SIGTERM, previous[signal.SIGTERM])
+
+
+def run_fixture_mode_cli(
+    *,
+    root: Path | None,
+    package_dirs: Sequence[Path] | None,
+    fixtures: Sequence[str],
+    debug: bool,
+    keep_tmp_dirs: bool,
+) -> int:
+    """Activate requested fixtures in foreground mode until interrupted."""
+
+    if not fixtures:
+        raise HarnessError("error: at least one --fixture option is required")
+
+    debug_enabled = bool(debug or _default_debug_logging)
+    _configure_runtime_logging(debug_enabled=debug_enabled)
+    set_keep_tmp_dirs(bool(os.environ.get(_TMP_KEEP_ENV_VAR)) or keep_tmp_dirs)
+
+    settings = discover_settings(root=root)
+    apply_settings(settings)
+    _set_cli_packages(list(package_dirs or []))
+
+    try:
+        _load_project_fixtures(ROOT, expose_namespace=True)
+    except RuntimeError as exc:
+        raise HarnessError(f"error: {exc}") from exc
+
+    try:
+        fixture_specs = _normalize_cli_fixture_specs(fixtures)
+    except ValueError as exc:
+        raise HarnessError(f"error: {exc}") from exc
+
+    fixture_test = ROOT / ".fixture-mode"
+    env, config_args = get_test_env_and_config_args(fixture_test)
+
+    package_dir_candidates: list[str] = []
+    package_root = packages.find_package_root(fixture_test)
+    if package_root is not None:
+        env["TENZIR_PACKAGE_ROOT"] = str(package_root)
+        package_dir_candidates.append(str(package_root))
+    for cli_path in _get_cli_packages():
+        package_dir_candidates.extend(_expand_package_dirs(cli_path))
+    if package_dir_candidates:
+        merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
+        env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
+        config_args.append(f"--package-dirs={','.join(merged_dirs)}")
+
+    for spec in fixture_specs:
+        try:
+            fixtures_impl.acquire_fixture(spec.name)
+        except ValueError as exc:
+            raise HarnessError(f"error: {exc}") from exc
+
+    try:
+        fixture_options = _build_fixture_options(fixture_specs)
+    except ValueError as exc:
+        raise HarnessError(f"error: {exc}") from exc
+    context_token = fixtures_impl.push_context(
+        fixtures_impl.FixtureContext(
+            test=fixture_test,
+            config={"fixtures": fixture_specs},
+            coverage=False,
+            env=env,
+            config_args=tuple(config_args),
+            tenzir_binary=TENZIR_BINARY,
+            tenzir_node_binary=TENZIR_NODE_BINARY,
+            fixture_options=fixture_options,
+        )
+    )
+    try:
+        with fixtures_impl.activate(fixture_specs) as fixture_env:
+            env.update(fixture_env)
+            _apply_fixture_env(env, fixture_specs)
+            _print_fixture_env_lines(fixture_env)
+            _wait_for_fixture_shutdown()
+    except fixtures_impl.FixtureUnavailable as exc:
+        reason = _sanitize_message(str(exc))
+        if reason:
+            raise HarnessError(f"error: fixture unavailable: {reason}") from exc
+        raise HarnessError("error: fixture unavailable") from exc
+    finally:
+        fixtures_impl.pop_context(context_token)
+        cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
+
+    return 0
+
+
 def run_cli(
     *,
     root: Path | None,
@@ -3945,42 +4157,7 @@ def run_cli(
 
     try:
         debug_enabled = bool(debug or _default_debug_logging)
-        set_debug_logging(debug_enabled)
-
-        fixture_logger = logging.getLogger("tenzir_test.fixtures")
-        root_logger = logging.getLogger()
-
-        _set_discovery_logging(debug_enabled)
-        set_suite_debug_logging(debug_enabled)
-
-        debug_formatter = logging.Formatter(f"{DEBUG_PREFIX} %(message)s")
-        default_formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
-
-        if debug_enabled:
-            if not root_logger.handlers:
-                stream_handler = logging.StreamHandler()
-                stream_handler.setFormatter(debug_formatter)
-                root_logger.addHandler(stream_handler)
-            else:
-                for existing_handler in list(root_logger.handlers):
-                    existing_handler.setFormatter(debug_formatter)
-            root_logger.setLevel(logging.INFO)
-            if not fixture_logger.handlers:
-                fixture_logger.addHandler(logging.StreamHandler())
-            for handler in list(fixture_logger.handlers):
-                handler.setLevel(logging.DEBUG)
-                handler.setFormatter(debug_formatter)
-            fixture_logger.setLevel(logging.DEBUG)
-            fixture_logger.propagate = False
-        else:
-            for existing_handler in list(root_logger.handlers):
-                existing_handler.setFormatter(default_formatter)
-            root_logger.setLevel(logging.WARNING)
-            for handler in list(fixture_logger.handlers):
-                handler.setLevel(logging.INFO)
-                handler.setFormatter(default_formatter)
-            fixture_logger.setLevel(logging.WARNING)
-            fixture_logger.propagate = True
+        _configure_runtime_logging(debug_enabled=debug_enabled)
 
         set_keep_tmp_dirs(bool(os.environ.get(_TMP_KEEP_ENV_VAR)) or keep_tmp_dirs)
         set_show_diff_output(show_diff_output)
