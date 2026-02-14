@@ -43,6 +43,8 @@ Examples:
   tenzir-test tests/ctx/ -m '*create*' Intersect directory with pattern
   tenzir-test -u tests/new.tql         Run test and update its baseline
   tenzir-test -p -k tests/debug/       Debug with output streaming and kept temps
+  tenzir-test --fixture mysql          Start fixture(s) in foreground mode
+  tenzir-test --fixture 'kafka: {port: 9092}' --debug
 
 Documentation: https://docs.tenzir.com/reference/test-framework/
 """,
@@ -69,6 +71,17 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     help=(
         "Comma-separated list of package directories to load (repeatable). "
         "These only control package visibility; test selection still follows the usual --root/args."
+    ),
+)
+@click.option(
+    "fixtures",
+    "--fixture",
+    multiple=True,
+    help=(
+        "Activate fixtures in standalone foreground mode (repeatable). "
+        "Accepts bare names ('mysql') or mapping specs "
+        "('kafka: {port: 9092}'). "
+        "When provided, positional TEST arguments are not allowed."
     ),
 )
 @click.argument(
@@ -180,6 +193,7 @@ def cli(
     *,
     root: Path | None,
     package_dirs: tuple[str, ...],
+    fixtures: tuple[str, ...],
     tests: tuple[Path, ...],
     match_patterns: tuple[str, ...],
     update: bool,
@@ -209,6 +223,9 @@ def cli(
       - Directories to run all tests within (e.g., tests/alerts/)
       - Omitted to run all discovered tests in the project
 
+    Use --fixture to start fixtures without executing tests. This mode keeps
+    fixtures running in the foreground until interrupted.
+
     Use -m/--match to select tests by substring or glob pattern.
     Bare strings match as substrings; glob metacharacters (*, ?, [) trigger
     fnmatch mode. Patterns match against relative paths shown in test output.
@@ -230,6 +247,19 @@ def cli(
     jobs_overridden = jobs_source is not click.core.ParameterSource.DEFAULT
 
     try:
+        if fixtures:
+            if tests:
+                raise click.UsageError(
+                    "positional TEST arguments cannot be used with --fixture mode"
+                )
+            return runtime.run_fixture_mode_cli(
+                root=root,
+                package_dirs=package_paths,
+                fixtures=list(fixtures),
+                debug=debug,
+                keep_tmp_dirs=keep_tmp_dirs,
+            )
+
         result = runtime.run_cli(
             root=root,
             package_dirs=package_paths,

@@ -191,6 +191,37 @@ def test_cli_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
     assert captured.err == ""
 
 
+def test_cli_fixture_mode_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fixture_mode_cli(**kwargs: object) -> int:
+        captured.update(kwargs)
+        return 7
+
+    def fake_run_cli(**_: object) -> run.ExecutionResult:
+        raise AssertionError("run_cli must not be called in --fixture mode")
+
+    monkeypatch.setattr(cli.runtime, "run_fixture_mode_cli", fake_fixture_mode_cli)
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    exit_code = cli.main(["--fixture", "mysql", "--debug", "--package-dirs", "a,b"])
+    assert exit_code == 7
+    assert captured["fixtures"] == ["mysql"]
+    assert captured["debug"] is True
+    assert captured["keep_tmp_dirs"] is False
+    from pathlib import Path
+
+    assert captured["package_dirs"] == [Path("a"), Path("b")]
+
+
+def test_cli_fixture_mode_disallows_tests(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli.main(["--fixture", "mysql", "tests/foo.tql"])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "cannot be used with --fixture mode" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_match_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
