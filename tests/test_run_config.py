@@ -1131,6 +1131,27 @@ def test_normalize_fixtures_value_with_options(tmp_path: Path, configured_root: 
     assert config["fixtures"] == expected
 
 
+def test_normalize_fixtures_value_with_hyphenated_name_and_nested_options(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    test_file = tmp_path / "compose_opts.tql"
+    test_file.write_text(
+        "---\nfixtures:\n  - docker-compose:\n      file: compose.yaml\n      services: [redis]\n      wait:\n        timeout_seconds: 45\n---\nversion\nwrite_json\n",
+        encoding="utf-8",
+    )
+    config = run.parse_test_config(test_file)
+    assert config["fixtures"] == (
+        FixtureSpec(
+            name="docker-compose",
+            options={
+                "file": "compose.yaml",
+                "services": ["redis"],
+                "wait": {"timeout_seconds": 45},
+            },
+        ),
+    )
+
+
 def test_normalize_fixtures_value_rejects_multi_key_mapping(
     tmp_path: Path, configured_root: Path
 ) -> None:
