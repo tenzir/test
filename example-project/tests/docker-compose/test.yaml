@@ -1,0 +1,10 @@
+suite: docker-compose-demo
+fixtures:
+  - docker-compose:
+      file: compose.yaml
+      services: [redis]
+      wait:
+        timeout_seconds: 90
+skip:
+  on: fixture-unavailable
+  reason: requires docker compose
