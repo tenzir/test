@@ -761,7 +761,7 @@ def suite_scope(names: Iterable[FixtureSpec | str]) -> Iterator[dict[str, str]]:
 
 
 # Import built-in fixtures so they self-register on package import.
-from . import node  # noqa: F401,E402
+from . import docker_compose, node  # noqa: F401,E402
 
 
 __all__ = [

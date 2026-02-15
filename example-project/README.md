@@ -36,6 +36,10 @@ example-project/
     │   ├── 01-context-create.{tql,txt}
     │   ├── 02-context-update.{tql,txt}
     │   └── 03-context-inspect.{tql,txt}
+    ├── docker-compose/
+    │   ├── test.yaml
+    │   ├── compose.yaml
+    │   └── check.{sh,txt}
     ├── hex/hello.{xxd,txt}
     ├── read-inputs.{tql,txt}
     ├── http-fixture.{tql,txt}
@@ -94,6 +98,10 @@ example-project/
   exist. The suite's `test.yaml` opts into graceful skipping via
   `skip: {on: fixture-unavailable}`, so the test is reported as skipped rather
   than failing the run.
+- **Native docker-compose fixture** (`tests/docker-compose`): demonstrates the
+  built-in `docker-compose` fixture with structured options, a local compose
+  spec, and suite-level `skip: {on: fixture-unavailable}` so environments
+  without Docker Compose skip cleanly.
 - **Satellite demo** (`../example-satellite/`): a self-contained project that
   reuses the root fixtures **and** the `xxd` runner while adding its own
   `satellite_marker` fixture. Invoke `uvx tenzir-test --root example-project
