@@ -12,11 +12,14 @@ import shutil
 from typing import Iterator
 
 from tenzir_test.fixtures import FixtureUnavailable, fixture
+from tenzir_test.fixtures.container_runtime import detect_runtime
 
 
 @fixture()
 def container() -> Iterator[dict[str, str]]:
-    runtime_path = shutil.which("container-runtime-example")
-    if runtime_path is None:
+    runtime = detect_runtime(order=("container-runtime-example",))
+    if runtime is None:
         raise FixtureUnavailable("container-runtime-example not found")
+    runtime_path = shutil.which(runtime.binary)
+    assert runtime_path is not None
     yield {"CONTAINER_RUNTIME": runtime_path}
