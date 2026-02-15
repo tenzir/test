@@ -1,0 +1,6 @@
+created: 2026-02-15
+title: Standalone Fixture Mode
+intro: >-
+  This release introduces a standalone fixture mode for starting fixtures without
+  running tests, adds a built-in docker-compose fixture with structured options, and
+  provides shared container runtime helpers for writing custom fixtures.
