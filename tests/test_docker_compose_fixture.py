@@ -237,6 +237,61 @@ def test_docker_compose_fixture_includes_logs_on_failure(
     assert seen_down is True
 
 
+def test_docker_compose_fixture_readiness_timeout_includes_last_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    test_file, _ = _prepare_suite_files(tmp_path)
+    seen_down = False
+
+    def _fake_run(cmd, **kwargs):  # noqa: ANN001
+        nonlocal seen_down
+        text_cmd = [str(part) for part in cmd]
+        if text_cmd == ["docker", "compose", "version"]:
+            return _completed(args=text_cmd, stdout="Docker Compose version v2\n")
+        if text_cmd[:2] == ["docker", "compose"] and "up" in text_cmd:
+            return _completed(args=text_cmd)
+        if text_cmd[:2] == ["docker", "compose"] and "ps" in text_cmd:
+            return _completed(args=text_cmd, stdout="abc123\n")
+        if text_cmd[:2] == ["docker", "inspect"]:
+            payload = [
+                {
+                    "Id": "abc123",
+                    "Name": "/demo-redis-1",
+                    "Config": {"Labels": {"com.docker.compose.service": "redis"}},
+                    "State": {"Running": False},
+                    "NetworkSettings": {"Ports": {}},
+                }
+            ]
+            return _completed(args=text_cmd, stdout=json.dumps(payload))
+        if text_cmd[:2] == ["docker", "compose"] and "down" in text_cmd:
+            seen_down = True
+            return _completed(args=text_cmd)
+        raise AssertionError(f"unexpected command: {text_cmd}")
+
+    monkeypatch.setattr(docker_compose_fixture.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(docker_compose_fixture.subprocess, "run", _fake_run)
+
+    with _fixture_context(test_file):
+        with pytest.raises(
+            RuntimeError, match="docker compose services did not become ready.*last observation"
+        ):
+            with fixture_api.activate(
+                [
+                    FixtureSpec(
+                        name="docker-compose",
+                        options={
+                            "file": "compose.yaml",
+                            "log_on_failure": False,
+                            "wait": {"timeout_seconds": 0, "poll_interval_seconds": 0},
+                        },
+                    )
+                ]
+            ):
+                pass
+
+    assert seen_down is True
+
+
 def test_docker_compose_fixture_registers_only_hyphenated_name() -> None:
     assert (
         fixture_api.get_options_class("docker-compose")

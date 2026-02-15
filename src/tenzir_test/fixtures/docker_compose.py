@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import re
-import shlex
 import shutil
 import subprocess
-import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
 from . import FixtureUnavailable, current_context, current_options, register
+from .container_runtime import (
+    ContainerCommandError,
+    ContainerInspectError,
+    ContainerReadinessTimeout,
+    parse_single_inspect_payload,
+    run_command,
+    run_command_checked,
+    wait_until_ready,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -155,19 +161,16 @@ def _run(
     env: Mapping[str, str],
     cwd: Path,
 ) -> subprocess.CompletedProcess[str]:
-    if _LOGGER.isEnabledFor(logging.DEBUG):
-        _LOGGER.debug("docker-compose fixture exec: %s (cwd=%s)", shlex.join(cmd), cwd)
     try:
-        return subprocess.run(
+        return run_command(
             cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=dict(env),
-            cwd=str(cwd),
+            env=env,
+            cwd=cwd,
+            logger=_LOGGER,
+            debug_prefix="docker-compose fixture exec",
         )
-    except OSError as exc:
-        raise RuntimeError(f"failed to execute command '{shlex.join(cmd)}': {exc}") from exc
+    except ContainerCommandError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _run_checked(
@@ -177,11 +180,17 @@ def _run_checked(
     cwd: Path,
     description: str,
 ) -> subprocess.CompletedProcess[str]:
-    result = _run(cmd, env=env, cwd=cwd)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip() or "no output"
-        raise RuntimeError(f"{description} failed (exit code {result.returncode}): {detail}")
-    return result
+    try:
+        return run_command_checked(
+            cmd,
+            env=env,
+            cwd=cwd,
+            description=description,
+            logger=_LOGGER,
+            debug_prefix="docker-compose fixture exec",
+        )
+    except ContainerCommandError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _compose_base_args(
@@ -272,14 +281,29 @@ def _inspect_container(
         description=f"docker inspect {container_id}",
     )
     try:
-        parsed = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"unable to parse docker inspect output for container {container_id}: {exc}"
-        ) from exc
-    if not isinstance(parsed, list) or not parsed or not isinstance(parsed[0], dict):
-        raise RuntimeError(f"unexpected docker inspect payload for container {container_id}")
-    return parsed[0]
+        return parse_single_inspect_payload(result.stdout, container_id=container_id)
+    except ContainerInspectError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _readiness_snapshot(inspected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    snapshot: list[dict[str, Any]] = []
+    for item in inspected:
+        entry: dict[str, Any] = {
+            "id": item.get("Id"),
+            "name": item.get("Name"),
+            "ready": _is_ready(item),
+            "running": False,
+            "health": None,
+        }
+        state = item.get("State")
+        if isinstance(state, Mapping):
+            entry["running"] = bool(state.get("Running"))
+            health = state.get("Health")
+            if isinstance(health, Mapping):
+                entry["health"] = str(health.get("Status", "")).strip().lower()
+        snapshot.append(entry)
+    return snapshot
 
 
 def _wait_for_ready(
@@ -290,18 +314,27 @@ def _wait_for_ready(
     env: Mapping[str, str],
     cwd: Path,
 ) -> list[dict[str, Any]]:
-    deadline = time.monotonic() + max(0.0, timeout_seconds)
-    poll = max(0.0, poll_interval_seconds)
-    while True:
+    def _probe() -> tuple[bool, dict[str, Any]]:
         inspected = [_inspect_container(cid, env=env, cwd=cwd) for cid in container_ids]
-        if all(_is_ready(item) for item in inspected):
-            return inspected
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(poll)
-    raise RuntimeError(
-        f"docker compose services did not become ready within {timeout_seconds:.1f}s"
-    )
+        return all(_is_ready(item) for item in inspected), {
+            "inspected": inspected,
+            "state": _readiness_snapshot(inspected),
+        }
+
+    try:
+        observation = wait_until_ready(
+            _probe,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout_context="docker compose services",
+        )
+    except ContainerReadinessTimeout as exc:
+        raise RuntimeError(str(exc)) from exc
+    inspected_any = observation.get("inspected")
+    if not isinstance(inspected_any, list):
+        raise RuntimeError("docker compose readiness probe returned invalid inspection payload")
+    inspected: list[dict[str, Any]] = [item for item in inspected_any if isinstance(item, dict)]
+    return inspected
 
 
 def _collect_logs(

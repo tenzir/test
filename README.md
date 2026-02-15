@@ -34,26 +34,6 @@ for an end-to-end walkthrough of writing tests.
 We also provide a dense [reference](https://docs.tenzir.com/reference/test) that
 explains concepts, configuration, multi-project execution, and CLI details.
 
-## 🧱 Standalone Fixtures
-
-Use `--fixture` to start fixtures without running tests. The harness prints
-fixture-provided `KEY=VALUE` entries and keeps services running until
-interrupted:
-
-```sh
-uvx tenzir-test --fixture mysql
-uvx tenzir-test --fixture 'kafka: {port: 9092}' --debug
-```
-
-`--fixture` is repeatable and runs fixtures in the foreground. Stop with
-`Ctrl+C` for clean teardown.
-
-## 🗞️ Releases
-
-New versions are published to PyPI through trusted publishing when a GitHub
-release is created. Review the latest release notes on GitHub for details about
-what's new.
-
 ## 🤝 Contributing
 
 Want to contribute? We're all-in on agentic coding with [Claude
