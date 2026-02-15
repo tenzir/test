@@ -165,6 +165,11 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     help="Print individual test results as they complete. By default, only failures are shown. Automatically enabled in passthrough mode.",
 )
 @click.option(
+    "--run-skipped",
+    is_flag=True,
+    help="Run tests even when skip config is present.",
+)
+@click.option(
     "-a",
     "--all-projects",
     is_flag=True,
@@ -210,6 +215,7 @@ def cli(
     jobs: int,
     passthrough: bool,
     verbose: bool,
+    run_skipped: bool,
     all_projects: bool,
 ) -> int:
     """Execute test scenarios and compare output against baselines.
@@ -278,6 +284,7 @@ def cli(
             jobs=jobs,
             passthrough=passthrough,
             verbose=verbose,
+            run_skipped=run_skipped,
             jobs_overridden=jobs_overridden,
             all_projects=all_projects,
             match_patterns=list(match_patterns),

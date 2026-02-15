@@ -80,6 +80,7 @@ def test_cli_keep_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["all_projects"] is False
     assert captured["show_summary"] is False
     assert captured["show_diff_stat"] is True
+    assert captured["run_skipped"] is False
 
 
 def test_cli_passthrough_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,6 +97,19 @@ def test_cli_passthrough_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["jobs_overridden"] is False
     assert captured["all_projects"] is False
     assert captured["show_summary"] is False
+
+
+def test_cli_run_skipped_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> run.ExecutionResult:
+        captured.update(kwargs)
+        return _make_result()
+
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert cli.main(["--run-skipped"]) == 0
+    assert captured["run_skipped"] is True
 
 
 def test_cli_passthrough_jobs(monkeypatch: pytest.MonkeyPatch) -> None:

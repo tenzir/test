@@ -149,6 +149,7 @@ def test_execute_delegates_to_run_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["tests"] == [Path("sample.tql")]
     assert captured["jobs"] == 2
     assert captured["update"] is True
+    assert captured["run_skipped"] is False
 
 
 def test_format_summary_reports_counts_and_percentages() -> None:
@@ -1457,6 +1458,7 @@ def test_summarize_harness_configuration_sets_update_verb() -> None:
         runner_summary=False,
         fixture_summary=False,
         passthrough=False,
+        run_skipped=False,
     )
 
     assert job_count == 1
@@ -1474,6 +1476,7 @@ def test_summarize_harness_configuration_sets_passthrough_verb() -> None:
         runner_summary=False,
         fixture_summary=False,
         passthrough=True,
+        run_skipped=False,
     )
 
     assert job_count == 2
@@ -2648,6 +2651,7 @@ def _run_cli_kwargs(
         jobs=1,
         keep_tmp_dirs=False,
         passthrough=False,
+        run_skipped=False,
         jobs_overridden=False,
         all_projects=all_projects,
         match_patterns=match_patterns,
@@ -2850,6 +2854,97 @@ class TestMatchPatternIntegration:
             assert result.summary.total == 1
         finally:
             self._teardown(info)
+
+
+# --- Tests for --run-skipped behavior in Worker ---
+
+
+def test_worker_run_skipped_ignores_static_skip_and_executes(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "test.yaml").write_text("skip: maintenance\n", encoding="utf-8")
+    test_path = tests_dir / "run-static-skip.sh"
+    test_path.write_text('echo "executed"\n', encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped=False)
+        worker.start()
+        skipped_summary = worker.join()
+        assert skipped_summary.total == 1
+        assert skipped_summary.skipped == 1
+        assert skipped_summary.failed == 0
+
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped=True)
+        worker.start()
+        executed_summary = worker.join()
+        assert executed_summary.total == 1
+        assert executed_summary.skipped == 0
+        assert executed_summary.failed == 1
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_worker_run_skipped_disables_conditional_fixture_skip(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: context\nskip:\n  on: fixture-unavailable\nfixtures:\n  - unavailable_fixture\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    test_path = suite_dir / "01-test.tql"
+    test_path.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    previous_factory = fixture_api._FACTORIES.get("unavailable_fixture")
+
+    @fixture_api.fixture(name="unavailable_fixture", replace=True)
+    def unavailable_fixture():
+        raise fixture_api.FixtureUnavailable("docker not found")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped=True)
+        worker.start()
+        with pytest.raises(fixture_api.FixtureUnavailable, match="docker not found"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["unavailable_fixture"] = previous_factory
+        run.apply_settings(original_settings)
 
 
 # --- Tests for FixtureUnavailable handling in Worker._run_suite (TST-1, TST-4, TST-6) ---

@@ -2774,6 +2774,7 @@ def _summarize_harness_configuration(
     runner_summary: bool,
     fixture_summary: bool,
     passthrough: bool,
+    run_skipped: bool,
 ) -> tuple[int, str, str]:
     enabled_flags: list[str] = []
     toggles = (
@@ -2783,6 +2784,7 @@ def _summarize_harness_configuration(
         ("runner-summary", runner_summary),
         ("fixture-summary", fixture_summary),
         ("keep-tmp-dirs", KEEP_TMP_DIRS),
+        ("run-skipped", run_skipped),
     )
     for name, flag in toggles:
         if flag:
@@ -3596,6 +3598,7 @@ class Worker:
         coverage: bool = False,
         runner_versions: Mapping[str, str] | None = None,
         debug: bool = False,
+        run_skipped: bool = False,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -3604,6 +3607,7 @@ class Worker:
         self._coverage = coverage
         self._runner_versions = dict(runner_versions or {})
         self._debug = debug
+        self._run_skipped = run_skipped
         self._thread = threading.Thread(target=self._work)
 
     def start(self) -> None:
@@ -3707,6 +3711,8 @@ class Worker:
                     if interrupted:
                         break
         except fixtures_impl.FixtureUnavailable as exc:
+            if self._run_skipped:
+                raise
             skip_cfg: SkipConfig | None = primary_config.get("skip")  # type: ignore[assignment]
             if not (isinstance(skip_cfg, SkipConfig) and skip_cfg.is_conditional):
                 raise
@@ -3780,7 +3786,7 @@ class Worker:
             if suite_fixtures is None:
                 configured_fixtures = config_fixtures
             skip_cfg = cast(SkipConfig | None, config.get("skip"))
-            if skip_cfg is not None and skip_cfg.is_static:
+            if not self._run_skipped and skip_cfg is not None and skip_cfg.is_static:
                 assert skip_cfg.reason is not None
                 outcome = handle_skip(
                     skip_cfg.reason,
@@ -4137,6 +4143,7 @@ def run_cli(
     keep_tmp_dirs: bool,
     passthrough: bool,
     verbose: bool = False,
+    run_skipped: bool = False,
     jobs_overridden: bool = False,
     all_projects: bool = False,
     match_patterns: Sequence[str] = (),
@@ -4146,6 +4153,8 @@ def run_cli(
     Args:
         verbose: Print individual test results (pass/skip) as they complete.
             When False (default), only failures are printed during execution.
+        run_skipped: When True, ignore all skip configuration and execute
+            tests normally.
         match_patterns: Substring or glob patterns matched against relative
             test paths.  Bare strings without glob metacharacters (``*``,
             ``?``, ``[``) are treated as substring matches.  Tests matching
@@ -4393,6 +4402,7 @@ def run_cli(
                     runner_summary=runner_summary,
                     fixture_summary=fixture_summary,
                     passthrough=passthrough_mode,
+                    run_skipped=run_skipped,
                 )
 
                 if not project_queue_size:
@@ -4447,6 +4457,7 @@ def run_cli(
                         coverage=coverage,
                         runner_versions=runner_versions,
                         debug=debug_enabled,
+                        run_skipped=run_skipped,
                     )
                     for _ in range(jobs)
                 ]
@@ -4563,6 +4574,7 @@ def execute(
     keep_tmp_dirs: bool = False,
     passthrough: bool = False,
     verbose: bool = False,
+    run_skipped: bool = False,
     jobs_overridden: bool = False,
     all_projects: bool = False,
     match_patterns: Sequence[str] = (),
@@ -4572,6 +4584,8 @@ def execute(
     Args:
         verbose: Print individual test results (pass/skip) as they complete.
             When False (default), only failures are printed during execution.
+        run_skipped: When True, ignore all skip configuration and execute
+            tests normally.
         match_patterns: Substring or glob patterns matched against relative
             test paths.  Bare strings without glob metacharacters (``*``,
             ``?``, ``[``) are treated as substring matches.  Tests matching
@@ -4597,6 +4611,7 @@ def execute(
         keep_tmp_dirs=keep_tmp_dirs,
         passthrough=passthrough,
         verbose=verbose,
+        run_skipped=run_skipped,
         jobs_overridden=jobs_overridden,
         all_projects=all_projects,
         match_patterns=match_patterns,
