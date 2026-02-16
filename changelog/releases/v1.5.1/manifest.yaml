@@ -1,0 +1,5 @@
+created: 2026-02-16
+title: Better Fixture Handling
+intro: >-
+  This release improves error handling by showing clean messages for unavailable fixtures
+  and avoids unnecessary fixture initialization for fully skipped test suites.
