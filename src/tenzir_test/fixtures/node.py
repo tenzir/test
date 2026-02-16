@@ -67,6 +67,7 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
     except OSError:
         pgid = None
 
+    descendants_running = False
     try:
         process.terminate()
         process.wait(timeout=20)
@@ -78,9 +79,12 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
             try:
                 os.killpg(pgid, 0)
             except ProcessLookupError:
-                return
-            # Leave a helpful error so call sites can report the leak.
-            raise RuntimeError("tenzir-node left descendant processes running")
+                pass
+            else:
+                descendants_running = True
+    # Leave a helpful error so call sites can report the leak.
+    if descendants_running:
+        raise RuntimeError("tenzir-node left descendant processes running")
 
 
 @dataclass(slots=True)
