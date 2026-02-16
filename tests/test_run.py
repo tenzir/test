@@ -3029,6 +3029,112 @@ def test_worker_run_skipped_reason_matches_static_skip_and_executes(tmp_path: Pa
         run.apply_settings(original_settings)
 
 
+def test_worker_suite_static_skip_short_circuits_fixture_activation(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "perf"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: perf\nskip: manual performance benchmark\nfixtures:\n  - unavailable_fixture\n",
+        encoding="utf-8",
+    )
+    tests = []
+    for i in range(1, 3):
+        path = suite_dir / f"{i:02d}-test.tql"
+        path.write_text("version\nwrite_json\n", encoding="utf-8")
+        tests.append(path)
+    run._clear_directory_config_cache()
+
+    activation_count = 0
+    previous_factory = fixture_api._FACTORIES.get("unavailable_fixture")
+
+    @fixture_api.fixture(name="unavailable_fixture", replace=True)
+    def unavailable_fixture():
+        nonlocal activation_count
+        activation_count += 1
+        raise fixture_api.FixtureUnavailable("docker not found")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 2
+        assert summary.skipped == 2
+        assert summary.failed == 0
+        assert activation_count == 0
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["unavailable_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
+def test_worker_suite_static_skip_respects_run_skipped_selector(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "perf"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: perf\nskip: manual performance benchmark\nfixtures:\n  - unavailable_fixture\n",
+        encoding="utf-8",
+    )
+    test_path = suite_dir / "01-test.tql"
+    test_path.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    activation_count = 0
+    previous_factory = fixture_api._FACTORIES.get("unavailable_fixture")
+
+    @fixture_api.fixture(name="unavailable_fixture", replace=True)
+    def unavailable_fixture():
+        nonlocal activation_count
+        activation_count += 1
+        raise fixture_api.FixtureUnavailable("docker not found")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        selector = run.RunSkippedSelector.from_cli(reason_patterns=("manual performance*",))
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped_selector=selector)
+        worker.start()
+        with pytest.raises(fixture_api.FixtureUnavailable, match="docker not found"):
+            worker.join()
+        assert activation_count == 1
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["unavailable_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
 def test_worker_run_skipped_flag_matches_conditional_fixture_skip(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
