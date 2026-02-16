@@ -4099,6 +4099,15 @@ def _wait_for_fixture_shutdown() -> None:
         signal.signal(signal.SIGTERM, previous[signal.SIGTERM])
 
 
+def _raise_fixture_unavailable_harness_error(exc: fixtures_impl.FixtureUnavailable) -> None:
+    """Raise a sanitized HarnessError for an unavailable fixture."""
+
+    reason = _sanitize_message(str(exc))
+    if reason:
+        raise HarnessError(f"fixture unavailable: {reason}") from exc
+    raise HarnessError("fixture unavailable") from exc
+
+
 def run_fixture_mode_cli(
     *,
     root: Path | None,
@@ -4174,10 +4183,7 @@ def run_fixture_mode_cli(
             _print_fixture_env_lines(fixture_env)
             _wait_for_fixture_shutdown()
     except fixtures_impl.FixtureUnavailable as exc:
-        reason = _sanitize_message(str(exc))
-        if reason:
-            raise HarnessError(f"error: fixture unavailable: {reason}") from exc
-        raise HarnessError("error: fixture unavailable") from exc
+        _raise_fixture_unavailable_harness_error(exc)
     finally:
         fixtures_impl.pop_context(context_token)
         cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
@@ -4543,6 +4549,8 @@ def run_cli(
                         worker.join()
                     interrupted = True
                     break
+                except fixtures_impl.FixtureUnavailable as exc:
+                    _raise_fixture_unavailable_harness_error(exc)
                 if run_skipped_selector.has_reason_filters and skip_filter_matches == 0:
                     print(f"{INFO} no skipped tests matched run-skipped filters")
 

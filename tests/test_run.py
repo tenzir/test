@@ -2934,6 +2934,41 @@ def test_run_cli_reports_no_matching_run_skipped_filters(
         run.apply_settings(original_settings)
 
 
+def test_run_cli_wraps_fixture_unavailable_from_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = _make_project(tmp_path)
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    class FailingWorker:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            self.run_skipped_match_count = 0
+
+        def start(self) -> None:
+            return None
+
+        def join(self) -> run.Summary:
+            raise fixture_api.FixtureUnavailable("docker not found")
+
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
+    monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
+    monkeypatch.setattr(run, "Worker", FailingWorker)
+
+    try:
+        with pytest.raises(run.HarnessError, match="fixture unavailable: docker not found"):
+            run.run_cli(**_run_cli_kwargs(info["root"]))
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
 # --- Tests for run-skipped selectors in Worker ---
 
 
