@@ -81,6 +81,7 @@ def test_cli_keep_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["show_summary"] is False
     assert captured["show_diff_stat"] is True
     assert captured["run_skipped"] is False
+    assert captured["run_skipped_reasons"] == []
 
 
 def test_cli_passthrough_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,6 +100,20 @@ def test_cli_passthrough_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["show_summary"] is False
 
 
+def test_cli_run_skipped_reason_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> run.ExecutionResult:
+        captured.update(kwargs)
+        return _make_result()
+
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert cli.main(["--run-skipped-reason", "*maintenance*"]) == 0
+    assert captured["run_skipped"] is False
+    assert captured["run_skipped_reasons"] == ["*maintenance*"]
+
+
 def test_cli_run_skipped_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -110,6 +125,46 @@ def test_cli_run_skipped_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert cli.main(["--run-skipped"]) == 0
     assert captured["run_skipped"] is True
+    assert captured["run_skipped_reasons"] == []
+
+
+def test_cli_multiple_run_skipped_reason_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> run.ExecutionResult:
+        captured.update(kwargs)
+        return _make_result()
+
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert (
+        cli.main(
+            [
+                "--run-skipped-reason",
+                "*maintenance*",
+                "--run-skipped-reason",
+                "*docker*",
+            ]
+        )
+        == 0
+    )
+    assert captured["run_skipped_reasons"] == ["*maintenance*", "*docker*"]
+
+
+def test_cli_run_skipped_takes_precedence_with_reason_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> run.ExecutionResult:
+        captured.update(kwargs)
+        return _make_result()
+
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert cli.main(["--run-skipped", "--run-skipped-reason", "*maintenance*"]) == 0
+    assert captured["run_skipped"] is True
+    assert captured["run_skipped_reasons"] == ["*maintenance*"]
 
 
 def test_cli_passthrough_jobs(monkeypatch: pytest.MonkeyPatch) -> None:

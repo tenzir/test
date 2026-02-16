@@ -182,6 +182,60 @@ class SkipConfig:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class RunSkippedSelector:
+    """Fine-grained filter for selectively running skipped tests."""
+
+    run_all: bool = False
+    reason_patterns: tuple[str, ...] = tuple()
+
+    @classmethod
+    def from_cli(
+        cls,
+        *,
+        run_all: bool = False,
+        reason_patterns: Sequence[str] = (),
+    ) -> "RunSkippedSelector":
+        """Create a selector from CLI/library inputs."""
+
+        normalized_patterns = tuple(
+            pattern.strip() for pattern in reason_patterns if pattern and pattern.strip()
+        )
+        return cls(run_all=run_all, reason_patterns=normalized_patterns)
+
+    @property
+    def enabled(self) -> bool:
+        return self.run_all or bool(self.reason_patterns)
+
+    @property
+    def has_reason_filters(self) -> bool:
+        return bool(self.reason_patterns) and not self.run_all
+
+    def _matches_reason_patterns(self, reason: str) -> bool:
+        if not self.reason_patterns:
+            return True
+        for pattern in self.reason_patterns:
+            if fnmatch.fnmatchcase(reason, _normalize_pattern(pattern)):
+                return True
+        return False
+
+    def should_run_skipped(self, *, reason: str) -> bool:
+        if not self.enabled:
+            return False
+        if self.run_all:
+            return True
+        return self._matches_reason_patterns(reason)
+
+    def summary_flags(self) -> list[str]:
+        flags: list[str] = []
+        if self.run_all:
+            flags.append("run-skipped")
+            return flags
+        if self.reason_patterns:
+            flags.append(f"run-skipped-reason={len(self.reason_patterns)}")
+        return flags
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class TestQueueItem:
     runner: Runner
     path: Path
@@ -2774,7 +2828,7 @@ def _summarize_harness_configuration(
     runner_summary: bool,
     fixture_summary: bool,
     passthrough: bool,
-    run_skipped: bool,
+    run_skipped_selector: RunSkippedSelector,
 ) -> tuple[int, str, str]:
     enabled_flags: list[str] = []
     toggles = (
@@ -2784,11 +2838,11 @@ def _summarize_harness_configuration(
         ("runner-summary", runner_summary),
         ("fixture-summary", fixture_summary),
         ("keep-tmp-dirs", KEEP_TMP_DIRS),
-        ("run-skipped", run_skipped),
     )
     for name, flag in toggles:
         if flag:
             enabled_flags.append(name)
+    enabled_flags.extend(run_skipped_selector.summary_flags())
     if update:
         verb = "updating"
     elif passthrough:
@@ -3598,7 +3652,7 @@ class Worker:
         coverage: bool = False,
         runner_versions: Mapping[str, str] | None = None,
         debug: bool = False,
-        run_skipped: bool = False,
+        run_skipped_selector: RunSkippedSelector | None = None,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -3607,7 +3661,8 @@ class Worker:
         self._coverage = coverage
         self._runner_versions = dict(runner_versions or {})
         self._debug = debug
-        self._run_skipped = run_skipped
+        self._run_skipped_selector = run_skipped_selector or RunSkippedSelector()
+        self._run_skipped_match_count = 0
         self._thread = threading.Thread(target=self._work)
 
     def start(self) -> None:
@@ -3620,6 +3675,10 @@ class Worker:
         if self._result is None:
             raise RuntimeError("worker finished without producing a result")
         return self._result
+
+    @property
+    def run_skipped_match_count(self) -> int:
+        return self._run_skipped_match_count
 
     def _work(self) -> Summary:
         try:
@@ -3711,12 +3770,14 @@ class Worker:
                     if interrupted:
                         break
         except fixtures_impl.FixtureUnavailable as exc:
-            if self._run_skipped:
-                raise
             skip_cfg: SkipConfig | None = primary_config.get("skip")  # type: ignore[assignment]
             if not (isinstance(skip_cfg, SkipConfig) and skip_cfg.is_conditional):
                 raise
             reason = _compose_skip_reason(skip_cfg.reason, str(exc))
+            displayed_reason = f"fixture unavailable: {reason}"
+            if self._run_skipped_selector.should_run_skipped(reason=displayed_reason):
+                self._run_skipped_match_count += total
+                raise
             _CLI_LOGGER.warning(
                 "fixture unavailable for suite '%s': %s",
                 suite_item.suite.name,
@@ -3732,10 +3793,7 @@ class Worker:
                     ):
                         suite_suffix = _format_suite_suffix()
                     with stdout_lock:
-                        print(
-                            f"{SKIP} skipped {rel_path}{suite_suffix}: "
-                            f"fixture unavailable: {reason}"
-                        )
+                        print(f"{SKIP} skipped {rel_path}{suite_suffix}: {displayed_reason}")
                 summary.total += 1
                 summary.skipped += 1
                 summary.skipped_paths.append(rel_path)
@@ -3786,21 +3844,24 @@ class Worker:
             if suite_fixtures is None:
                 configured_fixtures = config_fixtures
             skip_cfg = cast(SkipConfig | None, config.get("skip"))
-            if not self._run_skipped and skip_cfg is not None and skip_cfg.is_static:
+            if skip_cfg is not None and skip_cfg.is_static:
                 assert skip_cfg.reason is not None
-                outcome = handle_skip(
-                    skip_cfg.reason,
-                    test_path,
-                    update=self._update,
-                    output_ext=getattr(runner, "output_ext", "txt"),
-                )
-                summary.total += 1
-                summary.record_runner_outcome(runner.name, "skipped")
-                if fixtures:
-                    summary.record_fixture_outcome(_fixture_names(fixtures), "skipped")
-                summary.skipped += 1
-                summary.skipped_paths.append(rel_path)
-                return False
+                if self._run_skipped_selector.should_run_skipped(reason=skip_cfg.reason):
+                    self._run_skipped_match_count += 1
+                else:
+                    outcome = handle_skip(
+                        skip_cfg.reason,
+                        test_path,
+                        update=self._update,
+                        output_ext=getattr(runner, "output_ext", "txt"),
+                    )
+                    summary.total += 1
+                    summary.record_runner_outcome(runner.name, "skipped")
+                    if fixtures:
+                        summary.record_fixture_outcome(_fixture_names(fixtures), "skipped")
+                    summary.skipped += 1
+                    summary.skipped_paths.append(rel_path)
+                    return False
             # Conditional skips are suite-level — _run_suite handles them.
         if parse_error is not None:
             message = format_failure_message(parse_error)
@@ -4144,6 +4205,7 @@ def run_cli(
     passthrough: bool,
     verbose: bool = False,
     run_skipped: bool = False,
+    run_skipped_reasons: Sequence[str] = (),
     jobs_overridden: bool = False,
     all_projects: bool = False,
     match_patterns: Sequence[str] = (),
@@ -4154,7 +4216,10 @@ def run_cli(
         verbose: Print individual test results (pass/skip) as they complete.
             When False (default), only failures are printed during execution.
         run_skipped: When True, ignore all skip configuration and execute
-            tests normally.
+            skipped tests unconditionally.
+        run_skipped_reasons: Repeatable reason patterns for selectively
+            running skipped tests. Matching uses the same substring/glob
+            semantics as ``--match``.
         match_patterns: Substring or glob patterns matched against relative
             test paths.  Bare strings without glob metacharacters (``*``,
             ``?``, ``[``) are treated as substring matches.  Tests matching
@@ -4194,6 +4259,10 @@ def run_cli(
         apply_settings(settings)
         _set_cli_packages(list(package_dirs or []))
         selected_tests = list(tests)
+        run_skipped_selector = RunSkippedSelector.from_cli(
+            run_all=run_skipped,
+            reason_patterns=run_skipped_reasons,
+        )
 
         plan: ExecutionPlan | None = None
         if selected_tests:
@@ -4402,7 +4471,7 @@ def run_cli(
                     runner_summary=runner_summary,
                     fixture_summary=fixture_summary,
                     passthrough=passthrough_mode,
-                    run_skipped=run_skipped,
+                    run_skipped_selector=run_skipped_selector,
                 )
 
                 if not project_queue_size:
@@ -4457,21 +4526,25 @@ def run_cli(
                         coverage=coverage,
                         runner_versions=runner_versions,
                         debug=debug_enabled,
-                        run_skipped=run_skipped,
+                        run_skipped_selector=run_skipped_selector,
                     )
                     for _ in range(jobs)
                 ]
                 for worker in workers:
                     worker.start()
+                skip_filter_matches = 0
                 try:
                     for worker in workers:
                         project_summary += worker.join()
+                        skip_filter_matches += worker.run_skipped_match_count
                 except KeyboardInterrupt:  # pragma: no cover - defensive guard
                     _request_interrupt()
                     for worker in workers:
                         worker.join()
                     interrupted = True
                     break
+                if run_skipped_selector.has_reason_filters and skip_filter_matches == 0:
+                    print(f"{INFO} no skipped tests matched run-skipped filters")
 
                 _print_compact_summary(project_summary)
                 summary_enabled = show_summary or runner_summary or fixture_summary
@@ -4575,6 +4648,7 @@ def execute(
     passthrough: bool = False,
     verbose: bool = False,
     run_skipped: bool = False,
+    run_skipped_reasons: Sequence[str] = (),
     jobs_overridden: bool = False,
     all_projects: bool = False,
     match_patterns: Sequence[str] = (),
@@ -4585,7 +4659,10 @@ def execute(
         verbose: Print individual test results (pass/skip) as they complete.
             When False (default), only failures are printed during execution.
         run_skipped: When True, ignore all skip configuration and execute
-            tests normally.
+            skipped tests unconditionally.
+        run_skipped_reasons: Repeatable reason patterns for selectively
+            running skipped tests. Matching uses the same substring/glob
+            semantics as ``--match``.
         match_patterns: Substring or glob patterns matched against relative
             test paths.  Bare strings without glob metacharacters (``*``,
             ``?``, ``[``) are treated as substring matches.  Tests matching
@@ -4612,6 +4689,7 @@ def execute(
         passthrough=passthrough,
         verbose=verbose,
         run_skipped=run_skipped,
+        run_skipped_reasons=run_skipped_reasons,
         jobs_overridden=jobs_overridden,
         all_projects=all_projects,
         match_patterns=match_patterns,
