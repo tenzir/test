@@ -150,6 +150,7 @@ def test_execute_delegates_to_run_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["jobs"] == 2
     assert captured["update"] is True
     assert captured["run_skipped"] is False
+    assert captured["run_skipped_reasons"] == ()
 
 
 def test_format_summary_reports_counts_and_percentages() -> None:
@@ -1458,7 +1459,7 @@ def test_summarize_harness_configuration_sets_update_verb() -> None:
         runner_summary=False,
         fixture_summary=False,
         passthrough=False,
-        run_skipped=False,
+        run_skipped_selector=run.RunSkippedSelector(),
     )
 
     assert job_count == 1
@@ -1476,12 +1477,49 @@ def test_summarize_harness_configuration_sets_passthrough_verb() -> None:
         runner_summary=False,
         fixture_summary=False,
         passthrough=True,
-        run_skipped=False,
+        run_skipped_selector=run.RunSkippedSelector(),
     )
 
     assert job_count == 2
     assert "passthrough" not in enabled_flags
     assert verb == "showing"
+
+
+def test_summarize_harness_configuration_includes_run_skipped_selector_flags() -> None:
+    selector = run.RunSkippedSelector.from_cli(
+        reason_patterns=("maintenance", "docker"),
+    )
+    _job_count, enabled_flags, _verb = run._summarize_harness_configuration(
+        jobs=1,
+        update=False,
+        coverage=False,
+        debug=False,
+        show_summary=False,
+        runner_summary=False,
+        fixture_summary=False,
+        passthrough=False,
+        run_skipped_selector=selector,
+    )
+
+    assert "run-skipped-reason=2" in enabled_flags
+
+
+def test_summarize_harness_configuration_includes_run_skipped_sledgehammer_flag() -> None:
+    selector = run.RunSkippedSelector.from_cli(run_all=True, reason_patterns=("ignored",))
+    _job_count, enabled_flags, _verb = run._summarize_harness_configuration(
+        jobs=1,
+        update=False,
+        coverage=False,
+        debug=False,
+        show_summary=False,
+        runner_summary=False,
+        fixture_summary=False,
+        passthrough=False,
+        run_skipped_selector=selector,
+    )
+
+    assert "run-skipped" in enabled_flags
+    assert "run-skipped-reason" not in enabled_flags
 
 
 def test_print_project_start_uses_custom_verb(tmp_path, capsys):
@@ -2652,6 +2690,7 @@ def _run_cli_kwargs(
         keep_tmp_dirs=False,
         passthrough=False,
         run_skipped=False,
+        run_skipped_reasons=(),
         jobs_overridden=False,
         all_projects=all_projects,
         match_patterns=match_patterns,
@@ -2856,10 +2895,49 @@ class TestMatchPatternIntegration:
             self._teardown(info)
 
 
-# --- Tests for --run-skipped behavior in Worker ---
+# --- Tests for run-skipped selectors in run_cli and helper model ---
 
 
-def test_worker_run_skipped_ignores_static_skip_and_executes(tmp_path: Path) -> None:
+def test_run_skipped_selector_run_all_overrides_reason_filters() -> None:
+    selector = run.RunSkippedSelector.from_cli(run_all=True, reason_patterns=("non-matching",))
+
+    assert selector.should_run_skipped(reason="any reason")
+
+
+def test_run_cli_reports_no_matching_run_skipped_filters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    info = _make_project(tmp_path)
+    (info["root"] / "tests" / "test.yaml").write_text("skip: maintenance\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
+    monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
+
+    try:
+        kwargs = _run_cli_kwargs(info["root"])
+        kwargs["run_skipped_reasons"] = ("non-matching-reason",)
+        result = run.run_cli(**kwargs)
+        assert result.summary.total == 3
+        assert result.summary.skipped == 3
+        output = capsys.readouterr().out
+        assert "no skipped tests matched run-skipped filters" in output
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+# --- Tests for run-skipped selectors in Worker ---
+
+
+def test_worker_run_skipped_reason_matches_static_skip_and_executes(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
@@ -2882,7 +2960,7 @@ def test_worker_run_skipped_ignores_static_skip_and_executes(tmp_path: Path) -> 
 
     try:
         queue = run._build_queue_from_paths([test_path], coverage=False)
-        worker = run.Worker(queue, update=False, coverage=False, run_skipped=False)
+        worker = run.Worker(queue, update=False, coverage=False)
         worker.start()
         skipped_summary = worker.join()
         assert skipped_summary.total == 1
@@ -2890,18 +2968,33 @@ def test_worker_run_skipped_ignores_static_skip_and_executes(tmp_path: Path) -> 
         assert skipped_summary.failed == 0
 
         queue = run._build_queue_from_paths([test_path], coverage=False)
-        worker = run.Worker(queue, update=False, coverage=False, run_skipped=True)
+        selector = run.RunSkippedSelector.from_cli(reason_patterns=("maint",))
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped_selector=selector)
         worker.start()
         executed_summary = worker.join()
         assert executed_summary.total == 1
         assert executed_summary.skipped == 0
         assert executed_summary.failed == 1
+        assert worker.run_skipped_match_count == 1
+
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        selector = run.RunSkippedSelector.from_cli(
+            run_all=True,
+            reason_patterns=("non-matching",),
+        )
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped_selector=selector)
+        worker.start()
+        executed_summary = worker.join()
+        assert executed_summary.total == 1
+        assert executed_summary.skipped == 0
+        assert executed_summary.failed == 1
+        assert worker.run_skipped_match_count == 1
     finally:
         run._clear_directory_config_cache()
         run.apply_settings(original_settings)
 
 
-def test_worker_run_skipped_disables_conditional_fixture_skip(tmp_path: Path) -> None:
+def test_worker_run_skipped_flag_matches_conditional_fixture_skip(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
@@ -2934,10 +3027,79 @@ def test_worker_run_skipped_disables_conditional_fixture_skip(tmp_path: Path) ->
 
     try:
         queue = run._build_queue_from_paths([test_path], coverage=False)
-        worker = run.Worker(queue, update=False, coverage=False, run_skipped=True)
+        selector = run.RunSkippedSelector.from_cli(run_all=True)
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped_selector=selector)
         worker.start()
         with pytest.raises(fixture_api.FixtureUnavailable, match="docker not found"):
             worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["unavailable_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
+def test_worker_run_skipped_reason_matches_conditional_skip_reason(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: context\nskip:\n  on: fixture-unavailable\n  reason: requires docker\nfixtures:\n  - unavailable_fixture\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    test_path = suite_dir / "01-test.tql"
+    test_path.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    previous_factory = fixture_api._FACTORIES.get("unavailable_fixture")
+
+    @fixture_api.fixture(name="unavailable_fixture", replace=True)
+    def unavailable_fixture():
+        raise fixture_api.FixtureUnavailable("docker binary missing")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        selector = run.RunSkippedSelector.from_cli(
+            reason_patterns=("binary missing",),
+        )
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped_selector=selector)
+        worker.start()
+        with pytest.raises(fixture_api.FixtureUnavailable, match="docker binary missing"):
+            worker.join()
+
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        selector = run.RunSkippedSelector.from_cli(
+            reason_patterns=("fixture unavailable*",),
+        )
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped_selector=selector)
+        worker.start()
+        with pytest.raises(fixture_api.FixtureUnavailable, match="docker binary missing"):
+            worker.join()
+
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        selector = run.RunSkippedSelector.from_cli(
+            reason_patterns=("non-matching-reason",),
+        )
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped_selector=selector)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 1
+        assert summary.skipped == 1
     finally:
         run._clear_directory_config_cache()
         if previous_factory is None:

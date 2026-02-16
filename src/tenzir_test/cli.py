@@ -41,6 +41,9 @@ Examples:
   tenzir-test -m '*ctx*'               Run tests matching a path pattern
   tenzir-test -m '*add*' -m '*del*'    Run tests matching either pattern
   tenzir-test tests/ctx/ -m '*create*' Intersect directory with pattern
+  tenzir-test --run-skipped            Run all skipped tests unconditionally
+  tenzir-test --run-skipped-reason maintenance
+                                       Run only skipped tests whose reason matches
   tenzir-test -u tests/new.tql         Run test and update its baseline
   tenzir-test -p -k tests/debug/       Debug with output streaming and kept temps
   tenzir-test --fixture mysql          Start fixture(s) in foreground mode
@@ -167,7 +170,19 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
 @click.option(
     "--run-skipped",
     is_flag=True,
-    help="Run tests even when skip config is present.",
+    help="Run all skipped tests unconditionally.",
+)
+@click.option(
+    "--run-skipped-reason",
+    "run_skipped_reasons",
+    multiple=True,
+    type=str,
+    help=(
+        "Run tests skipped for reasons matching a substring or glob pattern. "
+        "Bare strings match as substrings; glob metacharacters (*, ?, [) use fnmatch mode. "
+        "Repeatable; matching any reason pattern selects the skipped test. "
+        "Matches against the final displayed skip reason."
+    ),
 )
 @click.option(
     "-a",
@@ -216,6 +231,7 @@ def cli(
     passthrough: bool,
     verbose: bool,
     run_skipped: bool,
+    run_skipped_reasons: tuple[str, ...],
     all_projects: bool,
 ) -> int:
     """Execute test scenarios and compare output against baselines.
@@ -285,6 +301,7 @@ def cli(
             passthrough=passthrough,
             verbose=verbose,
             run_skipped=run_skipped,
+            run_skipped_reasons=list(run_skipped_reasons),
             jobs_overridden=jobs_overridden,
             all_projects=all_projects,
             match_patterns=list(match_patterns),
