@@ -1,0 +1,5 @@
+created: 2026-02-16
+title: Fine-Grained Skip Selectors
+intro: >-
+  This release adds fine-grained controls for running skipped tests, including a new
+  --run-skipped-reason flag with substring and glob matching semantics.
