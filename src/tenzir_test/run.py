@@ -3680,6 +3680,45 @@ class Worker:
     def run_skipped_match_count(self) -> int:
         return self._run_skipped_match_count
 
+    def _record_static_skip(
+        self,
+        *,
+        test_item: TestQueueItem,
+        fixtures: tuple[fixtures_impl.FixtureSpec, ...],
+        reason: str,
+        summary: Summary,
+    ) -> None:
+        handle_skip(
+            reason,
+            test_item.path,
+            update=self._update,
+            output_ext=getattr(test_item.runner, "output_ext", "txt"),
+        )
+        rel_path = _relativize_path(test_item.path)
+        summary.total += 1
+        summary.record_runner_outcome(test_item.runner.name, "skipped")
+        if fixtures:
+            summary.record_fixture_outcome(_fixture_names(fixtures), "skipped")
+        summary.skipped += 1
+        summary.skipped_paths.append(rel_path)
+
+    def _suite_static_skip_plan(
+        self, suite_item: SuiteQueueItem
+    ) -> list[tuple[TestQueueItem, str]] | None:
+        planned: list[tuple[TestQueueItem, str]] = []
+        for test_item in suite_item.tests:
+            try:
+                config = parse_test_config(test_item.path, coverage=self._coverage)
+            except ValueError:
+                return None
+            skip_cfg = cast(SkipConfig | None, config.get("skip"))
+            if skip_cfg is None or not skip_cfg.is_static or skip_cfg.reason is None:
+                return None
+            if self._run_skipped_selector.should_run_skipped(reason=skip_cfg.reason):
+                return None
+            planned.append((test_item, skip_cfg.reason))
+        return planned
+
     def _work(self) -> Summary:
         try:
             self._result = Summary()
@@ -3715,6 +3754,17 @@ class Worker:
             primary_config = parse_test_config(primary_test, coverage=self._coverage)
         except ValueError as exc:
             raise RuntimeError(f"failed to parse suite config for {primary_test}: {exc}") from exc
+        # Avoid activating suite fixtures when every suite member is statically skipped.
+        static_skip_plan = self._suite_static_skip_plan(suite_item)
+        if static_skip_plan is not None:
+            for test_item, reason in static_skip_plan:
+                self._record_static_skip(
+                    test_item=test_item,
+                    fixtures=suite_item.fixtures,
+                    reason=reason,
+                    summary=summary,
+                )
+            return
         inputs_override = typing.cast(str | None, primary_config.get("inputs"))
         env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
         config_package_dirs = cast(tuple[str, ...], primary_config.get("package_dirs", tuple()))
@@ -3849,18 +3899,12 @@ class Worker:
                 if self._run_skipped_selector.should_run_skipped(reason=skip_cfg.reason):
                     self._run_skipped_match_count += 1
                 else:
-                    outcome = handle_skip(
-                        skip_cfg.reason,
-                        test_path,
-                        update=self._update,
-                        output_ext=getattr(runner, "output_ext", "txt"),
+                    self._record_static_skip(
+                        test_item=test_item,
+                        fixtures=fixtures,
+                        reason=skip_cfg.reason,
+                        summary=summary,
                     )
-                    summary.total += 1
-                    summary.record_runner_outcome(runner.name, "skipped")
-                    if fixtures:
-                        summary.record_fixture_outcome(_fixture_names(fixtures), "skipped")
-                    summary.skipped += 1
-                    summary.skipped_paths.append(rel_path)
                     return False
             # Conditional skips are suite-level — _run_suite handles them.
         if parse_error is not None:
