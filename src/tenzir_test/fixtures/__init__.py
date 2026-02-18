@@ -627,6 +627,7 @@ def invoke_active_hook(
     hook_name: str,
     *,
     fixture_names: Iterable[str] | None = None,
+    on_result: Callable[[bool], None] | None = None,
     **kwargs: Any,
 ) -> None:
     """Invoke hook on active fixtures that expose it.
@@ -656,7 +657,15 @@ def invoke_active_hook(
                 hook_kwargs["assertions"] = raw_mapping.get(fixture_name, {})
             else:
                 hook_kwargs["assertions"] = {}
-        hook(**hook_kwargs)
+        try:
+            hook(**hook_kwargs)
+        except Exception:
+            if on_result is not None:
+                on_result(False)
+            raise
+        else:
+            if on_result is not None:
+                on_result(True)
 
 
 def _activate_into_stack(

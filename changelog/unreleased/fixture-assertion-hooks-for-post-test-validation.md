@@ -24,3 +24,5 @@ assertions:
 ```
 
 The HTTP fixture receives the typed assertion payload and validates that the expected request was received. Payload structure is fixture-defined, so fixtures can choose flat fields or nested schemas as needed.
+
+Assertion checks are tracked separately from test counts in the run summary as pass/fail check metrics, so fixture-level validations are visible without changing total test counts.

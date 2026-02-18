@@ -161,6 +161,18 @@ def test_format_summary_reports_counts_and_percentages() -> None:
     assert f"{run.SKIP} Skipped 3 (1%)" in message
 
 
+def test_format_summary_includes_assertion_check_counts() -> None:
+    summary = run.Summary(
+        failed=1,
+        total=10,
+        skipped=2,
+        assertion_checks_total=7,
+        assertion_checks_failed=2,
+    )
+    message = run._format_summary(summary)
+    assert "Assertions 5/7" in message
+
+
 def test_format_summary_handles_zero_total() -> None:
     summary = run.Summary(failed=0, total=0, skipped=0)
     assert run._format_summary(summary) == "Test summary: No tests were discovered."
@@ -177,6 +189,23 @@ def test_print_compact_summary(capsys: pytest.CaptureFixture[str]) -> None:
         f"3 passed ({run.PASS_SPECTRUM[10]}100%{run.RESET_COLOR}) / 0 failed (0%)"
     )
     assert output == expected
+
+
+def test_print_compact_summary_includes_assertion_check_counts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    summary = run.Summary(
+        failed=0,
+        total=3,
+        skipped=0,
+        assertion_checks_total=4,
+        assertion_checks_failed=1,
+    )
+
+    run._print_compact_summary(summary)
+
+    output = capsys.readouterr().out.strip()
+    assert "assertions 3/4" in output
 
 
 def test_print_compact_summary_handles_zero_total(capsys: pytest.CaptureFixture[str]) -> None:
@@ -207,6 +236,40 @@ def test_print_ascii_summary_outputs_table(capsys):
     assert "100%" in joined
     assert "0%" in joined
     assert "∑ Total" in joined
+
+
+def test_print_ascii_summary_outputs_assertion_check_table(capsys) -> None:
+    summary = run.Summary(
+        failed=1,
+        total=4,
+        skipped=0,
+        assertion_checks_total=3,
+        assertion_checks_failed=1,
+    )
+
+    run._print_ascii_summary(summary, include_runner=False, include_fixture=False)
+
+    output = capsys.readouterr().out.splitlines()
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for line in output[1:]:
+        if line:
+            current.append(line)
+        elif current:
+            segments.append(current)
+            current = []
+    if current:
+        segments.append(current)
+
+    assert len(segments) == 2
+    assertion_table = segments[1]
+    joined = "\n".join(assertion_table)
+    assert "Assertion Checks" in joined
+    assert "Passed" in joined
+    assert "Failed" in joined
+    assert "Total" in joined
+    assert "3" in joined
+    assert "1" in joined
 
 
 def test_print_ascii_summary_with_runner_and_fixture_tables(capsys):
@@ -954,6 +1017,8 @@ version
     assert observed == ["01-pass.tql", "02-fail.tql"]
     assert summary.total == 2
     assert summary.failed == 1
+    assert summary.assertion_checks_total == 2
+    assert summary.assertion_checks_failed == 1
     assert Path("tests/suite/02-fail.tql") in summary.failed_paths
 
 
@@ -1027,6 +1092,8 @@ def test_worker_retries_when_suite_fixture_assertion_fails_once(tmp_path: Path) 
     assert calls["assert"] == 2
     assert summary.total == 1
     assert summary.failed == 0
+    assert summary.assertion_checks_total == 2
+    assert summary.assertion_checks_failed == 1
 
 
 def test_run_simple_test_runs_fixture_assertions_before_fixture_teardown(
