@@ -1415,6 +1415,7 @@ def _default_test_config() -> TestConfig:
         "runner": None,
         "skip": None,
         "fixtures": tuple(),
+        "assertions": {},
         "inputs": None,
         "retry": 1,
         "suite": None,
@@ -1592,6 +1593,97 @@ def _build_fixture_options(
     return result
 
 
+def _normalize_assertions_value(
+    value: typing.Any,
+    *,
+    location: Path | str,
+    line_number: int | None = None,
+) -> dict[str, dict[str, typing.Any]]:
+    """Normalize the ``assertions`` config mapping.
+
+    Expected schema:
+
+    assertions:
+      fixtures:
+        <fixture-name>: <mapping>
+    """
+    parsed: typing.Any = value
+    if isinstance(value, str):
+        try:
+            parsed = yaml.safe_load(value)
+        except yaml.YAMLError:
+            parsed = None
+
+    if parsed is None:
+        return {}
+
+    if not isinstance(parsed, dict):
+        _raise_config_error(
+            location,
+            f"Invalid value for 'assertions', expected mapping, got '{type(parsed).__name__}'",
+            line_number,
+        )
+
+    unknown_keys = set(parsed.keys()) - {"fixtures"}
+    if unknown_keys:
+        _raise_config_error(
+            location,
+            "Unknown keys in 'assertions': "
+            + ", ".join(sorted(str(key) for key in unknown_keys)),
+            line_number,
+        )
+
+    fixtures_raw = parsed.get("fixtures")
+    if fixtures_raw is None:
+        return {}
+    if not isinstance(fixtures_raw, dict):
+        _raise_config_error(
+            location,
+            f"Invalid value for 'assertions.fixtures', expected mapping, got '{type(fixtures_raw).__name__}'",
+            line_number,
+        )
+
+    normalized: dict[str, dict[str, typing.Any]] = {}
+    for fixture_name, fixture_assertions in fixtures_raw.items():
+        if not isinstance(fixture_name, str) or not fixture_name.strip():
+            _raise_config_error(
+                location,
+                f"Assertion fixture name must be a non-empty string, got '{fixture_name}'",
+                line_number,
+            )
+        if fixture_assertions is None:
+            normalized[fixture_name.strip()] = {}
+            continue
+        if not isinstance(fixture_assertions, dict):
+            _raise_config_error(
+                location,
+                "Fixture assertions for "
+                + f"'{fixture_name}' must be a mapping, got '{type(fixture_assertions).__name__}'",
+                line_number,
+            )
+        normalized[fixture_name.strip()] = dict(fixture_assertions)
+    return normalized
+
+
+def _build_fixture_assertions(
+    assertions: Mapping[str, Mapping[str, typing.Any]] | None,
+) -> dict[str, typing.Any]:
+    """Convert raw fixture assertions into typed payloads when registered."""
+    if not assertions:
+        return {}
+    result: dict[str, typing.Any] = {}
+    for fixture_name, payload in assertions.items():
+        assertions_cls = fixtures_impl.get_assertions_class(fixture_name)
+        if assertions_cls is not None:
+            try:
+                result[fixture_name] = fixtures_impl._instantiate_options(assertions_cls, payload)
+            except TypeError as exc:
+                raise ValueError(f"invalid assertions for fixture '{fixture_name}': {exc}") from exc
+            continue
+        result[fixture_name] = dict(payload)
+    return result
+
+
 def _extract_location_path(location: Path | str) -> Path:
     if isinstance(location, Path):
         return location
@@ -1743,6 +1835,7 @@ def _assign_config_option(
         "runner",
         "skip",
         "fixtures",
+        "assertions",
         "inputs",
         "retry",
         "package_dirs",
@@ -1825,6 +1918,12 @@ def _assign_config_option(
                 line_number,
             )
         config[canonical] = _normalize_fixtures_value(
+            value, location=location, line_number=line_number
+        )
+        return
+
+    if canonical == "assertions":
+        config[canonical] = _normalize_assertions_value(
             value, location=location, line_number=line_number
         )
         return
@@ -3384,6 +3483,10 @@ def run_simple_test(
     fixture_specs = cast(
         tuple[fixtures_impl.FixtureSpec, ...], test_config.get("fixtures", tuple())
     )
+    fixture_assertions_raw = cast(
+        Mapping[str, Mapping[str, Any]] | None,
+        test_config.get("assertions"),
+    )
     timeout = cast(int, test_config["timeout"])
     expect_error = bool(test_config.get("error", False))
     passthrough_mode = is_passthrough_enabled()
@@ -3416,6 +3519,7 @@ def run_simple_test(
         package_args.append(f"--package-dirs={','.join(merged_dirs)}")
 
     fixture_options = _build_fixture_options(fixture_specs)
+    fixture_assertions = _build_fixture_assertions(fixture_assertions_raw)
     context_token = fixtures_impl.push_context(
         fixtures_impl.FixtureContext(
             test=test,
@@ -3426,6 +3530,7 @@ def run_simple_test(
             tenzir_binary=TENZIR_BINARY,
             tenzir_node_binary=TENZIR_NODE_BINARY,
             fixture_options=fixture_options,
+            fixture_assertions=fixture_assertions,
         )
     )
     try:
@@ -3534,6 +3639,16 @@ def run_simple_test(
                     sys.stdout.write(summary_line + "\n")
         return False
     if passthrough_mode:
+        if not fixtures_impl.is_suite_scope_active(fixture_specs):
+            try:
+                _run_fixture_assertions_for_test(
+                    test=test,
+                    fixture_specs=fixture_specs,
+                    fixture_assertions=fixture_assertions,
+                )
+            except Exception as exc:
+                report_failure(test, _fixture_assertion_failure_message(exc))
+                return False
         success(test)
         return True
     if not good:
@@ -3557,6 +3672,16 @@ def run_simple_test(
             else:
                 report_failure(test, "")
                 print_diff(expected_transformed, output_transformed, ref_path)
+            return False
+    if not fixtures_impl.is_suite_scope_active(fixture_specs):
+        try:
+            _run_fixture_assertions_for_test(
+                test=test,
+                fixture_specs=fixture_specs,
+                fixture_assertions=fixture_assertions,
+            )
+        except Exception as exc:
+            report_failure(test, _fixture_assertion_failure_message(exc))
             return False
     success(test)
     return True
@@ -3590,6 +3715,62 @@ def _compose_skip_reason(
     if has_exc:
         return exception_reason  # type: ignore[return-value]
     return fallback
+
+
+def _run_fixture_assertions_for_test(
+    *,
+    test: Path,
+    fixture_specs: tuple[fixtures_impl.FixtureSpec, ...],
+    fixture_assertions: Mapping[str, Any],
+) -> None:
+    """Invoke fixture `assert_test` hooks for the given test."""
+    if not fixture_specs:
+        return
+    try:
+        fixtures_impl.invoke_active_hook(
+            "assert_test",
+            fixture_names=_fixture_names(fixture_specs),
+            test=test,
+            assertions_by_fixture=fixture_assertions,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"fixture assertion failed: {_sanitize_message(str(exc))}") from exc
+
+
+def _fixture_assertion_failure_message(exc: BaseException) -> str:
+    detail = _sanitize_message(str(exc)).strip()
+    if not detail:
+        detail = exc.__class__.__name__
+    prefix = "fixture assertion failed:"
+    if detail.startswith(prefix):
+        return format_failure_message(detail)
+    return format_failure_message(f"{prefix} {detail}")
+
+
+@contextlib.contextmanager
+def _push_fixture_test_context(
+    *,
+    test: Path,
+    config: TestConfig,
+    fixture_assertions: Mapping[str, Any],
+) -> Iterator[None]:
+    """Temporarily bind per-test fixture assertions into the active context."""
+    current = fixtures_impl.current_context()
+    if current is None:
+        yield
+        return
+    token = fixtures_impl.push_context(
+        dataclasses.replace(
+            current,
+            test=test,
+            config=cast(dict[str, Any], config),
+            fixture_assertions=fixture_assertions,
+        )
+    )
+    try:
+        yield
+    finally:
+        fixtures_impl.pop_context(token)
 
 
 def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool | str:
@@ -3873,6 +4054,7 @@ class Worker:
         fixtures = configured_fixtures
         retry_limit = 1
         config: TestConfig | None = None
+        fixture_assertions: dict[str, Any] = {}
         parse_error: str | None = None
         try:
             config = parse_test_config(test_path, coverage=self._coverage)
@@ -3893,6 +4075,15 @@ class Worker:
                 )
             if suite_fixtures is None:
                 configured_fixtures = config_fixtures
+            try:
+                fixture_assertions = _build_fixture_assertions(
+                    cast(
+                        Mapping[str, Mapping[str, Any]] | None,
+                        config.get("assertions"),
+                    )
+                )
+            except ValueError as exc:
+                parse_error = str(exc)
             skip_cfg = cast(SkipConfig | None, config.get("skip"))
             if skip_cfg is not None and skip_cfg.is_static:
                 assert skip_cfg.reason is not None
@@ -3945,20 +4136,41 @@ class Worker:
                     attempt_context.enter_context(
                         _push_suite_context(name=name, index=index, total=total)
                     )
+                if suite_fixtures is not None and config is not None:
+                    attempt_context.enter_context(
+                        _push_fixture_test_context(
+                            test=test_path,
+                            config=config,
+                            fixture_assertions=fixture_assertions,
+                        )
+                    )
                 interrupted = False
                 try:
                     with attempt_context:
                         outcome = runner.run(test_path, self._update, self._coverage)
+                        if outcome and outcome != "skipped" and suite_fixtures is not None:
+                            _run_fixture_assertions_for_test(
+                                test=test_path,
+                                fixture_specs=suite_fixtures,
+                                fixture_assertions=fixture_assertions,
+                            )
                 except KeyboardInterrupt:  # pragma: no cover - defensive guard
                     _request_interrupt()
                     interrupted = True
                     outcome = False
                 except Exception as exc:
-                    error_message = format_failure_message(str(exc))
+                    is_fixture_assertion = str(exc).startswith("fixture assertion failed:")
+                    error_message = (
+                        _fixture_assertion_failure_message(exc)
+                        if is_fixture_assertion
+                        else format_failure_message(str(exc))
+                    )
                     report_failure(test_path, error_message)
                     outcome = False
                     final_interrupted = False
                     final_outcome = outcome
+                    if is_fixture_assertion and attempts < max_attempts:
+                        continue
                     break
 
                 if interrupted:

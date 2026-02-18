@@ -863,6 +863,172 @@ write_json
     assert summary.total == 1
 
 
+def test_worker_suite_fixture_assertions_fail_current_test(tmp_path: Path) -> None:
+    suite_dir = tmp_path / "tests" / "suite"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: assertions-demo\nfixtures:\n  - assertion_fixture\n",
+        encoding="utf-8",
+    )
+    first = suite_dir / "01-pass.tql"
+    first.write_text(
+        """---
+assertions:
+  fixtures:
+    assertion_fixture:
+      expected_test: 01-pass.tql
+---
+version
+""",
+        encoding="utf-8",
+    )
+    second = suite_dir / "02-fail.tql"
+    second.write_text(
+        """---
+assertions:
+  fixtures:
+    assertion_fixture:
+      expected_test: not-this-test.tql
+---
+version
+""",
+        encoding="utf-8",
+    )
+
+    observed: list[str] = []
+
+    def _assert_test(*, test: Path, assertions: dict[str, object], **_: object) -> None:
+        observed.append(test.name)
+        expected = assertions.get("expected_test")
+        if expected != test.name:
+            raise AssertionError(f"expected {expected}, got {test.name}")
+
+    @fixture_api.fixture(name="assertion_fixture", replace=True)
+    def _assertion_fixture():
+        return fixture_api.FixtureHandle(hooks={"assert_test": _assert_test})
+
+    class AlwaysPassRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="always-pass")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:  # noqa: ARG002
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    run._clear_directory_config_cache()
+    try:
+        runner = AlwaysPassRunner()
+        tests = sorted(suite_dir.glob("*.tql"))
+        queue = [
+            run.SuiteQueueItem(
+                suite=run.SuiteInfo(name="assertions-demo", directory=suite_dir),
+                tests=[run.TestQueueItem(runner=runner, path=path) for path in tests],
+                fixtures=(fixture_api.FixtureSpec(name="assertion_fixture"),),
+            )
+        ]
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+        fixture_api._FACTORIES.pop("assertion_fixture", None)  # type: ignore[attr-defined]
+
+    assert observed == ["01-pass.tql", "02-fail.tql"]
+    assert summary.total == 2
+    assert summary.failed == 1
+    assert Path("tests/suite/02-fail.tql") in summary.failed_paths
+
+
+def test_worker_retries_when_suite_fixture_assertion_fails_once(tmp_path: Path) -> None:
+    suite_dir = tmp_path / "tests" / "suite"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: assertions-retry\nfixtures:\n  - retry_assertion_fixture\nretry: 2\n",
+        encoding="utf-8",
+    )
+    test_file = suite_dir / "case.tql"
+    test_file.write_text("version\n", encoding="utf-8")
+
+    calls = {"assert": 0}
+
+    def _assert_test(**_: object) -> None:
+        calls["assert"] += 1
+        if calls["assert"] == 1:
+            raise AssertionError("first attempt fails")
+
+    @fixture_api.fixture(name="retry_assertion_fixture", replace=True)
+    def _retry_assertion_fixture():
+        return fixture_api.FixtureHandle(hooks={"assert_test": _assert_test})
+
+    class CountingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="counting")
+            self.calls = 0
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:  # noqa: ARG002
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            self.calls += 1
+            return True
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    run._clear_directory_config_cache()
+    try:
+        runner = CountingRunner()
+        queue = [
+            run.SuiteQueueItem(
+                suite=run.SuiteInfo(name="assertions-retry", directory=suite_dir),
+                tests=[run.TestQueueItem(runner=runner, path=test_file)],
+                fixtures=(fixture_api.FixtureSpec(name="retry_assertion_fixture"),),
+            )
+        ]
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+        fixture_api._FACTORIES.pop("retry_assertion_fixture", None)  # type: ignore[attr-defined]
+
+    assert runner.calls == 2
+    assert calls["assert"] == 2
+    assert summary.total == 1
+    assert summary.failed == 0
+
+
 def test_count_queue_tests_includes_suite_members(tmp_path: Path) -> None:
     class StubRunner(run.Runner):
         def __init__(self) -> None:

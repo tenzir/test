@@ -26,6 +26,12 @@ class DiffRunner(TqlRunner):
         fixtures = typing.cast(
             tuple[fixture_api.FixtureSpec, ...], test_config.get("fixtures", tuple())
         )
+        fixture_assertions = run_mod._build_fixture_assertions(
+            typing.cast(
+                dict[str, dict[str, typing.Any]] | None,
+                test_config.get("assertions"),
+            )
+        )
         node_requested = any(spec.name == "node" for spec in fixtures)
         timeout = typing.cast(int, test_config["timeout"])
 
@@ -38,6 +44,7 @@ class DiffRunner(TqlRunner):
                 config_args=tuple(config_args),
                 tenzir_binary=run_mod.TENZIR_BINARY,
                 tenzir_node_binary=run_mod.TENZIR_NODE_BINARY,
+                fixture_assertions=fixture_assertions,
             )
         )
         try:
@@ -127,6 +134,16 @@ class DiffRunner(TqlRunner):
                 else:
                     run_mod.report_failure(test, "")
                     run_mod.print_diff(expected, diff_bytes, ref_path)
+                return False
+        if not fixture_api.is_suite_scope_active(fixtures):
+            try:
+                run_mod._run_fixture_assertions_for_test(
+                    test=test,
+                    fixture_specs=fixtures,
+                    fixture_assertions=fixture_assertions,
+                )
+            except Exception as exc:
+                run_mod.report_failure(test, run_mod._fixture_assertion_failure_message(exc))
                 return False
         run_mod.success(test)
         return True

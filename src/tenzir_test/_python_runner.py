@@ -26,6 +26,7 @@ _EXPORTED_HELPERS: dict[str, Any] = {
     "FixtureSpec": _fixtures.FixtureSpec,
     "FixtureController": _fixtures.FixtureController,
     "Executor": _fixtures.Executor,
+    "current_assertions": _fixtures.current_assertions,
     "current_options": _fixtures.current_options,
 }
 

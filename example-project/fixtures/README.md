@@ -17,10 +17,25 @@ The `http` fixture starts a lightweight echo server:
 - Tests opt in with `fixtures: [http]` in frontmatter.
 - The fixture yields `HTTP_FIXTURE_URL`, pointing at a temporary server that
   responds to POST requests with the received payload.
+- Tests can define reverse-fixture expectations under
+  `assertions.fixtures.http`, and the fixture validates inbound requests via an
+  `assert_test` hook.
 - Cleanup happens automatically when the context ends.
 
+```yaml
+assertions:
+  fixtures:
+    http:
+      expected_request:
+        count: 1
+        method: POST
+        path: /status/not-found
+        body: '{"foo":"bar"}'
+```
+
 Use this module as a “hello world” for fixtures: it demonstrates the
-`@fixture()` decorator, background worker threads, and tidy shutdown logic.
+`@fixture()` decorator, typed options/assertions, background worker threads, and
+tidy shutdown logic.
 
 ## `server.py`
 

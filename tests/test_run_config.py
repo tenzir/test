@@ -47,6 +47,17 @@ class _OptionalUnionNestedOptions:
     tls: _NestedTlsOptions | None = None
 
 
+@dc.dataclass(frozen=True)
+class _AssertionExpectedRequest:
+    count: int = 0
+    method: str = "POST"
+
+
+@dc.dataclass(frozen=True)
+class _AssertionPayload:
+    expected_request: _AssertionExpectedRequest = dc.field(default_factory=_AssertionExpectedRequest)
+
+
 @pytest.fixture()
 def configured_root(tmp_path: Path) -> Path:
     """Point the runner helpers at an isolated temporary directory."""
@@ -77,6 +88,7 @@ def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> No
     assert "node" not in config
     assert config["skip"] is None
     assert config["fixtures"] == ()
+    assert config["assertions"] == {}
     assert config["inputs"] is None
     assert config["retry"] == 1
 
@@ -107,6 +119,7 @@ write_json
     assert skip_cfg.is_static
     assert skip_cfg.reason == "reason"
     assert config["fixtures"] == ()
+    assert config["assertions"] == {}
     assert config["inputs"] is None
     assert config["retry"] == 1
     assert config["package_dirs"] == tuple()
@@ -139,6 +152,7 @@ write_json
     assert skip_cfg.is_static
     assert skip_cfg.reason == "maintenance"
     assert config["fixtures"] == ()
+    assert config["assertions"] == {}
     assert config["inputs"] is None
     assert config["retry"] == 1
     assert config["package_dirs"] == tuple()
@@ -378,6 +392,7 @@ print("ok")
         "runner": "python",
         "skip": None,
         "fixtures": (),
+        "assertions": {},
         "inputs": None,
         "retry": 1,
         "package_dirs": tuple(),
@@ -1152,6 +1167,66 @@ def test_normalize_fixtures_value_with_hyphenated_name_and_nested_options(
     )
 
 
+def test_parse_assertions_value_with_fixture_mapping(tmp_path: Path, configured_root: Path) -> None:
+    test_file = tmp_path / "assertions.tql"
+    test_file.write_text(
+        """---
+assertions:
+  fixtures:
+    http:
+      expected_request:
+        count: 1
+        method: POST
+        path: /status/not-found
+---
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+    config = run.parse_test_config(test_file)
+    assert config["assertions"] == {
+        "http": {
+            "expected_request": {
+                "count": 1,
+                "method": "POST",
+                "path": "/status/not-found",
+            }
+        }
+    }
+
+
+def test_parse_assertions_rejects_non_mapping(tmp_path: Path, configured_root: Path) -> None:
+    test_file = tmp_path / "bad_assertions.tql"
+    test_file.write_text(
+        """---
+assertions: nope
+---
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Invalid value for 'assertions'"):
+        run.parse_test_config(test_file)
+
+
+def test_parse_assertions_rejects_unknown_keys(tmp_path: Path, configured_root: Path) -> None:
+    test_file = tmp_path / "bad_assertions_keys.tql"
+    test_file.write_text(
+        """---
+assertions:
+  unknown: {}
+---
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Unknown keys in 'assertions'"):
+        run.parse_test_config(test_file)
+
+
 def test_normalize_fixtures_value_rejects_multi_key_mapping(
     tmp_path: Path, configured_root: Path
 ) -> None:
@@ -1388,6 +1463,32 @@ def test_build_fixture_options_omits_empty() -> None:
     assert result == {}
 
 
+def test_build_fixture_assertions_without_assertions_class() -> None:
+    from tenzir_test.run import _build_fixture_assertions
+
+    assertions = {"http": {"expected_request": {"count": 1}}}
+    result = _build_fixture_assertions(assertions)
+    assert result == assertions
+
+
+def test_build_fixture_assertions_with_assertions_class() -> None:
+    from tenzir_test.fixtures import _ASSERTIONS_CLASSES
+    from tenzir_test.run import _build_fixture_assertions
+
+    _ASSERTIONS_CLASSES["_test_http_assertions"] = _AssertionPayload
+    try:
+        result = _build_fixture_assertions(
+            {"_test_http_assertions": {"expected_request": {"count": 2, "method": "GET"}}}
+        )
+        payload = result["_test_http_assertions"]
+        assert isinstance(payload, _AssertionPayload)
+        assert isinstance(payload.expected_request, _AssertionExpectedRequest)
+        assert payload.expected_request.count == 2
+        assert payload.expected_request.method == "GET"
+    finally:
+        _ASSERTIONS_CLASSES.pop("_test_http_assertions", None)
+
+
 def test_fixture_decorator_registers_options_class() -> None:
     from tenzir_test.fixtures import _FACTORIES, _OPTIONS_CLASSES, fixture, get_options_class
 
@@ -1405,6 +1506,30 @@ def test_fixture_decorator_registers_options_class() -> None:
     finally:
         _FACTORIES.pop("_test_demo_opts", None)
         _OPTIONS_CLASSES.pop("_test_demo_opts", None)
+
+
+def test_fixture_decorator_registers_assertions_class() -> None:
+    from tenzir_test.fixtures import (
+        _ASSERTIONS_CLASSES,
+        _FACTORIES,
+        fixture,
+        get_assertions_class,
+    )
+
+    @dc.dataclass(frozen=True)
+    class DemoAssertions:
+        expected: str = ""
+
+    @fixture(name="_test_demo_assertions", assertions=DemoAssertions, replace=True)
+    def _demo_fixture():  # type: ignore[no-untyped-def]
+        yield {}
+
+    try:
+        assert "_test_demo_assertions" in _FACTORIES
+        assert get_assertions_class("_test_demo_assertions") is DemoAssertions
+    finally:
+        _FACTORIES.pop("_test_demo_assertions", None)
+        _ASSERTIONS_CLASSES.pop("_test_demo_assertions", None)
 
 
 def test_register_rejects_dataclass_instance_for_options() -> None:
@@ -1429,7 +1554,35 @@ def test_register_rejects_dataclass_instance_for_options() -> None:
     _OPTIONS_CLASSES.pop("_test_bad_opts_instance", None)
 
 
+def test_register_rejects_dataclass_instance_for_assertions() -> None:
+    from tenzir_test.fixtures import _ASSERTIONS_CLASSES, _FACTORIES, register
+
+    @dc.dataclass(frozen=True)
+    class DemoAssertions:
+        expected: str = ""
+
+    def _fixture():  # type: ignore[no-untyped-def]
+        return {}
+
+    with pytest.raises(TypeError, match="dataclass type"):
+        register(
+            "_test_bad_assertions_instance",
+            _fixture,
+            replace=True,
+            assertions=DemoAssertions(),
+        )
+
+    _FACTORIES.pop("_test_bad_assertions_instance", None)
+    _ASSERTIONS_CLASSES.pop("_test_bad_assertions_instance", None)
+
+
 def test_current_options_returns_empty_without_context() -> None:
     from tenzir_test.fixtures import current_options
 
     assert current_options("nonexistent") == {}
+
+
+def test_current_assertions_returns_empty_without_context() -> None:
+    from tenzir_test.fixtures import current_assertions
+
+    assert current_assertions("nonexistent") == {}
