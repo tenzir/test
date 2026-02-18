@@ -18,11 +18,10 @@ Structured assertions are supported via ``HttpAssertions``::
     assertions:
       fixtures:
         http:
-          expected_request:
-            count: 1
-            method: POST
-            path: /status/not-found
-            body: '{"foo":"bar"}'
+          count: 1
+          method: POST
+          path: /status/not-found
+          body: '{"foo":"bar"}'
 """
 
 from __future__ import annotations
@@ -46,20 +45,13 @@ class HttpOptions:
 
 
 @dataclass(frozen=True)
-class ExpectedRequest:
-    """Expected request shape for reverse-fixture assertion checks."""
-
-    count: int = 1
-    method: str = "POST"
-    path: str = "/"
-    body: str = ""
-
-
-@dataclass(frozen=True)
 class HttpAssertions:
     """Assertions payload accepted under ``assertions.fixtures.http``."""
 
-    expected_request: ExpectedRequest | None = None
+    count: int | None = None
+    method: str | None = None
+    path: str | None = None
+    body: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,18 +101,14 @@ class EchoHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def _extract_expected_request(raw: HttpAssertions | dict[str, Any]) -> ExpectedRequest | None:
+def _extract_assertions(raw: HttpAssertions | dict[str, Any]) -> HttpAssertions:
     if isinstance(raw, HttpAssertions):
-        return raw.expected_request
-    nested = raw.get("expected_request")
-    if nested is None:
-        return None
-    if isinstance(nested, ExpectedRequest):
-        return nested
-    if isinstance(nested, dict):
-        return ExpectedRequest(**nested)
-    raise AssertionError(
-        f"expected 'expected_request' to be a mapping, got {type(nested).__name__}"
+        return raw
+    return HttpAssertions(
+        count=raw.get("count"),
+        method=raw.get("method"),
+        path=raw.get("path"),
+        body=raw.get("body"),
     )
 
 
@@ -134,33 +122,40 @@ def run() -> FixtureHandle:
     worker.start()
 
     def _assert_test(*, test: Path, assertions: HttpAssertions | dict[str, Any], **_: Any) -> None:
-        expected_request = _extract_expected_request(assertions)
+        assertion_config = _extract_assertions(assertions)
         request_lock = getattr(server, "request_lock")
         with request_lock:
             request_log = getattr(server, "request_log")
             observed = list(request_log)
             request_log.clear()
 
-        if expected_request is None:
+        if (
+            assertion_config.count is None
+            and assertion_config.method is None
+            and assertion_config.path is None
+            and assertion_config.body is None
+        ):
             return
 
-        if len(observed) != expected_request.count:
+        expected_count = assertion_config.count if assertion_config.count is not None else 1
+        if len(observed) != expected_count:
             raise AssertionError(
-                f"{test.name}: expected {expected_request.count} request(s), got {len(observed)}"
+                f"{test.name}: expected {expected_count} request(s), got {len(observed)}"
             )
 
-        expected_method = expected_request.method.upper()
-        expected_body = _normalize_body(expected_request.body)
+        expected_method = (assertion_config.method or "POST").upper()
+        expected_path = assertion_config.path or "/"
+        expected_body = _normalize_body(assertion_config.body or "")
         for index, request in enumerate(observed, start=1):
             if request.method.upper() != expected_method:
                 raise AssertionError(
                     f"{test.name}: request #{index} method mismatch: "
                     f"expected {expected_method}, got {request.method}"
                 )
-            if request.path != expected_request.path:
+            if request.path != expected_path:
                 raise AssertionError(
                     f"{test.name}: request #{index} path mismatch: "
-                    f"expected {expected_request.path}, got {request.path}"
+                    f"expected {expected_path}, got {request.path}"
                 )
             if expected_body and _normalize_body(request.body) != expected_body:
                 raise AssertionError(

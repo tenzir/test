@@ -26,11 +26,10 @@ The `http` fixture starts a lightweight echo server:
 assertions:
   fixtures:
     http:
-      expected_request:
-        count: 1
-        method: POST
-        path: /status/not-found
-        body: '{"foo":"bar"}'
+      count: 1
+      method: POST
+      path: /status/not-found
+      body: '{"foo":"bar"}'
 ```
 
 Use this module as a “hello world” for fixtures: it demonstrates the

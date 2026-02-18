@@ -70,7 +70,7 @@ example-project/
   and directory defaults where needed.
 - **Reverse fixture assertions** (`tests/http-fixture-assertions.{tql,txt}`):
   demonstrates first-class fixture validation with:
-  `assertions.fixtures.http.expected_request` for method/path/body/count
+  `assertions.fixtures.http` for method/path/body/count
   checks that run after the test and fail the test on mismatch.
 - **Context suite** (`tests/context`): runs three sequential TQL programs inside
   a suite so they share the `node` fixture and stateful context tables. Invoke

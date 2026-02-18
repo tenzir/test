@@ -3,14 +3,13 @@ fixtures: [http]
 assertions:
   fixtures:
     http:
-      expected_request:
-        count: 1
-        method: POST
-        path: /status/not-found
-        body: |-
-          {
-            "foo": "bar"
-          }
+      count: 1
+      method: POST
+      path: /status/not-found
+      body: |-
+        {
+          "foo": "bar"
+        }
 timeout: 30
 ---
 
