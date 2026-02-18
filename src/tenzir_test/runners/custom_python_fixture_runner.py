@@ -254,11 +254,47 @@ class CustomPythonFixture(ExtRunner):
                         check=True,
                         stdin_data=stdin_content,
                     )
-                ref_path = test.with_suffix(".txt")
-                if completed.returncode != 0:
-                    run_mod.fail(test)
-                    return False
-                if passthrough:
+                    ref_path = test.with_suffix(".txt")
+                    if completed.returncode != 0:
+                        run_mod.fail(test)
+                        return False
+                    if passthrough:
+                        if not fixture_api.is_suite_scope_active(fixtures):
+                            try:
+                                run_mod._run_fixture_assertions_for_test(
+                                    test=test,
+                                    fixture_specs=fixtures,
+                                    fixture_assertions=fixture_assertions,
+                                )
+                            except Exception as exc:
+                                run_mod.report_failure(
+                                    test, run_mod._fixture_assertion_failure_message(exc)
+                                )
+                                return False
+                        run_mod.success(test)
+                        return True
+                    output = (completed.stdout or b"") + (completed.stderr or b"")
+                    if update:
+                        with open(ref_path, "wb") as f:
+                            f.write(output)
+                    else:
+                        if not ref_path.exists():
+                            run_mod.report_failure(
+                                test,
+                                run_mod.format_failure_message(
+                                    f'Failed to find ref file: "{ref_path}"'
+                                ),
+                            )
+                            return False
+                        run_mod.log_comparison(test, ref_path, mode="comparing")
+                        expected = ref_path.read_bytes()
+                        if expected != output:
+                            if run_mod.interrupt_requested():
+                                run_mod.report_interrupted_test(test)
+                            else:
+                                run_mod.report_failure(test, "")
+                                run_mod.print_diff(expected, output, ref_path)
+                            return False
                     if not fixture_api.is_suite_scope_active(fixtures):
                         try:
                             run_mod._run_fixture_assertions_for_test(
@@ -273,38 +309,6 @@ class CustomPythonFixture(ExtRunner):
                             return False
                     run_mod.success(test)
                     return True
-                output = (completed.stdout or b"") + (completed.stderr or b"")
-                if update:
-                    with open(ref_path, "wb") as f:
-                        f.write(output)
-                else:
-                    if not ref_path.exists():
-                        run_mod.report_failure(
-                            test,
-                            run_mod.format_failure_message(
-                                f'Failed to find ref file: "{ref_path}"'
-                            ),
-                        )
-                        return False
-                    run_mod.log_comparison(test, ref_path, mode="comparing")
-                    expected = ref_path.read_bytes()
-                    if expected != output:
-                        if run_mod.interrupt_requested():
-                            run_mod.report_interrupted_test(test)
-                        else:
-                            run_mod.report_failure(test, "")
-                            run_mod.print_diff(expected, output, ref_path)
-                        return False
-                if not fixture_api.is_suite_scope_active(fixtures):
-                    try:
-                        run_mod._run_fixture_assertions_for_test(
-                            test=test,
-                            fixture_specs=fixtures,
-                            fixture_assertions=fixture_assertions,
-                        )
-                    except Exception as exc:
-                        run_mod.report_failure(test, run_mod._fixture_assertion_failure_message(exc))
-                        return False
             finally:
                 fixture_api.pop_context(context_token)
                 run_mod.cleanup_test_tmp_dir(env.get(run_mod.TEST_TMP_ENV_VAR))
@@ -328,8 +332,6 @@ class CustomPythonFixture(ExtRunner):
                     if e.stderr:
                         sys.stdout.buffer.write(e.stderr)
             return False
-        run_mod.success(test)
-        return True
 
 
 __all__ = ["CustomPythonFixture"]

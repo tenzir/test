@@ -3582,15 +3582,97 @@ def run_simple_test(
                 cwd=str(ROOT),
                 stdin_data=stdin_content,
             )
-        good = completed.returncode == 0
-        output = b""
-        stderr_output = b""
-        if not passthrough_mode:
-            root_bytes = str(ROOT).encode() + b"/"
-            captured_stdout = completed.stdout or b""
-            output = captured_stdout.replace(root_bytes, b"")
-            captured_stderr = completed.stderr or b""
-            stderr_output = captured_stderr.replace(root_bytes, b"")
+
+            good = completed.returncode == 0
+            output = b""
+            stderr_output = b""
+            if not passthrough_mode:
+                root_bytes = str(ROOT).encode() + b"/"
+                captured_stdout = completed.stdout or b""
+                output = captured_stdout.replace(root_bytes, b"")
+                captured_stderr = completed.stderr or b""
+                stderr_output = captured_stderr.replace(root_bytes, b"")
+
+            if expect_error == good:
+                interrupted = _is_interrupt_exit(completed.returncode) or interrupt_requested()
+                if should_suppress_failure_output() and not interrupted:
+                    return False
+                if interrupted:
+                    _request_interrupt()
+                summary_line = (
+                    _INTERRUPTED_NOTICE
+                    if interrupted
+                    else format_failure_message(f"got unexpected exit code {completed.returncode}")
+                )
+                if passthrough_mode:
+                    report_failure(test, summary_line)
+                else:
+                    with stdout_lock:
+                        fail(test)
+                        if not interrupted:
+                            line_prefix = "│ ".encode()
+                            for line in output.splitlines():
+                                sys.stdout.buffer.write(line_prefix + line + b"\n")
+                            if completed.returncode != 0 and stderr_output:
+                                sys.stdout.write("├─▶ stderr\n")
+                                detail_prefix = DETAIL_COLOR.encode()
+                                reset_bytes = RESET_COLOR.encode()
+                                for line in stderr_output.splitlines():
+                                    sys.stdout.buffer.write(
+                                        line_prefix + detail_prefix + line + reset_bytes + b"\n"
+                                    )
+                        if summary_line:
+                            sys.stdout.write(summary_line + "\n")
+                return False
+            if passthrough_mode:
+                if not fixtures_impl.is_suite_scope_active(fixture_specs):
+                    try:
+                        _run_fixture_assertions_for_test(
+                            test=test,
+                            fixture_specs=fixture_specs,
+                            fixture_assertions=fixture_assertions,
+                        )
+                    except Exception as exc:
+                        report_failure(test, _fixture_assertion_failure_message(exc))
+                        return False
+                success(test)
+                return True
+            if not good:
+                output_ext = "txt"
+            ref_path = test.with_suffix(f".{output_ext}")
+            if update:
+                with ref_path.open("wb") as f:
+                    f.write(output)
+            else:
+                if not ref_path.exists():
+                    report_failure(
+                        test, format_failure_message(f'Failed to find ref file: "{ref_path}"')
+                    )
+                    return False
+                log_comparison(test, ref_path, mode="comparing")
+                expected = ref_path.read_bytes()
+                pre_compare = cast(tuple[str, ...], test_config.get("pre_compare", tuple()))
+                expected_transformed = apply_pre_compare(expected, pre_compare)
+                output_transformed = apply_pre_compare(output, pre_compare)
+                if expected_transformed != output_transformed:
+                    if interrupt_requested():
+                        report_interrupted_test(test)
+                    else:
+                        report_failure(test, "")
+                        print_diff(expected_transformed, output_transformed, ref_path)
+                    return False
+            if not fixtures_impl.is_suite_scope_active(fixture_specs):
+                try:
+                    _run_fixture_assertions_for_test(
+                        test=test,
+                        fixture_specs=fixture_specs,
+                        fixture_assertions=fixture_assertions,
+                    )
+                except Exception as exc:
+                    report_failure(test, _fixture_assertion_failure_message(exc))
+                    return False
+            success(test)
+            return True
     except subprocess.TimeoutExpired:
         report_failure(
             test,
@@ -3606,85 +3688,6 @@ def run_simple_test(
     finally:
         fixtures_impl.pop_context(context_token)
         cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
-
-    if expect_error == good:
-        interrupted = _is_interrupt_exit(completed.returncode) or interrupt_requested()
-        if should_suppress_failure_output() and not interrupted:
-            return False
-        if interrupted:
-            _request_interrupt()
-        summary_line = (
-            _INTERRUPTED_NOTICE
-            if interrupted
-            else format_failure_message(f"got unexpected exit code {completed.returncode}")
-        )
-        if passthrough_mode:
-            report_failure(test, summary_line)
-        else:
-            with stdout_lock:
-                fail(test)
-                if not interrupted:
-                    line_prefix = "│ ".encode()
-                    for line in output.splitlines():
-                        sys.stdout.buffer.write(line_prefix + line + b"\n")
-                    if completed.returncode != 0 and stderr_output:
-                        sys.stdout.write("├─▶ stderr\n")
-                        detail_prefix = DETAIL_COLOR.encode()
-                        reset_bytes = RESET_COLOR.encode()
-                        for line in stderr_output.splitlines():
-                            sys.stdout.buffer.write(
-                                line_prefix + detail_prefix + line + reset_bytes + b"\n"
-                            )
-                if summary_line:
-                    sys.stdout.write(summary_line + "\n")
-        return False
-    if passthrough_mode:
-        if not fixtures_impl.is_suite_scope_active(fixture_specs):
-            try:
-                _run_fixture_assertions_for_test(
-                    test=test,
-                    fixture_specs=fixture_specs,
-                    fixture_assertions=fixture_assertions,
-                )
-            except Exception as exc:
-                report_failure(test, _fixture_assertion_failure_message(exc))
-                return False
-        success(test)
-        return True
-    if not good:
-        output_ext = "txt"
-    ref_path = test.with_suffix(f".{output_ext}")
-    if update:
-        with ref_path.open("wb") as f:
-            f.write(output)
-    else:
-        if not ref_path.exists():
-            report_failure(test, format_failure_message(f'Failed to find ref file: "{ref_path}"'))
-            return False
-        log_comparison(test, ref_path, mode="comparing")
-        expected = ref_path.read_bytes()
-        pre_compare = cast(tuple[str, ...], test_config.get("pre_compare", tuple()))
-        expected_transformed = apply_pre_compare(expected, pre_compare)
-        output_transformed = apply_pre_compare(output, pre_compare)
-        if expected_transformed != output_transformed:
-            if interrupt_requested():
-                report_interrupted_test(test)
-            else:
-                report_failure(test, "")
-                print_diff(expected_transformed, output_transformed, ref_path)
-            return False
-    if not fixtures_impl.is_suite_scope_active(fixture_specs):
-        try:
-            _run_fixture_assertions_for_test(
-                test=test,
-                fixture_specs=fixture_specs,
-                fixture_assertions=fixture_assertions,
-            )
-        except Exception as exc:
-            report_failure(test, _fixture_assertion_failure_message(exc))
-            return False
-    success(test)
-    return True
 
 
 def _compose_skip_reason(

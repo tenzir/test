@@ -100,53 +100,53 @@ class DiffRunner(TqlRunner):
                     check=False,
                     force_capture=True,
                 )
+
+                # Strip the ROOT prefix from paths in output to make them relative,
+                # consistent with run_simple_test behavior.
+                root_bytes = str(run_mod.ROOT).encode() + b"/"
+                unoptimized_stdout = unoptimized.stdout.replace(root_bytes, b"")
+                optimized_stdout = optimized.stdout.replace(root_bytes, b"")
+                diff_chunks = list(
+                    difflib.diff_bytes(
+                        difflib.unified_diff,
+                        unoptimized_stdout.splitlines(keepends=True),
+                        optimized_stdout.splitlines(keepends=True),
+                        n=2**31 - 1,
+                    )
+                )[3:]
+                if diff_chunks:
+                    diff_bytes = b"".join(diff_chunks)
+                else:
+                    diff_bytes = b"".join(
+                        b" " + line for line in unoptimized_stdout.splitlines(keepends=True)
+                    )
+                ref_path = test.with_suffix(".diff")
+                if update:
+                    ref_path.write_bytes(diff_bytes)
+                else:
+                    expected = ref_path.read_bytes()
+                    if diff_bytes != expected:
+                        if run_mod.interrupt_requested():
+                            run_mod.report_interrupted_test(test)
+                        else:
+                            run_mod.report_failure(test, "")
+                            run_mod.print_diff(expected, diff_bytes, ref_path)
+                        return False
+                if not fixture_api.is_suite_scope_active(fixtures):
+                    try:
+                        run_mod._run_fixture_assertions_for_test(
+                            test=test,
+                            fixture_specs=fixtures,
+                            fixture_assertions=fixture_assertions,
+                        )
+                    except Exception as exc:
+                        run_mod.report_failure(test, run_mod._fixture_assertion_failure_message(exc))
+                        return False
+                run_mod.success(test)
+                return True
         finally:
             fixture_api.pop_context(context_token)
             run_mod.cleanup_test_tmp_dir(env.get(run_mod.TEST_TMP_ENV_VAR))
-
-        # Strip the ROOT prefix from paths in output to make them relative,
-        # consistent with run_simple_test behavior.
-        root_bytes = str(run_mod.ROOT).encode() + b"/"
-        unoptimized_stdout = unoptimized.stdout.replace(root_bytes, b"")
-        optimized_stdout = optimized.stdout.replace(root_bytes, b"")
-        diff_chunks = list(
-            difflib.diff_bytes(
-                difflib.unified_diff,
-                unoptimized_stdout.splitlines(keepends=True),
-                optimized_stdout.splitlines(keepends=True),
-                n=2**31 - 1,
-            )
-        )[3:]
-        if diff_chunks:
-            diff_bytes = b"".join(diff_chunks)
-        else:
-            diff_bytes = b"".join(
-                b" " + line for line in unoptimized_stdout.splitlines(keepends=True)
-            )
-        ref_path = test.with_suffix(".diff")
-        if update:
-            ref_path.write_bytes(diff_bytes)
-        else:
-            expected = ref_path.read_bytes()
-            if diff_bytes != expected:
-                if run_mod.interrupt_requested():
-                    run_mod.report_interrupted_test(test)
-                else:
-                    run_mod.report_failure(test, "")
-                    run_mod.print_diff(expected, diff_bytes, ref_path)
-                return False
-        if not fixture_api.is_suite_scope_active(fixtures):
-            try:
-                run_mod._run_fixture_assertions_for_test(
-                    test=test,
-                    fixture_specs=fixtures,
-                    fixture_assertions=fixture_assertions,
-                )
-            except Exception as exc:
-                run_mod.report_failure(test, run_mod._fixture_assertion_failure_message(exc))
-                return False
-        run_mod.success(test)
-        return True
 
 
 __all__ = ["DiffRunner"]

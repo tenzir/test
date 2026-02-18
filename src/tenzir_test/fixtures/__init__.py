@@ -650,8 +650,8 @@ def invoke_active_hook(
             continue
         hook_kwargs = dict(kwargs)
         hook_kwargs.setdefault("fixture", fixture_name)
-        if "assertions" not in hook_kwargs and "assertions_by_fixture" in hook_kwargs:
-            raw_mapping = hook_kwargs["assertions_by_fixture"]
+        raw_mapping = hook_kwargs.pop("assertions_by_fixture", None)
+        if "assertions" not in hook_kwargs and raw_mapping is not None:
             if isinstance(raw_mapping, Mapping):
                 hook_kwargs["assertions"] = raw_mapping.get(fixture_name, {})
             else:

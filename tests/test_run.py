@@ -1029,6 +1029,61 @@ def test_worker_retries_when_suite_fixture_assertion_fails_once(tmp_path: Path) 
     assert summary.failed == 0
 
 
+def test_run_simple_test_runs_fixture_assertions_before_fixture_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    test_file = tmp_path / "tests" / "case.tql"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    test_file.parent.joinpath("test.yaml").write_text(
+        "timeout: 10\nfixtures:\n  - assertion_fixture\n",
+        encoding="utf-8",
+    )
+
+    observed = {"assert_calls": 0, "teardown": False}
+
+    def _assert_test(**_: object) -> None:
+        assert observed["teardown"] is False
+        observed["assert_calls"] += 1
+
+    @fixture_api.fixture(name="assertion_fixture", replace=True)
+    def _assertion_fixture():
+        def _teardown() -> None:
+            observed["teardown"] = True
+
+        return fixture_api.FixtureHandle(hooks={"assert_test": _assert_test}, teardown=_teardown)
+
+    class _DummyCompleted:
+        returncode = 0
+        stdout = b"ok\n"
+        stderr = b""
+
+    monkeypatch.setattr(run, "run_subprocess", lambda *_args, **_kwargs: _DummyCompleted())
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run._clear_directory_config_cache()
+    try:
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=("tenzir",),
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+        assert run.run_simple_test(test_file, update=True, output_ext="txt")
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+        fixture_api._FACTORIES.pop("assertion_fixture", None)  # type: ignore[attr-defined]
+
+    assert observed["assert_calls"] == 1
+    assert observed["teardown"] is True
+
+
 def test_count_queue_tests_includes_suite_members(tmp_path: Path) -> None:
     class StubRunner(run.Runner):
         def __init__(self) -> None:
