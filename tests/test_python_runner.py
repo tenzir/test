@@ -308,6 +308,40 @@ def test_python_runner_passthrough_streams_output(
     assert captured["check"] is True
 
 
+def test_python_runner_runs_fixture_assertions_while_fixtures_are_active(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = python_fixture_root / "python" / "fixture.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    _fixture_script(script)
+
+    active = {"value": False}
+    assertion_states: list[bool] = []
+
+    @contextmanager
+    def fake_activate(_specs):  # noqa: ANN001
+        active["value"] = True
+        try:
+            yield {}
+        finally:
+            active["value"] = False
+
+    monkeypatch.setattr(python_runner_impl.fixture_api, "activate", fake_activate)
+    monkeypatch.setattr(python_runner_impl.fixture_api, "is_suite_scope_active", lambda _f: False)
+    monkeypatch.setattr(
+        run,
+        "_run_fixture_assertions_for_test",
+        lambda **_kwargs: assertion_states.append(active["value"]),
+    )
+    monkeypatch.setattr(
+        run, "run_subprocess", lambda *_args, **_kwargs: _DummyCompleted(b"payload")
+    )
+
+    runner = run.CustomPythonFixture()
+    assert runner.run(script, update=True, coverage=False)
+    assert assertion_states == [True]
+
+
 def test_python_runner_logs_when_enabled(
     python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -516,6 +550,39 @@ def test_fixture_activation_teardown_log_suppressed_when_empty(
 
     assert "activating fixture 'sink'" in caplog.text
     assert "tearing down fixture 'sink'" not in caplog.text
+
+
+def test_invoke_active_hook_strips_assertions_mapping_transport_key() -> None:
+    fixture_name = "assertions_hook_fixture"
+    observed: dict[str, object] = {}
+
+    def _factory() -> fixtures.FixtureHandle:
+        def _assert_test(*, test: Path, fixture: str, assertions: dict[str, object]) -> None:
+            observed["test"] = test
+            observed["fixture"] = fixture
+            observed["assertions"] = assertions
+
+        return fixtures.FixtureHandle(hooks={"assert_test": _assert_test})
+
+    previous = fixtures._FACTORIES.get(fixture_name)  # type: ignore[attr-defined]
+    fixtures.register(fixture_name, _factory, replace=True)
+    try:
+        with fixtures.activate([fixture_name]):
+            fixtures.invoke_active_hook(
+                "assert_test",
+                fixture_names=[fixture_name],
+                test=Path("tests/demo.tql"),
+                assertions_by_fixture={fixture_name: {"expected": True}},
+            )
+    finally:
+        if previous is None:
+            fixtures._FACTORIES.pop(fixture_name, None)  # type: ignore[attr-defined]
+        else:
+            fixtures._FACTORIES[fixture_name] = previous  # type: ignore[attr-defined]
+
+    assert observed["test"] == Path("tests/demo.tql")
+    assert observed["fixture"] == fixture_name
+    assert observed["assertions"] == {"expected": True}
 
 
 def test_python_runner_passes_stdin_data(

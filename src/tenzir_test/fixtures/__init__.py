@@ -55,6 +55,7 @@ class FixtureSpec:
 
 
 _OPTIONS_CLASSES: dict[str, type] = {}
+_ASSERTIONS_CLASSES: dict[str, type] = {}
 
 
 def _unwrap_optional(tp: Any) -> Any:
@@ -94,6 +95,11 @@ def get_options_class(name: str) -> type | None:
     return _OPTIONS_CLASSES.get(name)
 
 
+def get_assertions_class(name: str) -> type | None:
+    """Return the registered assertions dataclass for the named fixture, if any."""
+    return _ASSERTIONS_CLASSES.get(name)
+
+
 @dataclass(frozen=True)
 class FixtureContext:
     """Describe the invocation context available to fixture factories."""
@@ -106,10 +112,14 @@ class FixtureContext:
     tenzir_binary: tuple[str, ...] | None
     tenzir_node_binary: tuple[str, ...] | None
     fixture_options: Mapping[str, Any] = field(default_factory=dict)
+    fixture_assertions: Mapping[str, Any] = field(default_factory=dict)
 
 
 _CONTEXT: ContextVar[FixtureContext | None] = ContextVar(
     "tenzir_test_fixture_context", default=None
+)
+_ACTIVE_CONTROLLERS: ContextVar[dict[str, "FixtureController"]] = ContextVar(
+    "tenzir_test_active_fixture_controllers", default={}
 )
 
 logger = logging.getLogger(__name__)
@@ -425,6 +435,19 @@ def current_options(name: str) -> Any:
     return ctx.fixture_options.get(name, {})
 
 
+def current_assertions(name: str) -> Any:
+    """Return assertions for the named fixture from the active context.
+
+    Returns the typed dataclass instance if the fixture declared one,
+    otherwise the raw dict. Returns an empty dict if no context is active
+    or no assertions were provided for the fixture.
+    """
+    ctx = _CONTEXT.get()
+    if ctx is None:
+        return {}
+    return ctx.fixture_assertions.get(name, {})
+
+
 FixtureFactory = Callable[[], ContextManager[dict[str, str] | None]]
 
 
@@ -562,9 +585,14 @@ def _wrap_factory(
         if force_teardown_log:
             setattr(factory, "tenzir_log_teardown", True)
         controller = FixtureController(name, factory)
+        existing = _ACTIVE_CONTROLLERS.get()
+        merged = dict(existing)
+        merged[name] = controller
+        token = _ACTIVE_CONTROLLERS.set(merged)
         try:
             yield controller.start()
         finally:
+            _ACTIVE_CONTROLLERS.reset(token)
             controller.stop()
 
     return _logged_context()
@@ -579,6 +607,65 @@ def _coerce_specs(items: Iterable[FixtureSpec | str]) -> tuple[FixtureSpec, ...]
         else:
             result.append(item)
     return tuple(result)
+
+
+def is_suite_scope_active(names: Iterable[FixtureSpec | str] | None = None) -> bool:
+    """Return True when fixture suite scope is active.
+
+    When *names* is provided, only returns True when the active scope matches
+    the normalized fixture specs exactly.
+    """
+    scope = _SUITE_SCOPE.get()
+    if scope is None:
+        return False
+    if names is None:
+        return True
+    return scope.fixtures == _coerce_specs(names)
+
+
+def invoke_active_hook(
+    hook_name: str,
+    *,
+    fixture_names: Iterable[str] | None = None,
+    on_result: Callable[[bool], None] | None = None,
+    **kwargs: Any,
+) -> None:
+    """Invoke hook on active fixtures that expose it.
+
+    Hook names map to callables attached via ``FixtureHandle(hooks=...)`` or
+    context-manager attributes set by the fixture wrapper.
+    """
+    controllers = _ACTIVE_CONTROLLERS.get()
+    if not controllers:
+        return
+    if fixture_names is None:
+        names = tuple(controllers.keys())
+    else:
+        names = tuple(dict.fromkeys(name for name in fixture_names if name))
+    for fixture_name in names:
+        controller = controllers.get(fixture_name)
+        if controller is None:
+            continue
+        hook = controller._hooks.get(hook_name)
+        if hook is None:
+            continue
+        hook_kwargs = dict(kwargs)
+        hook_kwargs.setdefault("fixture", fixture_name)
+        raw_mapping = hook_kwargs.pop("assertions_by_fixture", None)
+        if "assertions" not in hook_kwargs and raw_mapping is not None:
+            if isinstance(raw_mapping, Mapping):
+                hook_kwargs["assertions"] = raw_mapping.get(fixture_name, {})
+            else:
+                hook_kwargs["assertions"] = {}
+        try:
+            hook(**hook_kwargs)
+        except Exception:
+            if on_result is not None:
+                on_result(False)
+            raise
+        else:
+            if on_result is not None:
+                on_result(True)
 
 
 def _activate_into_stack(
@@ -658,6 +745,7 @@ def register(
     *,
     replace: bool = False,
     options: type | None = None,
+    assertions: type | None = None,
 ) -> None:
     resolved_name = _infer_name(factory, name)
     if resolved_name in _FACTORIES and not replace:
@@ -668,9 +756,17 @@ def register(
                 f"'options' for fixture '{resolved_name}' must be a dataclass type, "
                 f"got {type(options).__name__}"
             )
+    if assertions is not None:
+        if not isinstance(assertions, type) or not dataclasses.is_dataclass(assertions):
+            raise TypeError(
+                f"'assertions' for fixture '{resolved_name}' must be a dataclass type, "
+                f"got {type(assertions).__name__}"
+            )
     _FACTORIES[resolved_name] = _normalize_factory(factory)
     if options is not None:
         _OPTIONS_CLASSES[resolved_name] = options
+    if assertions is not None:
+        _ASSERTIONS_CLASSES[resolved_name] = assertions
 
 
 def fixture(
@@ -680,6 +776,7 @@ def fixture(
     replace: bool = False,
     log_teardown: bool = False,
     options: type | None = None,
+    assertions: type | None = None,
 ) -> Callable[[_FactoryCallable], _FactoryCallable] | _FactoryCallable:
     """Decorator registering a fixture factory.
 
@@ -691,6 +788,11 @@ def fixture(
     The optional ``options`` parameter accepts a frozen dataclass type. When
     provided, test authors can pass structured options in ``test.yaml`` and the
     fixture receives a typed instance via :func:`current_options`.
+
+    The optional ``assertions`` parameter accepts a frozen dataclass type. When
+    provided, tests can pass structured assertion payloads under
+    ``assertions.fixtures.<name>`` and fixtures receive a typed instance via
+    :func:`current_assertions`.
     """
 
     def _decorator(inner: _FactoryCallable) -> _FactoryCallable:
@@ -701,7 +803,13 @@ def fixture(
         else:
             candidate = inner
 
-        register(resolved_name, candidate, replace=replace, options=options)
+        register(
+            resolved_name,
+            candidate,
+            replace=replace,
+            options=options,
+            assertions=assertions,
+        )
 
         if log_teardown:
             registered = _FACTORIES.get(resolved_name)
@@ -775,10 +883,12 @@ __all__ = [
     "FixtureUnavailable",
     "activate",
     "acquire_fixture",
+    "current_assertions",
     "current_options",
     "fixture",
     "fixtures",
     "fixtures_api",
+    "get_assertions_class",
     "get_options_class",
     "suite_scope",
     "has",
@@ -787,4 +897,6 @@ __all__ = [
     "register_tmp_dir_cleanup",
     "unregister_tmp_dir_cleanup",
     "invoke_tmp_dir_cleanup",
+    "invoke_active_hook",
+    "is_suite_scope_active",
 ]

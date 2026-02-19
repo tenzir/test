@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -137,6 +138,64 @@ def test_shell_runner_threads_fixture_options_into_context(tmp_path: Path) -> No
         fixtures._FACTORIES.pop("demo_options", None)  # type: ignore[attr-defined]
         fixtures._OPTIONS_CLASSES.pop("demo_options", None)  # type: ignore[attr-defined]
         run.refresh_runner_metadata()
+
+
+def test_shell_runner_runs_fixture_assertions_while_fixtures_are_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "tests" / "assertions.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("echo ok\n", encoding="utf-8")
+    script.chmod(0o755)
+    script.parent.joinpath("test.yaml").write_text(
+        "timeout: 10\nfixtures:\n  - sink\n",
+        encoding="utf-8",
+    )
+
+    from tenzir_test.runners import shell_runner as shell_runner_mod
+
+    active = {"value": False}
+    assertion_states: list[bool] = []
+
+    @contextmanager
+    def fake_activate(_fixtures):  # noqa: ANN001
+        active["value"] = True
+        try:
+            yield {}
+        finally:
+            active["value"] = False
+
+    def fake_run_subprocess(*_args, **_kwargs):
+        return type("Result", (), {"returncode": 0, "stdout": b"ok\n", "stderr": b""})()
+
+    monkeypatch.setattr(shell_runner_mod.fixture_api, "activate", fake_activate)
+    monkeypatch.setattr(shell_runner_mod.fixture_api, "is_suite_scope_active", lambda _f: False)
+    monkeypatch.setattr(run, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(
+        run,
+        "_run_fixture_assertions_for_test",
+        lambda **_kwargs: assertion_states.append(active["value"]),
+    )
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    try:
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+        runner = run.ShellRunner()
+        assert runner.run(script, update=True, coverage=False)
+    finally:
+        run.apply_settings(original_settings)
+
+    assert assertion_states == [True]
 
 
 def test_shell_runner_passthrough_streams_output(

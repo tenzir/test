@@ -577,6 +577,13 @@ def _is_interrupt_exit(returncode: int) -> bool:
 
 _CURRENT_RETRY_CONTEXT = threading.local()
 _CURRENT_SUITE_CONTEXT = threading.local()
+_CURRENT_ASSERTION_CHECK_CONTEXT = threading.local()
+
+
+@dataclasses.dataclass(slots=True)
+class _AssertionCheckTally:
+    total: int = 0
+    failed: int = 0
 
 
 @contextlib.contextmanager
@@ -639,6 +646,30 @@ def _current_retry_progress() -> tuple[int, int] | None:
     ):
         return fallback
     return None
+
+
+@contextlib.contextmanager
+def _push_assertion_check_context() -> Iterator[_AssertionCheckTally]:
+    previous = getattr(_CURRENT_ASSERTION_CHECK_CONTEXT, "value", None)
+    tally = _AssertionCheckTally()
+    _CURRENT_ASSERTION_CHECK_CONTEXT.value = tally
+    try:
+        yield tally
+    finally:
+        if previous is None:
+            if hasattr(_CURRENT_ASSERTION_CHECK_CONTEXT, "value"):
+                delattr(_CURRENT_ASSERTION_CHECK_CONTEXT, "value")
+        else:
+            _CURRENT_ASSERTION_CHECK_CONTEXT.value = previous
+
+
+def _record_assertion_check_result(*, failed: bool) -> None:
+    tally = getattr(_CURRENT_ASSERTION_CHECK_CONTEXT, "value", None)
+    if not isinstance(tally, _AssertionCheckTally):
+        return
+    tally.total += 1
+    if failed:
+        tally.failed += 1
 
 
 def should_suppress_failure_output() -> bool:
@@ -1415,6 +1446,7 @@ def _default_test_config() -> TestConfig:
         "runner": None,
         "skip": None,
         "fixtures": tuple(),
+        "assertions": {},
         "inputs": None,
         "retry": 1,
         "suite": None,
@@ -1592,6 +1624,96 @@ def _build_fixture_options(
     return result
 
 
+def _normalize_assertions_value(
+    value: typing.Any,
+    *,
+    location: Path | str,
+    line_number: int | None = None,
+) -> dict[str, dict[str, typing.Any]]:
+    """Normalize the ``assertions`` config mapping.
+
+    Expected schema:
+
+    assertions:
+      fixtures:
+        <fixture-name>: <mapping>
+    """
+    parsed: typing.Any = value
+    if isinstance(value, str):
+        try:
+            parsed = yaml.safe_load(value)
+        except yaml.YAMLError:
+            parsed = None
+
+    if parsed is None:
+        return {}
+
+    if not isinstance(parsed, dict):
+        _raise_config_error(
+            location,
+            f"Invalid value for 'assertions', expected mapping, got '{type(parsed).__name__}'",
+            line_number,
+        )
+
+    unknown_keys = set(parsed.keys()) - {"fixtures"}
+    if unknown_keys:
+        _raise_config_error(
+            location,
+            "Unknown keys in 'assertions': " + ", ".join(sorted(str(key) for key in unknown_keys)),
+            line_number,
+        )
+
+    fixtures_raw = parsed.get("fixtures")
+    if fixtures_raw is None:
+        return {}
+    if not isinstance(fixtures_raw, dict):
+        _raise_config_error(
+            location,
+            f"Invalid value for 'assertions.fixtures', expected mapping, got '{type(fixtures_raw).__name__}'",
+            line_number,
+        )
+
+    normalized: dict[str, dict[str, typing.Any]] = {}
+    for fixture_name, fixture_assertions in fixtures_raw.items():
+        if not isinstance(fixture_name, str) or not fixture_name.strip():
+            _raise_config_error(
+                location,
+                f"Assertion fixture name must be a non-empty string, got '{fixture_name}'",
+                line_number,
+            )
+        if fixture_assertions is None:
+            normalized[fixture_name.strip()] = {}
+            continue
+        if not isinstance(fixture_assertions, dict):
+            _raise_config_error(
+                location,
+                "Fixture assertions for "
+                + f"'{fixture_name}' must be a mapping, got '{type(fixture_assertions).__name__}'",
+                line_number,
+            )
+        normalized[fixture_name.strip()] = dict(fixture_assertions)
+    return normalized
+
+
+def _build_fixture_assertions(
+    assertions: Mapping[str, Mapping[str, typing.Any]] | None,
+) -> dict[str, typing.Any]:
+    """Convert raw fixture assertions into typed payloads when registered."""
+    if not assertions:
+        return {}
+    result: dict[str, typing.Any] = {}
+    for fixture_name, payload in assertions.items():
+        assertions_cls = fixtures_impl.get_assertions_class(fixture_name)
+        if assertions_cls is not None:
+            try:
+                result[fixture_name] = fixtures_impl._instantiate_options(assertions_cls, payload)
+            except TypeError as exc:
+                raise ValueError(f"invalid assertions for fixture '{fixture_name}': {exc}") from exc
+            continue
+        result[fixture_name] = dict(payload)
+    return result
+
+
 def _extract_location_path(location: Path | str) -> Path:
     if isinstance(location, Path):
         return location
@@ -1743,6 +1865,7 @@ def _assign_config_option(
         "runner",
         "skip",
         "fixtures",
+        "assertions",
         "inputs",
         "retry",
         "package_dirs",
@@ -1825,6 +1948,12 @@ def _assign_config_option(
                 line_number,
             )
         config[canonical] = _normalize_fixtures_value(
+            value, location=location, line_number=line_number
+        )
+        return
+
+    if canonical == "assertions":
+        config[canonical] = _normalize_assertions_value(
             value, location=location, line_number=line_number
         )
         return
@@ -2543,6 +2672,8 @@ class Summary:
     failed: int = 0
     total: int = 0
     skipped: int = 0
+    assertion_checks_total: int = 0
+    assertion_checks_failed: int = 0
     failed_paths: list[Path] = dataclasses.field(default_factory=list)
     skipped_paths: list[Path] = dataclasses.field(default_factory=list)
     runner_stats: dict[str, RunnerStats] = dataclasses.field(default_factory=dict)
@@ -2553,6 +2684,8 @@ class Summary:
             failed=self.failed + other.failed,
             total=self.total + other.total,
             skipped=self.skipped + other.skipped,
+            assertion_checks_total=self.assertion_checks_total + other.assertion_checks_total,
+            assertion_checks_failed=self.assertion_checks_failed + other.assertion_checks_failed,
             failed_paths=[*self.failed_paths, *other.failed_paths],
             skipped_paths=[*self.skipped_paths, *other.skipped_paths],
             runner_stats=_merge_runner_stats(self.runner_stats, other.runner_stats),
@@ -2575,6 +2708,12 @@ class Summary:
                 stats.skipped += 1
             elif not outcome:
                 stats.failed += 1
+
+    def record_assertion_checks(self, *, total: int, failed: int) -> None:
+        if total <= 0:
+            return
+        self.assertion_checks_total += total
+        self.assertion_checks_failed += max(0, min(failed, total))
 
 
 @dataclasses.dataclass(slots=True)
@@ -2625,8 +2764,13 @@ def _format_summary(summary: Summary) -> str:
     skipped_segment = (
         f"{SKIP} Skipped {summary.skipped} ({_format_percentage(summary.skipped, total)})"
     )
+    segments = [passed_segment, failed_segment, skipped_segment]
+    if summary.assertion_checks_total > 0:
+        assertion_passed = max(0, summary.assertion_checks_total - summary.assertion_checks_failed)
+        assertion_segment = f"Assertions {assertion_passed}/{summary.assertion_checks_total}"
+        segments.append(assertion_segment)
 
-    return f"Test summary: {passed_segment} • {failed_segment} • {skipped_segment}"
+    return "Test summary: " + " • ".join(segments)
 
 
 def _summarize_runner_plan(
@@ -3109,11 +3253,55 @@ def _render_summary_box(summary: Summary) -> list[str]:
     ]
 
 
+def _render_assertion_checks_box(summary: Summary) -> list[str]:
+    if summary.assertion_checks_total <= 0:
+        return []
+
+    passed = max(0, summary.assertion_checks_total - summary.assertion_checks_failed)
+    headers = ("Assertion Checks", "Passed", "Failed", "Total")
+    row = (
+        headers[0],
+        str(passed),
+        str(summary.assertion_checks_failed),
+        str(summary.assertion_checks_total),
+    )
+    label_width = max(len(headers[0]), len(row[0]))
+    passed_width = max(len(headers[1]), len(row[1]))
+    failed_width = max(len(headers[2]), len(row[2]))
+    total_width = max(len(headers[3]), len(row[3]))
+
+    def frame(char: str, width: int) -> str:
+        return char * (width + 2)
+
+    top = (
+        f"┌{frame('─', label_width)}┬{frame('─', passed_width)}"
+        f"┬{frame('─', failed_width)}┬{frame('─', total_width)}┐"
+    )
+    header = (
+        f"│ {_ljust_visible(headers[0], label_width)} │ {headers[1].rjust(passed_width)} │ "
+        f"{headers[2].rjust(failed_width)} │ {headers[3].rjust(total_width)} │"
+    )
+    separator = (
+        f"├{frame('─', label_width)}┼{frame('─', passed_width)}"
+        f"┼{frame('─', failed_width)}┼{frame('─', total_width)}┤"
+    )
+    body = (
+        f"│ {_ljust_visible(row[0], label_width)} │ {_rjust_visible(row[1], passed_width)} │ "
+        f"{_rjust_visible(row[2], failed_width)} │ {_rjust_visible(row[3], total_width)} │"
+    )
+    bottom = (
+        f"└{frame('─', label_width)}┴{frame('─', passed_width)}"
+        f"┴{frame('─', failed_width)}┴{frame('─', total_width)}┘"
+    )
+    return [top, header, separator, body, bottom]
+
+
 def _print_ascii_summary(summary: Summary, *, include_runner: bool, include_fixture: bool) -> None:
     runner_lines = _render_runner_box(summary) if include_runner else []
     fixture_lines = _render_fixture_box(summary) if include_fixture else []
     outcome_lines = _render_summary_box(summary)
-    if not runner_lines and not fixture_lines and not outcome_lines:
+    assertion_lines = _render_assertion_checks_box(summary)
+    if not runner_lines and not fixture_lines and not outcome_lines and not assertion_lines:
         return
     print()
     segments: list[list[str]] = []
@@ -3123,6 +3311,8 @@ def _print_ascii_summary(summary: Summary, *, include_runner: bool, include_fixt
         segments.append(fixture_lines)
     if outcome_lines:
         segments.append(outcome_lines)
+    if assertion_lines:
+        segments.append(assertion_lines)
     for index, block in enumerate(segments):
         for line in block:
             print(line)
@@ -3148,6 +3338,11 @@ def _print_compact_summary(summary: Summary) -> None:
         detail = f"{pass_segment} / {fail_segment}"
         if summary.skipped:
             detail = f"{detail} • {summary.skipped} skipped"
+        if summary.assertion_checks_total > 0:
+            assertion_passed = max(
+                0, summary.assertion_checks_total - summary.assertion_checks_failed
+            )
+            detail = f"{detail} • assertions {assertion_passed}/{summary.assertion_checks_total}"
         noun = "test" if total == 1 else "tests"
         print(f"{INFO} ran {total} {noun}: {detail}")
     else:
@@ -3384,6 +3579,10 @@ def run_simple_test(
     fixture_specs = cast(
         tuple[fixtures_impl.FixtureSpec, ...], test_config.get("fixtures", tuple())
     )
+    fixture_assertions_raw = cast(
+        Mapping[str, Mapping[str, Any]] | None,
+        test_config.get("assertions"),
+    )
     timeout = cast(int, test_config["timeout"])
     expect_error = bool(test_config.get("error", False))
     passthrough_mode = is_passthrough_enabled()
@@ -3416,6 +3615,7 @@ def run_simple_test(
         package_args.append(f"--package-dirs={','.join(merged_dirs)}")
 
     fixture_options = _build_fixture_options(fixture_specs)
+    fixture_assertions = _build_fixture_assertions(fixture_assertions_raw)
     context_token = fixtures_impl.push_context(
         fixtures_impl.FixtureContext(
             test=test,
@@ -3426,6 +3626,7 @@ def run_simple_test(
             tenzir_binary=TENZIR_BINARY,
             tenzir_node_binary=TENZIR_NODE_BINARY,
             fixture_options=fixture_options,
+            fixture_assertions=fixture_assertions,
         )
     )
     try:
@@ -3477,15 +3678,97 @@ def run_simple_test(
                 cwd=str(ROOT),
                 stdin_data=stdin_content,
             )
-        good = completed.returncode == 0
-        output = b""
-        stderr_output = b""
-        if not passthrough_mode:
-            root_bytes = str(ROOT).encode() + b"/"
-            captured_stdout = completed.stdout or b""
-            output = captured_stdout.replace(root_bytes, b"")
-            captured_stderr = completed.stderr or b""
-            stderr_output = captured_stderr.replace(root_bytes, b"")
+
+            good = completed.returncode == 0
+            output = b""
+            stderr_output = b""
+            if not passthrough_mode:
+                root_bytes = str(ROOT).encode() + b"/"
+                captured_stdout = completed.stdout or b""
+                output = captured_stdout.replace(root_bytes, b"")
+                captured_stderr = completed.stderr or b""
+                stderr_output = captured_stderr.replace(root_bytes, b"")
+
+            if expect_error == good:
+                interrupted = _is_interrupt_exit(completed.returncode) or interrupt_requested()
+                if should_suppress_failure_output() and not interrupted:
+                    return False
+                if interrupted:
+                    _request_interrupt()
+                summary_line = (
+                    _INTERRUPTED_NOTICE
+                    if interrupted
+                    else format_failure_message(f"got unexpected exit code {completed.returncode}")
+                )
+                if passthrough_mode:
+                    report_failure(test, summary_line)
+                else:
+                    with stdout_lock:
+                        fail(test)
+                        if not interrupted:
+                            line_prefix = "│ ".encode()
+                            for line in output.splitlines():
+                                sys.stdout.buffer.write(line_prefix + line + b"\n")
+                            if completed.returncode != 0 and stderr_output:
+                                sys.stdout.write("├─▶ stderr\n")
+                                detail_prefix = DETAIL_COLOR.encode()
+                                reset_bytes = RESET_COLOR.encode()
+                                for line in stderr_output.splitlines():
+                                    sys.stdout.buffer.write(
+                                        line_prefix + detail_prefix + line + reset_bytes + b"\n"
+                                    )
+                        if summary_line:
+                            sys.stdout.write(summary_line + "\n")
+                return False
+            if passthrough_mode:
+                if not fixtures_impl.is_suite_scope_active(fixture_specs):
+                    try:
+                        _run_fixture_assertions_for_test(
+                            test=test,
+                            fixture_specs=fixture_specs,
+                            fixture_assertions=fixture_assertions,
+                        )
+                    except Exception as exc:
+                        report_failure(test, _fixture_assertion_failure_message(exc))
+                        return False
+                success(test)
+                return True
+            if not good:
+                output_ext = "txt"
+            ref_path = test.with_suffix(f".{output_ext}")
+            if update:
+                with ref_path.open("wb") as f:
+                    f.write(output)
+            else:
+                if not ref_path.exists():
+                    report_failure(
+                        test, format_failure_message(f'Failed to find ref file: "{ref_path}"')
+                    )
+                    return False
+                log_comparison(test, ref_path, mode="comparing")
+                expected = ref_path.read_bytes()
+                pre_compare = cast(tuple[str, ...], test_config.get("pre_compare", tuple()))
+                expected_transformed = apply_pre_compare(expected, pre_compare)
+                output_transformed = apply_pre_compare(output, pre_compare)
+                if expected_transformed != output_transformed:
+                    if interrupt_requested():
+                        report_interrupted_test(test)
+                    else:
+                        report_failure(test, "")
+                        print_diff(expected_transformed, output_transformed, ref_path)
+                    return False
+            if not fixtures_impl.is_suite_scope_active(fixture_specs):
+                try:
+                    _run_fixture_assertions_for_test(
+                        test=test,
+                        fixture_specs=fixture_specs,
+                        fixture_assertions=fixture_assertions,
+                    )
+                except Exception as exc:
+                    report_failure(test, _fixture_assertion_failure_message(exc))
+                    return False
+            success(test)
+            return True
     except subprocess.TimeoutExpired:
         report_failure(
             test,
@@ -3501,65 +3784,6 @@ def run_simple_test(
     finally:
         fixtures_impl.pop_context(context_token)
         cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
-
-    if expect_error == good:
-        interrupted = _is_interrupt_exit(completed.returncode) or interrupt_requested()
-        if should_suppress_failure_output() and not interrupted:
-            return False
-        if interrupted:
-            _request_interrupt()
-        summary_line = (
-            _INTERRUPTED_NOTICE
-            if interrupted
-            else format_failure_message(f"got unexpected exit code {completed.returncode}")
-        )
-        if passthrough_mode:
-            report_failure(test, summary_line)
-        else:
-            with stdout_lock:
-                fail(test)
-                if not interrupted:
-                    line_prefix = "│ ".encode()
-                    for line in output.splitlines():
-                        sys.stdout.buffer.write(line_prefix + line + b"\n")
-                    if completed.returncode != 0 and stderr_output:
-                        sys.stdout.write("├─▶ stderr\n")
-                        detail_prefix = DETAIL_COLOR.encode()
-                        reset_bytes = RESET_COLOR.encode()
-                        for line in stderr_output.splitlines():
-                            sys.stdout.buffer.write(
-                                line_prefix + detail_prefix + line + reset_bytes + b"\n"
-                            )
-                if summary_line:
-                    sys.stdout.write(summary_line + "\n")
-        return False
-    if passthrough_mode:
-        success(test)
-        return True
-    if not good:
-        output_ext = "txt"
-    ref_path = test.with_suffix(f".{output_ext}")
-    if update:
-        with ref_path.open("wb") as f:
-            f.write(output)
-    else:
-        if not ref_path.exists():
-            report_failure(test, format_failure_message(f'Failed to find ref file: "{ref_path}"'))
-            return False
-        log_comparison(test, ref_path, mode="comparing")
-        expected = ref_path.read_bytes()
-        pre_compare = cast(tuple[str, ...], test_config.get("pre_compare", tuple()))
-        expected_transformed = apply_pre_compare(expected, pre_compare)
-        output_transformed = apply_pre_compare(output, pre_compare)
-        if expected_transformed != output_transformed:
-            if interrupt_requested():
-                report_interrupted_test(test)
-            else:
-                report_failure(test, "")
-                print_diff(expected_transformed, output_transformed, ref_path)
-            return False
-    success(test)
-    return True
 
 
 def _compose_skip_reason(
@@ -3590,6 +3814,63 @@ def _compose_skip_reason(
     if has_exc:
         return exception_reason  # type: ignore[return-value]
     return fallback
+
+
+def _run_fixture_assertions_for_test(
+    *,
+    test: Path,
+    fixture_specs: tuple[fixtures_impl.FixtureSpec, ...],
+    fixture_assertions: Mapping[str, Any],
+) -> None:
+    """Invoke fixture `assert_test` hooks for the given test."""
+    if not fixture_specs:
+        return
+    try:
+        fixtures_impl.invoke_active_hook(
+            "assert_test",
+            fixture_names=_fixture_names(fixture_specs),
+            test=test,
+            assertions_by_fixture=fixture_assertions,
+            on_result=lambda success: _record_assertion_check_result(failed=not success),
+        )
+    except Exception as exc:
+        raise RuntimeError(f"fixture assertion failed: {_sanitize_message(str(exc))}") from exc
+
+
+def _fixture_assertion_failure_message(exc: BaseException) -> str:
+    detail = _sanitize_message(str(exc)).strip()
+    if not detail:
+        detail = exc.__class__.__name__
+    prefix = "fixture assertion failed:"
+    if detail.startswith(prefix):
+        return format_failure_message(detail)
+    return format_failure_message(f"{prefix} {detail}")
+
+
+@contextlib.contextmanager
+def _push_fixture_test_context(
+    *,
+    test: Path,
+    config: TestConfig,
+    fixture_assertions: Mapping[str, Any],
+) -> Iterator[None]:
+    """Temporarily bind per-test fixture assertions into the active context."""
+    current = fixtures_impl.current_context()
+    if current is None:
+        yield
+        return
+    token = fixtures_impl.push_context(
+        dataclasses.replace(
+            current,
+            test=test,
+            config=cast(dict[str, Any], config),
+            fixture_assertions=fixture_assertions,
+        )
+    )
+    try:
+        yield
+    finally:
+        fixtures_impl.pop_context(token)
 
 
 def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool | str:
@@ -3873,6 +4154,7 @@ class Worker:
         fixtures = configured_fixtures
         retry_limit = 1
         config: TestConfig | None = None
+        fixture_assertions: dict[str, Any] = {}
         parse_error: str | None = None
         try:
             config = parse_test_config(test_path, coverage=self._coverage)
@@ -3893,6 +4175,15 @@ class Worker:
                 )
             if suite_fixtures is None:
                 configured_fixtures = config_fixtures
+            try:
+                fixture_assertions = _build_fixture_assertions(
+                    cast(
+                        Mapping[str, Mapping[str, Any]] | None,
+                        config.get("assertions"),
+                    )
+                )
+            except ValueError as exc:
+                parse_error = str(exc)
             skip_cfg = cast(SkipConfig | None, config.get("skip"))
             if skip_cfg is not None and skip_cfg.is_static:
                 assert skip_cfg.reason is not None
@@ -3939,27 +4230,61 @@ class Worker:
                 break
             attempts += 1
             with _push_retry_context(attempt=attempts, max_attempts=max_attempts):
-                attempt_context = contextlib.ExitStack()
-                if suite_progress is not None:
-                    name, index, total = suite_progress
-                    attempt_context.enter_context(
-                        _push_suite_context(name=name, index=index, total=total)
+                with _push_assertion_check_context() as assertion_tally:
+                    attempt_context = contextlib.ExitStack()
+                    if suite_progress is not None:
+                        name, index, total = suite_progress
+                        attempt_context.enter_context(
+                            _push_suite_context(name=name, index=index, total=total)
+                        )
+                    if suite_fixtures is not None and config is not None:
+                        attempt_context.enter_context(
+                            _push_fixture_test_context(
+                                test=test_path,
+                                config=config,
+                                fixture_assertions=fixture_assertions,
+                            )
+                        )
+                    interrupted = False
+                    try:
+                        with attempt_context:
+                            outcome = runner.run(test_path, self._update, self._coverage)
+                            if outcome and outcome != "skipped" and suite_fixtures is not None:
+                                _run_fixture_assertions_for_test(
+                                    test=test_path,
+                                    fixture_specs=suite_fixtures,
+                                    fixture_assertions=fixture_assertions,
+                                )
+                    except KeyboardInterrupt:  # pragma: no cover - defensive guard
+                        _request_interrupt()
+                        interrupted = True
+                        outcome = False
+                    except Exception as exc:
+                        is_fixture_assertion = str(exc).startswith("fixture assertion failed:")
+                        error_message = (
+                            _fixture_assertion_failure_message(exc)
+                            if is_fixture_assertion
+                            else format_failure_message(str(exc))
+                        )
+                        report_failure(test_path, error_message)
+                        outcome = False
+                        final_interrupted = False
+                        final_outcome = outcome
+                        if is_fixture_assertion and attempts < max_attempts:
+                            summary.record_assertion_checks(
+                                total=assertion_tally.total,
+                                failed=assertion_tally.failed,
+                            )
+                            continue
+                        summary.record_assertion_checks(
+                            total=assertion_tally.total,
+                            failed=assertion_tally.failed,
+                        )
+                        break
+                    summary.record_assertion_checks(
+                        total=assertion_tally.total,
+                        failed=assertion_tally.failed,
                     )
-                interrupted = False
-                try:
-                    with attempt_context:
-                        outcome = runner.run(test_path, self._update, self._coverage)
-                except KeyboardInterrupt:  # pragma: no cover - defensive guard
-                    _request_interrupt()
-                    interrupted = True
-                    outcome = False
-                except Exception as exc:
-                    error_message = format_failure_message(str(exc))
-                    report_failure(test_path, error_message)
-                    outcome = False
-                    final_interrupted = False
-                    final_outcome = outcome
-                    break
 
                 if interrupted:
                     report_failure(test_path, _INTERRUPTED_NOTICE)

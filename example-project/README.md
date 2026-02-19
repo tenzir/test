@@ -43,6 +43,7 @@ example-project/
     ├── hex/hello.{xxd,txt}
     ├── read-inputs.{tql,txt}
     ├── http-fixture.{tql,txt}
+    ├── http-fixture-assertions.{tql,txt}
     ├── node-fixture.{tql,txt}
     ├── python/
     │   ├── pure-python/
@@ -67,6 +68,10 @@ example-project/
 - **Pipelines** (`tests/read-inputs.{tql,txt}`, `tests/http-fixture.{tql,txt}`):
   demonstrate shared inputs via `env("TENZIR_INPUTS")`, per-test frontmatter,
   and directory defaults where needed.
+- **Reverse fixture assertions** (`tests/http-fixture-assertions.{tql,txt}`):
+  demonstrates first-class fixture validation with:
+  `assertions.fixtures.http` for method/path/body/count
+  checks that run after the test and fail the test on mismatch.
 - **Context suite** (`tests/context`): runs three sequential TQL programs inside
   a suite so they share the `node` fixture and stateful context tables. Invoke
   the directory (`uvx tenzir-test tests/context`) to exercise the full lifecycle.

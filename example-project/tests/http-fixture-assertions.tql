@@ -1,0 +1,19 @@
+---
+fixtures: [http]
+assertions:
+  fixtures:
+    http:
+      count: 1
+      method: POST
+      path: /status/not-found
+      body: |-
+        {
+          "foo": "bar"
+        }
+timeout: 30
+---
+
+from {foo: "bar"}
+http f"{env("HTTP_FIXTURE_URL")}/status/not-found", body=this {
+  read_json
+}
