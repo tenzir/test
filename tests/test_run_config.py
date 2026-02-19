@@ -55,7 +55,9 @@ class _AssertionExpectedRequest:
 
 @dc.dataclass(frozen=True)
 class _AssertionPayload:
-    expected_request: _AssertionExpectedRequest = dc.field(default_factory=_AssertionExpectedRequest)
+    expected_request: _AssertionExpectedRequest = dc.field(
+        default_factory=_AssertionExpectedRequest
+    )
 
 
 @pytest.fixture()

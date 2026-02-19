@@ -1659,8 +1659,7 @@ def _normalize_assertions_value(
     if unknown_keys:
         _raise_config_error(
             location,
-            "Unknown keys in 'assertions': "
-            + ", ".join(sorted(str(key) for key in unknown_keys)),
+            "Unknown keys in 'assertions': " + ", ".join(sorted(str(key) for key in unknown_keys)),
             line_number,
         )
 
@@ -3340,7 +3339,9 @@ def _print_compact_summary(summary: Summary) -> None:
         if summary.skipped:
             detail = f"{detail} • {summary.skipped} skipped"
         if summary.assertion_checks_total > 0:
-            assertion_passed = max(0, summary.assertion_checks_total - summary.assertion_checks_failed)
+            assertion_passed = max(
+                0, summary.assertion_checks_total - summary.assertion_checks_failed
+            )
             detail = f"{detail} • assertions {assertion_passed}/{summary.assertion_checks_total}"
         noun = "test" if total == 1 else "tests"
         print(f"{INFO} ran {total} {noun}: {detail}")

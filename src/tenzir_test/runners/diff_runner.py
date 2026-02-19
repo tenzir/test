@@ -140,7 +140,9 @@ class DiffRunner(TqlRunner):
                             fixture_assertions=fixture_assertions,
                         )
                     except Exception as exc:
-                        run_mod.report_failure(test, run_mod._fixture_assertion_failure_message(exc))
+                        run_mod.report_failure(
+                            test, run_mod._fixture_assertion_failure_message(exc)
+                        )
                         return False
                 run_mod.success(test)
                 return True

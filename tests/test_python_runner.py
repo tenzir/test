@@ -333,7 +333,9 @@ def test_python_runner_runs_fixture_assertions_while_fixtures_are_active(
         "_run_fixture_assertions_for_test",
         lambda **_kwargs: assertion_states.append(active["value"]),
     )
-    monkeypatch.setattr(run, "run_subprocess", lambda *_args, **_kwargs: _DummyCompleted(b"payload"))
+    monkeypatch.setattr(
+        run, "run_subprocess", lambda *_args, **_kwargs: _DummyCompleted(b"payload")
+    )
 
     runner = run.CustomPythonFixture()
     assert runner.run(script, update=True, coverage=False)
