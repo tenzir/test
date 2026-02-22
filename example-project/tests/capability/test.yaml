@@ -1,0 +1,6 @@
+suite: capability-demo
+skip:
+  on: capability-unavailable
+  reason: requires from_gcs operator
+requires:
+  operators: [from_gcs]

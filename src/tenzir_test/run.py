@@ -50,6 +50,7 @@ TestConfig = dict[str, object]
 #: YAML value for the ``skip.on`` key that opts in to skipping a suite
 #: when a fixture raises :class:`FixtureUnavailable`.
 SKIP_ON_FIXTURE_UNAVAILABLE: typing.Final[str] = "fixture-unavailable"
+SKIP_ON_CAPABILITY_UNAVAILABLE: typing.Final[str] = "capability-unavailable"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -64,30 +65,44 @@ class SkipConfig:
 
     * **Static skip** -- the test is unconditionally skipped with a reason
       string (``skip: "reason"`` in YAML).
-    * **Conditional skip** -- the test is skipped only when a fixture
-      raises ``FixtureUnavailable`` (``skip: {on: fixture-unavailable}``
-      in YAML, directory-level only).
+    * **Conditional skip** -- the test is skipped when one of the configured
+      suite conditions occurs (e.g. ``fixture-unavailable`` or
+      ``capability-unavailable`` in directory-level ``test.yaml``).
     """
 
     reason: str | None = None
     on_fixture_unavailable: bool = False
+    on_capability_unavailable: bool = False
 
     # -- query helpers -------------------------------------------------------
 
     @property
     def is_static(self) -> bool:
         """Return ``True`` when the test should be unconditionally skipped."""
-        return self.reason is not None and not self.on_fixture_unavailable
+        return (
+            self.reason is not None
+            and not self.on_fixture_unavailable
+            and not self.on_capability_unavailable
+        )
 
     @property
     def is_conditional(self) -> bool:
-        """Return ``True`` when this is a fixture-unavailable guard."""
-        return self.on_fixture_unavailable
+        """Return ``True`` when this is a conditional skip guard."""
+        return self.on_fixture_unavailable or self.on_capability_unavailable
+
+    def allows_condition(self, condition: str) -> bool:
+        if condition == SKIP_ON_FIXTURE_UNAVAILABLE:
+            return self.on_fixture_unavailable
+        if condition == SKIP_ON_CAPABILITY_UNAVAILABLE:
+            return self.on_capability_unavailable
+        return False
 
     # -- factory -------------------------------------------------------------
 
     _VALID_DICT_KEYS: typing.ClassVar[frozenset[str]] = frozenset({"on", "reason"})
-    _VALID_ON_VALUES: typing.ClassVar[frozenset[str]] = frozenset({SKIP_ON_FIXTURE_UNAVAILABLE})
+    _VALID_ON_VALUES: typing.ClassVar[frozenset[str]] = frozenset(
+        {SKIP_ON_FIXTURE_UNAVAILABLE, SKIP_ON_CAPABILITY_UNAVAILABLE}
+    )
 
     # PyYAML (YAML 1.1) parses bare ``on`` as the boolean ``True``.
     # Map such keys back to the intended string form before validation.
@@ -153,12 +168,45 @@ class SkipConfig:
                     line_number,
                 )
             on_value = normalized.get("on")
-            if on_value not in cls._VALID_ON_VALUES:
+            on_values: list[str]
+            if isinstance(on_value, str):
+                on_values = [on_value]
+            elif isinstance(on_value, list):
+                if not on_value:
+                    _raise_config_error(
+                        location,
+                        "'skip.on' list must contain at least one value",
+                        line_number,
+                    )
+                if not all(isinstance(item, str) for item in on_value):
+                    _raise_config_error(
+                        location,
+                        "'skip.on' list values must be strings",
+                        line_number,
+                    )
+                on_values = cast(list[str], on_value)
+            else:
+                _raise_config_error(
+                    location,
+                    f"'skip.on' must be a string or list of strings, got '{type(on_value).__name__}'",
+                    line_number,
+                )
+            normalized_on_values = [entry.strip() for entry in on_values]
+            if not all(entry for entry in normalized_on_values):
+                _raise_config_error(
+                    location,
+                    "'skip.on' values must be non-empty strings",
+                    line_number,
+                )
+            invalid_values = [
+                entry for entry in normalized_on_values if entry not in cls._VALID_ON_VALUES
+            ]
+            if invalid_values:
                 _raise_config_error(
                     location,
                     f"'skip.on' must be one of "
                     f"{', '.join(repr(v) for v in sorted(cls._VALID_ON_VALUES))}, "
-                    f"got '{on_value}'",
+                    f"got '{invalid_values[0]}'",
                     line_number,
                 )
             reason = normalized.get("reason")
@@ -170,7 +218,8 @@ class SkipConfig:
                 )
             return cls(
                 reason=reason if isinstance(reason, str) else None,
-                on_fixture_unavailable=True,
+                on_fixture_unavailable=SKIP_ON_FIXTURE_UNAVAILABLE in normalized_on_values,
+                on_capability_unavailable=SKIP_ON_CAPABILITY_UNAVAILABLE in normalized_on_values,
             )
 
         _raise_config_error(
@@ -179,6 +228,83 @@ class SkipConfig:
             f"got '{type(value).__name__}'",
             line_number,
         )
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class RequiresConfig:
+    """Typed wrapper for suite capability requirements."""
+
+    operators: tuple[str, ...] = tuple()
+
+    @property
+    def has_requirements(self) -> bool:
+        return bool(self.operators)
+
+    def as_mapping(self) -> dict[str, tuple[str, ...]]:
+        return {"operators": self.operators}
+
+    @classmethod
+    def from_raw(
+        cls,
+        value: object,
+        *,
+        origin: Literal["directory", "test"],
+        location: "Path | str",
+        line_number: int | None = None,
+    ) -> "RequiresConfig | None":
+        if value is None:
+            return None
+        if origin != "directory":
+            _raise_config_error(
+                location,
+                "'requires' can only be specified in directory-level test.yaml files",
+                line_number,
+            )
+        if not isinstance(value, dict):
+            _raise_config_error(
+                location,
+                f"'requires' must be a mapping {{operators: [...]}}, got '{type(value).__name__}'",
+                line_number,
+            )
+        unknown_keys = set(value.keys()) - {"operators"}
+        if unknown_keys:
+            _raise_config_error(
+                location,
+                f"'requires' mapping contains unknown keys: "
+                f"{', '.join(sorted(str(key) for key in unknown_keys))}; "
+                "allowed keys are: operators",
+                line_number,
+            )
+        raw_operators = value.get("operators")
+        if raw_operators is None:
+            return cls()
+        if not isinstance(raw_operators, list):
+            _raise_config_error(
+                location,
+                f"'requires.operators' must be a list of strings, got '{type(raw_operators).__name__}'",
+                line_number,
+            )
+        operators: list[str] = []
+        seen: set[str] = set()
+        for entry in raw_operators:
+            if not isinstance(entry, str):
+                _raise_config_error(
+                    location,
+                    f"'requires.operators' entries must be strings, got '{type(entry).__name__}'",
+                    line_number,
+                )
+            normalized = entry.strip()
+            if not normalized:
+                _raise_config_error(
+                    location,
+                    "'requires.operators' entries must be non-empty strings",
+                    line_number,
+                )
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            operators.append(normalized)
+        return cls(operators=tuple(operators))
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1445,6 +1571,7 @@ def _default_test_config() -> TestConfig:
         "timeout": 30,
         "runner": None,
         "skip": None,
+        "requires": None,
         "fixtures": tuple(),
         "assertions": {},
         "inputs": None,
@@ -1864,6 +1991,7 @@ def _assign_config_option(
         "timeout",
         "runner",
         "skip",
+        "requires",
         "fixtures",
         "assertions",
         "inputs",
@@ -1895,13 +2023,23 @@ def _assign_config_option(
     if canonical == "skip":
         # Delegate all validation and parsing to SkipConfig.from_raw which
         # raises ValueError (via _raise_config_error) on invalid input.
-        parsed = SkipConfig.from_raw(
+        parsed_skip = SkipConfig.from_raw(
             value,
             origin=origin,
             location=location,
             line_number=line_number,
         )
-        config[canonical] = parsed
+        config[canonical] = parsed_skip
+        return
+
+    if canonical == "requires":
+        parsed_requires = RequiresConfig.from_raw(
+            value,
+            origin=origin,
+            location=location,
+            line_number=line_number,
+        )
+        config[canonical] = parsed_requires
         return
 
     if canonical == "error":
@@ -3983,6 +4121,79 @@ class Worker:
         summary.skipped += 1
         summary.skipped_paths.append(rel_path)
 
+    def _skip_suite_with_reason(
+        self,
+        *,
+        suite_item: SuiteQueueItem,
+        tests: Sequence[TestQueueItem],
+        displayed_reason: str,
+        summary: Summary,
+    ) -> bool:
+        total = len(tests)
+        if self._run_skipped_selector.should_run_skipped(reason=displayed_reason):
+            self._run_skipped_match_count += total
+            return False
+        for skip_index, test_item in enumerate(tests, start=1):
+            rel_path = _relativize_path(test_item.path)
+            if is_verbose_output():
+                with _push_suite_context(
+                    name=suite_item.suite.name,
+                    index=skip_index,
+                    total=total,
+                ):
+                    suite_suffix = _format_suite_suffix()
+                with stdout_lock:
+                    print(f"{SKIP} skipped {rel_path}{suite_suffix}: {displayed_reason}")
+            summary.total += 1
+            summary.skipped += 1
+            summary.skipped_paths.append(rel_path)
+            summary.record_runner_outcome(test_item.runner.name, "skipped")
+            summary.record_fixture_outcome(_fixture_names(suite_item.fixtures), "skipped")
+        return True
+
+    def _evaluate_suite_requirements(
+        self,
+        *,
+        suite_item: SuiteQueueItem,
+        tests: Sequence[TestQueueItem],
+        requires: RequiresConfig,
+        env: Mapping[str, str],
+        config_args: Sequence[str],
+    ) -> str | None:
+        requirements = requires.as_mapping()
+        missing_by_key: dict[str, set[str]] = {}
+        unsupported_by_key: dict[str, set[str]] = {}
+        for runner in {test_item.runner for test_item in tests}:
+            result = runner.check_requirements(
+                requirements,
+                env=env,
+                config_args=config_args,
+            )
+            for key in result.unsupported_keys:
+                unsupported_by_key.setdefault(key, set()).add(runner.name)
+            for key, required_values in result.missing_values.items():
+                if not required_values:
+                    continue
+                missing_by_key.setdefault(key, set()).update(required_values)
+        if unsupported_by_key:
+            detail = ", ".join(
+                f"{key} (runners: {', '.join(sorted(runners))})"
+                for key, runners in sorted(unsupported_by_key.items())
+            )
+            raise HarnessError(
+                f"suite '{suite_item.suite.name}' has unsupported requirement categories: {detail}"
+            )
+        if not missing_by_key:
+            return None
+        parts: list[str] = []
+        for key, missing_set in sorted(missing_by_key.items()):
+            rendered_values = ", ".join(sorted(missing_set))
+            if key == "operators":
+                parts.append(f"missing operators: {rendered_values}")
+            else:
+                parts.append(f"missing {key}: {rendered_values}")
+        return "; ".join(parts)
+
     def _suite_static_skip_plan(
         self, suite_item: SuiteQueueItem
     ) -> list[tuple[TestQueueItem, str]] | None:
@@ -4071,6 +4282,37 @@ class Worker:
             merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
             env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
             config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
+        skip_cfg = cast(SkipConfig | None, primary_config.get("skip"))
+        requires_cfg = cast(RequiresConfig | None, primary_config.get("requires"))
+        if isinstance(requires_cfg, RequiresConfig) and requires_cfg.has_requirements:
+            missing_requirements = self._evaluate_suite_requirements(
+                suite_item=suite_item,
+                tests=tests,
+                requires=requires_cfg,
+                env=env,
+                config_args=config_args,
+            )
+            if missing_requirements is not None:
+                configured_reason = skip_cfg.reason if isinstance(skip_cfg, SkipConfig) else None
+                reason = _compose_skip_reason(
+                    configured_reason,
+                    missing_requirements,
+                    fallback=missing_requirements,
+                )
+                displayed_reason = f"capability unavailable: {reason}"
+                allows_capability_skip = isinstance(
+                    skip_cfg, SkipConfig
+                ) and skip_cfg.allows_condition(SKIP_ON_CAPABILITY_UNAVAILABLE)
+                if allows_capability_skip:
+                    if not self._skip_suite_with_reason(
+                        suite_item=suite_item,
+                        tests=tests,
+                        displayed_reason=displayed_reason,
+                        summary=summary,
+                    ):
+                        raise HarnessError(displayed_reason)
+                    return
+                raise HarnessError(displayed_reason)
         suite_fixture_options = _build_fixture_options(suite_item.fixtures)
         context_token = fixtures_impl.push_context(
             fixtures_impl.FixtureContext(
@@ -4101,35 +4343,25 @@ class Worker:
                     if interrupted:
                         break
         except fixtures_impl.FixtureUnavailable as exc:
-            skip_cfg: SkipConfig | None = primary_config.get("skip")  # type: ignore[assignment]
-            if not (isinstance(skip_cfg, SkipConfig) and skip_cfg.is_conditional):
+            if not (
+                isinstance(skip_cfg, SkipConfig)
+                and skip_cfg.allows_condition(SKIP_ON_FIXTURE_UNAVAILABLE)
+            ):
                 raise
             reason = _compose_skip_reason(skip_cfg.reason, str(exc))
             displayed_reason = f"fixture unavailable: {reason}"
-            if self._run_skipped_selector.should_run_skipped(reason=displayed_reason):
-                self._run_skipped_match_count += total
+            if not self._skip_suite_with_reason(
+                suite_item=suite_item,
+                tests=tests,
+                displayed_reason=displayed_reason,
+                summary=summary,
+            ):
                 raise
             _CLI_LOGGER.warning(
                 "fixture unavailable for suite '%s': %s",
                 suite_item.suite.name,
                 reason,
             )
-            for skip_index, test_item in enumerate(tests, start=1):
-                rel_path = _relativize_path(test_item.path)
-                if is_verbose_output():
-                    with _push_suite_context(
-                        name=suite_item.suite.name,
-                        index=skip_index,
-                        total=total,
-                    ):
-                        suite_suffix = _format_suite_suffix()
-                    with stdout_lock:
-                        print(f"{SKIP} skipped {rel_path}{suite_suffix}: {displayed_reason}")
-                summary.total += 1
-                summary.skipped += 1
-                summary.skipped_paths.append(rel_path)
-                summary.record_runner_outcome(test_item.runner.name, "skipped")
-                summary.record_fixture_outcome(_fixture_names(suite_item.fixtures), "skipped")
         finally:
             _log_suite_event(suite_item.suite, event="teardown", total=total)
             fixtures_impl.pop_context(context_token)
