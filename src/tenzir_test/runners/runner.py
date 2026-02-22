@@ -56,9 +56,7 @@ class Runner(ABC):
         Base runners do not expose requirement probes and therefore report all
         non-empty requirement categories as unsupported.
         """
-        unsupported = tuple(
-            sorted(key for key, values in requirements.items() if values)
-        )
+        unsupported = tuple(sorted(key for key, values in requirements.items() if values))
         return RequirementCheckResult(unsupported_keys=unsupported)
 
 

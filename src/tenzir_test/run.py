@@ -2023,23 +2023,23 @@ def _assign_config_option(
     if canonical == "skip":
         # Delegate all validation and parsing to SkipConfig.from_raw which
         # raises ValueError (via _raise_config_error) on invalid input.
-        parsed = SkipConfig.from_raw(
+        parsed_skip = SkipConfig.from_raw(
             value,
             origin=origin,
             location=location,
             line_number=line_number,
         )
-        config[canonical] = parsed
+        config[canonical] = parsed_skip
         return
 
     if canonical == "requires":
-        parsed = RequiresConfig.from_raw(
+        parsed_requires = RequiresConfig.from_raw(
             value,
             origin=origin,
             location=location,
             line_number=line_number,
         )
-        config[canonical] = parsed
+        config[canonical] = parsed_requires
         return
 
     if canonical == "error":
@@ -4171,10 +4171,10 @@ class Worker:
             )
             for key in result.unsupported_keys:
                 unsupported_by_key.setdefault(key, set()).add(runner.name)
-            for key, values in result.missing_values.items():
-                if not values:
+            for key, required_values in result.missing_values.items():
+                if not required_values:
                     continue
-                missing_by_key.setdefault(key, set()).update(values)
+                missing_by_key.setdefault(key, set()).update(required_values)
         if unsupported_by_key:
             detail = ", ".join(
                 f"{key} (runners: {', '.join(sorted(runners))})"
@@ -4186,8 +4186,8 @@ class Worker:
         if not missing_by_key:
             return None
         parts: list[str] = []
-        for key, values in sorted(missing_by_key.items()):
-            rendered_values = ", ".join(sorted(values))
+        for key, missing_set in sorted(missing_by_key.items()):
+            rendered_values = ", ".join(sorted(missing_set))
             if key == "operators":
                 parts.append(f"missing operators: {rendered_values}")
             else:
@@ -4300,9 +4300,9 @@ class Worker:
                     fallback=missing_requirements,
                 )
                 displayed_reason = f"capability unavailable: {reason}"
-                allows_capability_skip = isinstance(skip_cfg, SkipConfig) and skip_cfg.allows_condition(
-                    SKIP_ON_CAPABILITY_UNAVAILABLE
-                )
+                allows_capability_skip = isinstance(
+                    skip_cfg, SkipConfig
+                ) and skip_cfg.allows_condition(SKIP_ON_CAPABILITY_UNAVAILABLE)
                 if allows_capability_skip:
                     if not self._skip_suite_with_reason(
                         suite_item=suite_item,
