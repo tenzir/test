@@ -3538,6 +3538,287 @@ def test_worker_run_skipped_reason_matches_conditional_skip_reason(tmp_path: Pat
         run.apply_settings(original_settings)
 
 
+def test_worker_capability_unavailable_skips_suite_when_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=("/usr/bin/tenzir",),
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "capability"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: capability\n"
+        "skip:\n  on: capability-unavailable\n"
+        "requires:\n  operators:\n    - from_gcs\n",
+        encoding="utf-8",
+    )
+    tests = []
+    for i in range(1, 3):
+        path = suite_dir / f"{i:02d}-test.tql"
+        path.write_text("version\nwrite_json\n", encoding="utf-8")
+        tests.append(path)
+    run._clear_directory_config_cache()
+
+    probes: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        command = [str(part) for part in cmd]
+        probes.append(command)
+        assert command[0] == "/usr/bin/tenzir"
+        assert command[-1] == 'plugins | where name == "from_gcs"'
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    try:
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 2
+        assert summary.skipped == 2
+        assert summary.failed == 0
+        assert len(probes) == 1
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_worker_capability_unavailable_without_skip_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=("/usr/bin/tenzir",),
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "capability"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: capability\nrequires:\n  operators:\n    - from_gcs\n",
+        encoding="utf-8",
+    )
+    test_path = suite_dir / "01-test.tql"
+    test_path.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        with pytest.raises(RuntimeError, match="capability unavailable: missing operators: from_gcs"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_worker_capability_unavailable_respects_run_skipped_reason_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=("/usr/bin/tenzir",),
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "capability"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: capability\n"
+        "skip:\n  on: capability-unavailable\n"
+        "requires:\n  operators:\n    - from_gcs\n",
+        encoding="utf-8",
+    )
+    test_path = suite_dir / "01-test.tql"
+    test_path.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        selector = run.RunSkippedSelector.from_cli(reason_patterns=("capability unavailable*",))
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped_selector=selector)
+        worker.start()
+        with pytest.raises(RuntimeError, match="capability unavailable: missing operators: from_gcs"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_worker_capability_unavailable_with_multi_skip_conditions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=("/usr/bin/tenzir",),
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "capability"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: capability\n"
+        "skip:\n  on:\n    - fixture-unavailable\n    - capability-unavailable\n"
+        "requires:\n  operators:\n    - from_gcs\n",
+        encoding="utf-8",
+    )
+    test_path = suite_dir / "01-test.tql"
+    test_path.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 1
+        assert summary.skipped == 1
+        assert summary.failed == 0
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_worker_suite_requires_errors_for_unsupported_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=("/usr/bin/tenzir",),
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "mixed"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: mixed\nrequires:\n  operators:\n    - from_gcs\n",
+        encoding="utf-8",
+    )
+    tql_path = suite_dir / "01-test.tql"
+    sh_path = suite_dir / "02-test.sh"
+    tql_path.write_text("version\nwrite_json\n", encoding="utf-8")
+    sh_path.write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        return SimpleNamespace(returncode=0, stdout=b"present\n", stderr=b"")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    try:
+        queue = run._build_queue_from_paths([tql_path, sh_path], coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        with pytest.raises(RuntimeError, match="unsupported requirement categories: operators"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_worker_fixture_unavailable_not_skipped_for_capability_only_condition(
+    tmp_path: Path,
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: context\nskip:\n  on: capability-unavailable\nfixtures:\n  - unavailable_fixture\n",
+        encoding="utf-8",
+    )
+    test_path = suite_dir / "01-test.tql"
+    test_path.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    previous_factory = fixture_api._FACTORIES.get("unavailable_fixture")
+
+    @fixture_api.fixture(name="unavailable_fixture", replace=True)
+    def unavailable_fixture():
+        raise fixture_api.FixtureUnavailable("docker not found")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        with pytest.raises(fixture_api.FixtureUnavailable, match="docker not found"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["unavailable_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
 # --- Tests for FixtureUnavailable handling in Worker._run_suite (TST-1, TST-4, TST-6) ---
 
 

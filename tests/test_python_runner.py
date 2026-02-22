@@ -69,10 +69,15 @@ def test_jsonify_config_converts_skip_config() -> None:
     converted = _jsonify_config(config_payload)
 
     assert converted["fixtures"] == ["sink", "mysql"]
-    assert converted["skip"] == {"reason": None, "on_fixture_unavailable": True}
+    assert converted["skip"] == {
+        "reason": None,
+        "on_fixture_unavailable": True,
+        "on_capability_unavailable": False,
+    }
     assert converted["nested"]["skip"] == {
         "reason": "maintenance",
         "on_fixture_unavailable": False,
+        "on_capability_unavailable": False,
     }
     json.dumps({"config": converted})
 
@@ -190,6 +195,7 @@ def test_python_runner_context_serializes_skip_config(
         assert payload["config"]["skip"] == {
             "reason": None,
             "on_fixture_unavailable": True,
+            "on_capability_unavailable": False,
         }
         return _DummyCompleted(stdout=b"payload", stderr=b"")
 

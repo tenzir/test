@@ -89,6 +89,7 @@ def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> No
     assert config["runner"] == "tenzir"
     assert "node" not in config
     assert config["skip"] is None
+    assert config["requires"] is None
     assert config["fixtures"] == ()
     assert config["assertions"] == {}
     assert config["inputs"] is None
@@ -124,6 +125,7 @@ write_json
     assert config["assertions"] == {}
     assert config["inputs"] is None
     assert config["retry"] == 1
+    assert config["requires"] is None
     assert config["package_dirs"] == tuple()
     assert config["pre_compare"] == tuple()
 
@@ -157,6 +159,7 @@ write_json
     assert config["assertions"] == {}
     assert config["inputs"] is None
     assert config["retry"] == 1
+    assert config["requires"] is None
     assert config["package_dirs"] == tuple()
     assert config["pre_compare"] == tuple()
 
@@ -393,6 +396,7 @@ print("ok")
         "timeout": 45,
         "runner": "python",
         "skip": None,
+        "requires": None,
         "fixtures": (),
         "assertions": {},
         "inputs": None,
@@ -942,7 +946,7 @@ def test_skip_dict_fixture_unavailable_with_reason(tmp_path: Path, configured_ro
 def test_skip_dict_rejects_invalid_on_value() -> None:
     """Dict skip with invalid 'on' value raises ValueError."""
     cfg = run._default_test_config()
-    with pytest.raises(ValueError, match="'skip.on' must be one of 'fixture-unavailable'"):
+    with pytest.raises(ValueError, match="'skip.on' must be one of"):
         run._assign_config_option(
             cfg,
             "skip",
@@ -1080,17 +1084,179 @@ def test_skip_config_static_properties() -> None:
     static = run.SkipConfig(reason="maintenance")
     assert static.is_static
     assert not static.is_conditional
+    assert not static.on_capability_unavailable
     assert static.reason == "maintenance"
 
     conditional = run.SkipConfig(reason="docker missing", on_fixture_unavailable=True)
     assert not conditional.is_static
     assert conditional.is_conditional
+    assert not conditional.on_capability_unavailable
     assert conditional.reason == "docker missing"
 
     conditional_no_reason = run.SkipConfig(on_fixture_unavailable=True)
     assert not conditional_no_reason.is_static
     assert conditional_no_reason.is_conditional
+    assert not conditional_no_reason.on_capability_unavailable
     assert conditional_no_reason.reason is None
+
+    capability_only = run.SkipConfig(on_capability_unavailable=True)
+    assert not capability_only.is_static
+    assert capability_only.is_conditional
+    assert capability_only.on_capability_unavailable
+    assert not capability_only.on_fixture_unavailable
+
+
+def test_skip_dict_accepts_multiple_on_values(tmp_path: Path, configured_root: Path) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite: demo\nskip:\n  on:\n    - fixture-unavailable\n    - capability-unavailable\nfixtures:\n  - node\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    config = run.parse_test_config(test_file)
+
+    skip_cfg = config["skip"]
+    assert isinstance(skip_cfg, run.SkipConfig)
+    assert skip_cfg.on_fixture_unavailable
+    assert skip_cfg.on_capability_unavailable
+    assert skip_cfg.is_conditional
+
+
+def test_skip_dict_rejects_non_string_list_entries() -> None:
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip.on' list values must be strings"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            {"on": ["fixture-unavailable", 5]},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_dict_rejects_empty_on_list() -> None:
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip.on' list must contain at least one value"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            {"on": []},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_skip_dict_rejects_empty_on_list_entry() -> None:
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'skip.on' values must be non-empty strings"):
+        run._assign_config_option(
+            cfg,
+            "skip",
+            {"on": ["fixture-unavailable", "   "]},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_requires_directory_config_parses(tmp_path: Path, configured_root: Path) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite: demo\nrequires:\n  operators:\n    - from_gcs\n    - from_gcs\n    - file\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    config = run.parse_test_config(test_file)
+
+    requires_cfg = config["requires"]
+    assert isinstance(requires_cfg, run.RequiresConfig)
+    assert requires_cfg.operators == ("from_gcs", "file")
+
+
+def test_requires_rejected_in_frontmatter(tmp_path: Path, configured_root: Path) -> None:
+    test_file = tmp_path / "case.tql"
+    test_file.write_text(
+        """---
+requires:
+  operators:
+    - from_gcs
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="'requires' can only be specified in directory-level"):
+        run.parse_test_config(test_file)
+
+
+def test_requires_rejects_non_mapping() -> None:
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'requires' must be a mapping"):
+        run._assign_config_option(
+            cfg,
+            "requires",
+            ["from_gcs"],
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_requires_rejects_unknown_keys() -> None:
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'requires' mapping contains unknown keys: loaders"):
+        run._assign_config_option(
+            cfg,
+            "requires",
+            {"operators": ["from_gcs"], "loaders": ["gcs"]},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_requires_rejects_non_list_operators() -> None:
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'requires.operators' must be a list of strings"):
+        run._assign_config_option(
+            cfg,
+            "requires",
+            {"operators": "from_gcs"},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_requires_rejects_non_string_operator_entry() -> None:
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'requires.operators' entries must be strings"):
+        run._assign_config_option(
+            cfg,
+            "requires",
+            {"operators": ["from_gcs", 1]},
+            location="test.yaml",
+            origin="directory",
+        )
+
+
+def test_requires_rejects_empty_operator_entry() -> None:
+    cfg = run._default_test_config()
+    with pytest.raises(ValueError, match="'requires.operators' entries must be non-empty strings"):
+        run._assign_config_option(
+            cfg,
+            "requires",
+            {"operators": ["from_gcs", " "]},
+            location="test.yaml",
+            origin="directory",
+        )
 
 
 # --- Tests for FixtureSpec and structured fixture options ---

@@ -31,6 +31,9 @@ example-project/
     ├── container/
     │   ├── test.yaml
     │   └── check.{sh,txt}
+    ├── capability/
+    │   ├── test.yaml
+    │   └── 01-capability-check.{tql,txt}
     ├── context/
     │   ├── test.yaml
     │   ├── 01-context-create.{tql,txt}
@@ -103,6 +106,12 @@ example-project/
   exist. The suite's `test.yaml` opts into graceful skipping via
   `skip: {on: fixture-unavailable}`, so the test is reported as skipped rather
   than failing the run.
+- **Capability requirements** (`tests/capability`): demonstrates suite-level
+  capability probes with:
+  `requires.operators: [from_gcs]` and
+  `skip: {on: capability-unavailable}`.
+  Builds without `from_gcs` skip the suite, while capable builds execute the
+  test normally.
 - **Native docker-compose fixture** (`tests/docker-compose`): demonstrates the
   built-in `docker-compose` fixture with structured options, a local compose
   spec, and suite-level `skip: {on: fixture-unavailable}` so environments
