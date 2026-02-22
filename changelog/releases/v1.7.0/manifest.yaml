@@ -1,0 +1,6 @@
+created: 2026-02-22
+title: Suite-Level Capability Checks
+intro: >-
+  This release adds suite-level capability requirements, letting test suites declare
+  required operators and skip gracefully when those capabilities are unavailable in
+  the target build.
