@@ -3629,7 +3629,7 @@ def test_worker_capability_unavailable_without_skip_raises(
         queue = run._build_queue_from_paths([test_path], coverage=False)
         worker = run.Worker(queue, update=False, coverage=False)
         worker.start()
-        with pytest.raises(RuntimeError, match="capability unavailable: missing operators: from_gcs"):
+        with pytest.raises(run.HarnessError, match="capability unavailable: missing operators: from_gcs"):
             worker.join()
     finally:
         run._clear_directory_config_cache()
@@ -3674,7 +3674,7 @@ def test_worker_capability_unavailable_respects_run_skipped_reason_selector(
         selector = run.RunSkippedSelector.from_cli(reason_patterns=("capability unavailable*",))
         worker = run.Worker(queue, update=False, coverage=False, run_skipped_selector=selector)
         worker.start()
-        with pytest.raises(RuntimeError, match="capability unavailable: missing operators: from_gcs"):
+        with pytest.raises(run.HarnessError, match="capability unavailable: missing operators: from_gcs"):
             worker.join()
     finally:
         run._clear_directory_config_cache()
@@ -3764,7 +3764,7 @@ def test_worker_suite_requires_errors_for_unsupported_runner(
         queue = run._build_queue_from_paths([tql_path, sh_path], coverage=False)
         worker = run.Worker(queue, update=False, coverage=False)
         worker.start()
-        with pytest.raises(RuntimeError, match="unsupported requirement categories: operators"):
+        with pytest.raises(run.HarnessError, match="unsupported requirement categories: operators"):
             worker.join()
     finally:
         run._clear_directory_config_cache()

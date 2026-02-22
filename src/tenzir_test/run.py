@@ -4180,7 +4180,7 @@ class Worker:
                 f"{key} (runners: {', '.join(sorted(runners))})"
                 for key, runners in sorted(unsupported_by_key.items())
             )
-            raise RuntimeError(
+            raise HarnessError(
                 f"suite '{suite_item.suite.name}' has unsupported requirement categories: {detail}"
             )
         if not missing_by_key:
@@ -4310,9 +4310,9 @@ class Worker:
                         displayed_reason=displayed_reason,
                         summary=summary,
                     ):
-                        raise RuntimeError(displayed_reason)
+                        raise HarnessError(displayed_reason)
                     return
-                raise RuntimeError(displayed_reason)
+                raise HarnessError(displayed_reason)
         suite_fixture_options = _build_fixture_options(suite_item.fixtures)
         context_token = fixtures_impl.push_context(
             fixtures_impl.FixtureContext(
