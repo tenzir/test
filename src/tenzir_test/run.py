@@ -4425,6 +4425,9 @@ class Worker:
             thread_name_prefix="suite",
         ) as executor:
             for index, test_item in enumerate(tests, start=1):
+                if interrupt_requested():
+                    interrupted = True
+                    break
                 run_context = contextvars.copy_context()
                 futures.append(
                     executor.submit(
@@ -4436,12 +4439,24 @@ class Worker:
                         suite_assertion_lock=suite_assertion_lock,
                     )
                 )
+            if interrupt_requested():
+                interrupted = True
+                for pending in futures:
+                    if pending.done():
+                        continue
+                    pending.cancel()
             for future in concurrent.futures.as_completed(futures):
+                if future.cancelled():
+                    continue
                 member_summary, member_interrupted = future.result()
                 _merge_summary_inplace(suite_summary, member_summary)
                 if member_interrupted:
                     interrupted = True
                     _request_interrupt()
+                    for pending in futures:
+                        if pending.done():
+                            continue
+                        pending.cancel()
         _merge_summary_inplace(summary, suite_summary)
         return interrupted
 
@@ -4590,6 +4605,8 @@ class Worker:
         test_path = test_item.path
         runner = test_item.runner
         rel_path = _relativize_path(test_path)
+        if interrupt_requested():
+            return True
         configured_fixtures = suite_fixtures or _get_test_fixtures(
             test_path, coverage=self._coverage
         )
@@ -4746,6 +4763,11 @@ class Worker:
                     break
                 if attempts < max_attempts:
                     continue
+        if attempts == 0 and final_interrupted:
+            # The test never started an execution attempt (for example, work
+            # was cancelled after an interrupt), so do not count it as failed.
+            return True
+
         summary.total += 1
         summary.record_runner_outcome(runner.name, final_outcome)
         if fixtures:

@@ -646,6 +646,97 @@ def test_worker_runs_parallel_suite_concurrently(tmp_path: Path) -> None:
         run.apply_settings(original_settings)
 
 
+def test_worker_parallel_suite_interrupt_skips_unstarted_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "parallel"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n",
+        encoding="utf-8",
+    )
+    tests = [
+        suite_dir / "01-interrupt.tql",
+        suite_dir / "02-second.tql",
+        suite_dir / "03-third.tql",
+    ]
+    for path in tests:
+        path.write_text("version\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    started: list[Path] = []
+
+    class InterruptingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="interrupting")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            started.append(test.relative_to(suite_dir))
+            if test.name == "01-interrupt.tql":
+                raise KeyboardInterrupt
+            return True
+
+    base_executor = run.concurrent.futures.ThreadPoolExecutor
+
+    class SingleWorkerExecutor:
+        def __init__(self, max_workers: int | None = None, thread_name_prefix: str = "") -> None:
+            del max_workers
+            self._executor = base_executor(
+                max_workers=1,
+                thread_name_prefix=thread_name_prefix,
+            )
+
+        def __enter__(self) -> object:
+            return self._executor.__enter__()
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return bool(self._executor.__exit__(exc_type, exc, tb))
+
+    monkeypatch.setattr(run.concurrent.futures, "ThreadPoolExecutor", SingleWorkerExecutor)
+    runner = InterruptingRunner()
+    original_get_runner = run.get_runner_for_test
+    run.get_runner_for_test = lambda path: runner
+    try:
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        assert len(queue) == 1
+        suite_item = queue[0]
+        assert isinstance(suite_item, run.SuiteQueueItem)
+        assert suite_item.suite.mode is run.SuiteExecutionMode.PARALLEL
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 1
+        assert summary.failed == 1
+        assert summary.failed_paths == [Path("tests/parallel/01-interrupt.tql")]
+        assert started == [Path("01-interrupt.tql")]
+    finally:
+        run.get_runner_for_test = original_get_runner
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
+
+
 def test_worker_parallel_suite_serializes_fixture_assertion_hooks(tmp_path: Path) -> None:
     suite_dir = tmp_path / "tests" / "suite"
     suite_dir.mkdir(parents=True, exist_ok=True)
@@ -710,7 +801,9 @@ def test_worker_parallel_suite_serializes_fixture_assertion_hooks(tmp_path: Path
         queue = [
             run.SuiteQueueItem(
                 suite=suite_item.suite,
-                tests=[run.TestQueueItem(runner=runner, path=item.path) for item in suite_item.tests],
+                tests=[
+                    run.TestQueueItem(runner=runner, path=item.path) for item in suite_item.tests
+                ],
                 fixtures=suite_item.fixtures,
             )
         ]
