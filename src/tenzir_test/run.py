@@ -4194,6 +4194,7 @@ class Worker:
         runner_versions: Mapping[str, str] | None = None,
         debug: bool = False,
         run_skipped_selector: RunSkippedSelector | None = None,
+        jobs: int | None = None,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -4203,6 +4204,7 @@ class Worker:
         self._runner_versions = dict(runner_versions or {})
         self._debug = debug
         self._run_skipped_selector = run_skipped_selector or RunSkippedSelector()
+        self._jobs = max(1, jobs if jobs is not None else get_default_jobs())
         self._run_skipped_match_count = 0
         self._run_skipped_match_count_lock = threading.Lock()
         self._thread = threading.Thread(target=self._work)
@@ -4416,12 +4418,13 @@ class Worker:
         summary: Summary,
     ) -> bool:
         total = len(tests)
+        max_workers = min(max(1, total), self._jobs)
         suite_assertion_lock = threading.Lock()
         suite_summary = Summary()
         interrupted = False
         futures: list[concurrent.futures.Future[tuple[Summary, bool]]] = []
         with concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, total),
+            max_workers=max_workers,
             thread_name_prefix="suite",
         ) as executor:
             for index, test_item in enumerate(tests, start=1):
@@ -5374,6 +5377,7 @@ def run_cli(
                         runner_versions=runner_versions,
                         debug=debug_enabled,
                         run_skipped_selector=run_skipped_selector,
+                        jobs=jobs,
                     )
                     for _ in range(jobs)
                 ]

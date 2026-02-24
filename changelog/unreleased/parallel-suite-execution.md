@@ -20,6 +20,6 @@ fixtures:
   - node
 ```
 
-Parallel suite execution is useful when tests within a suite are independent and can safely run concurrently. All suite members share the same fixtures and execute within the same fixture lifecycle, while test execution itself happens on separate threads. This reduces overall test time for suites with independent test cases.
+Parallel suite execution is useful when tests within a suite are independent and can safely run concurrently. All suite members share the same fixtures and execute within the same fixture lifecycle, while test execution itself happens on separate threads. The suite thread pool is bounded by `--jobs`, so suite-level concurrency stays within the configured worker budget and does not scale unbounded with suite size.
 
 Suite-level constraints like timeouts, fixture requirements, and capability checks still apply uniformly across all members, whether running sequentially or in parallel.
