@@ -39,6 +39,11 @@ example-project/
     │   ├── 01-context-create.{tql,txt}
     │   ├── 02-context-update.{tql,txt}
     │   └── 03-context-inspect.{tql,txt}
+    ├── parallel-suite/
+    │   ├── test.yaml
+    │   ├── 01-publisher.{tql,txt}
+    │   ├── 02-subscriber-a.{tql,txt}
+    │   └── 03-subscriber-b.{tql,txt}
     ├── docker-compose/
     │   ├── test.yaml
     │   ├── compose.yaml
@@ -78,6 +83,11 @@ example-project/
 - **Context suite** (`tests/context`): runs three sequential TQL programs inside
   a suite so they share the `node` fixture and stateful context tables. Invoke
   the directory (`uvx tenzir-test tests/context`) to exercise the full lifecycle.
+- **Parallel suite demo** (`tests/parallel-suite`): uses
+  `suite: {name: parallel-pubsub, mode: parallel}` so suite members start in
+  undefined order after fixture setup. The publisher and two subscriber tests
+  share the `node` fixture and validate publish/subscribe workflows under
+  concurrent suite execution.
 - **Custom runner** (`tests/hex`): `runners/__init__.py` registers a tiny `xxd`
   runner that transforms `.xxd` inputs and compares the hex dump against a
   captured baseline.

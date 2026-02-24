@@ -1,0 +1,6 @@
+suite:
+  name: parallel-pubsub
+  mode: parallel
+timeout: 90
+fixtures:
+  - node

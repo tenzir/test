@@ -1,0 +1,4 @@
+subscribe "parallel-suite-events"
+where value == 1
+head 3
+summarize total = count()

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import signal
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -541,6 +543,190 @@ def test_worker_runs_suite_sequentially(monkeypatch: pytest.MonkeyPatch, tmp_pat
         else:
             fixture_api._FACTORIES["suite_scope_fixture"] = previous_factory
         run.apply_settings(original_settings)
+
+
+def test_worker_runs_parallel_suite_concurrently(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "parallel"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\nfixtures:\n  - suite_scope_fixture\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    tests = [
+        suite_dir / "01-first.tql",
+        suite_dir / "02-second.tql",
+        suite_dir / "03-third.tql",
+    ]
+    for path in tests:
+        path.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    barrier = threading.Barrier(len(tests))
+    barrier_errors: list[str] = []
+    executed: list[Path] = []
+    env_values: list[str | None] = []
+    counts = {"start": 0, "stop": 0}
+    previous_factory = fixture_api._FACTORIES.get("suite_scope_fixture")
+
+    @fixture_api.fixture(name="suite_scope_fixture", replace=True)
+    def suite_scope_fixture():
+        counts["start"] += 1
+        try:
+            yield {"COUNT": str(counts["start"])}
+        finally:
+            counts["stop"] += 1
+
+    class BarrierRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="barrier")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            config = run.parse_test_config(test, coverage=coverage)
+            fixtures = cast(tuple[fixture_api.FixtureSpec, ...], config.get("fixtures", tuple()))
+            with fixture_api.activate(fixtures) as env:
+                env_values.append(env.get("COUNT"))
+            try:
+                barrier.wait(timeout=5)
+            except threading.BrokenBarrierError:
+                barrier_errors.append(test.name)
+                return False
+            executed.append(test.relative_to(suite_dir))
+            return True
+
+    runner = BarrierRunner()
+    original_get_runner = run.get_runner_for_test
+    run.get_runner_for_test = lambda path: runner
+    try:
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        assert len(queue) == 1
+        suite_item = queue[0]
+        assert isinstance(suite_item, run.SuiteQueueItem)
+        assert suite_item.suite.mode is run.SuiteExecutionMode.PARALLEL
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 3
+        assert summary.failed == 0
+        assert barrier_errors == []
+        assert counts["start"] == 1
+        assert counts["stop"] == 1
+        assert env_values == ["1", "1", "1"]
+        assert set(executed) == {
+            Path("01-first.tql"),
+            Path("02-second.tql"),
+            Path("03-third.tql"),
+        }
+    finally:
+        run.get_runner_for_test = original_get_runner
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("suite_scope_fixture", None)
+        else:
+            fixture_api._FACTORIES["suite_scope_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
+def test_worker_parallel_suite_serializes_fixture_assertion_hooks(tmp_path: Path) -> None:
+    suite_dir = tmp_path / "tests" / "suite"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: assertion-parallel\n  mode: parallel\nfixtures:\n  - assertion_fixture\n",
+        encoding="utf-8",
+    )
+    tests = []
+    for idx in range(1, 4):
+        path = suite_dir / f"{idx:02d}-case.tql"
+        path.write_text("version\n", encoding="utf-8")
+        tests.append(path)
+
+    observed = {"active": 0, "max_active": 0}
+    observed_lock = threading.Lock()
+
+    def _assert_test(**_: object) -> None:
+        with observed_lock:
+            observed["active"] += 1
+            observed["max_active"] = max(observed["max_active"], observed["active"])
+        time.sleep(0.02)
+        with observed_lock:
+            observed["active"] -= 1
+
+    @fixture_api.fixture(name="assertion_fixture", replace=True)
+    def _assertion_fixture():
+        return fixture_api.FixtureHandle(hooks={"assert_test": _assert_test})
+
+    class AlwaysPassRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="always-pass")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:  # noqa: ARG002
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    run._clear_directory_config_cache()
+    try:
+        runner = AlwaysPassRunner()
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        assert len(queue) == 1
+        suite_item = queue[0]
+        assert isinstance(suite_item, run.SuiteQueueItem)
+        assert suite_item.suite.mode is run.SuiteExecutionMode.PARALLEL
+        queue = [
+            run.SuiteQueueItem(
+                suite=suite_item.suite,
+                tests=[run.TestQueueItem(runner=runner, path=item.path) for item in suite_item.tests],
+                fixtures=suite_item.fixtures,
+            )
+        ]
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+        fixture_api._FACTORIES.pop("assertion_fixture", None)  # type: ignore[attr-defined]
+
+    assert summary.total == 3
+    assert summary.failed == 0
+    assert summary.assertion_checks_total == 3
+    assert summary.assertion_checks_failed == 0
+    assert observed["max_active"] == 1
 
 
 def test_node_fixture_uses_explicit_node_config(tmp_path, monkeypatch):
