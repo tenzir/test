@@ -2756,6 +2756,7 @@ def report_interrupted_test(test: Path) -> None:
 def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
     """Parse test configuration from frontmatter at the beginning of the file."""
     config = _default_test_config()
+    explicit_test_runner = False
 
     defaults = _get_directory_defaults(test_file.parent)
     for key, value in defaults.items():
@@ -2794,6 +2795,8 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
             if not isinstance(yaml_data, dict):
                 _error("YAML frontmatter must define a mapping")
             for key, value in yaml_data.items():
+                if _canonical_config_key(str(key)) == "runner":
+                    explicit_test_runner = True
                 _assign_config_option(
                     config,
                     str(key),
@@ -2820,6 +2823,8 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
                 _error("Invalid frontmatter, expected 'key: value'", line_number)
             key = parts[0].strip()
             value = parts[1].strip()
+            if _canonical_config_key(key) == "runner":
+                explicit_test_runner = True
             _assign_config_option(
                 config,
                 key,
@@ -2833,9 +2838,14 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
         timeout_value = cast(int, config["timeout"])
         config["timeout"] = timeout_value * 5
 
+    suffix = test_file.suffix.lower()
+    if suffix == ".sh" and not explicit_test_runner:
+        shell_runner = _DEFAULT_RUNNER_BY_SUFFIX.get(".sh")
+        if shell_runner is not None:
+            config["runner"] = shell_runner
+
     runner_value = config.get("runner")
     if not isinstance(runner_value, str) or not runner_value:
-        suffix = test_file.suffix.lower()
         default_runner = _DEFAULT_RUNNER_BY_SUFFIX.get(suffix)
         if default_runner is None:
             matching_names = [

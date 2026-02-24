@@ -502,6 +502,58 @@ def test_parse_python_default_runner(tmp_path: Path, configured_root: Path) -> N
     assert config["retry"] == 1
 
 
+def test_parse_shell_runner_overrides_directory_runner_default(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests" / "mixed"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / "test.yaml").write_text("runner: tenzir\n", encoding="utf-8")
+    script = suite_dir / "example.sh"
+    script.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    config = run.parse_test_config(script)
+
+    assert config["runner"] == "shell"
+
+
+def test_parse_shell_runner_frontmatter_overrides_shell_default(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests" / "mixed"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / "test.yaml").write_text("runner: tenzir\n", encoding="utf-8")
+    script = suite_dir / "example.sh"
+    script.write_text(
+        """#!/bin/sh
+# runner: tenzir
+
+echo ok
+""",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+
+    config = run.parse_test_config(script)
+
+    assert config["runner"] == "tenzir"
+
+
+def test_parse_tql_runner_keeps_directory_runner_default(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests" / "mixed"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / "test.yaml").write_text("runner: tenzir\n", encoding="utf-8")
+    test_file = suite_dir / "example.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    config = run.parse_test_config(test_file)
+
+    assert config["runner"] == "tenzir"
+
+
 def test_parse_test_config_retry_option(tmp_path: Path, configured_root: Path) -> None:
     test_file = tmp_path / "flaky.tql"
     test_file.write_text(
