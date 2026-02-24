@@ -432,7 +432,13 @@ def current_options(name: str) -> Any:
     ctx = _CONTEXT.get()
     if ctx is None:
         return {}
-    return ctx.fixture_options.get(name, {})
+    value = ctx.fixture_options.get(name)
+    if value is not None:
+        return value
+    options_cls = _OPTIONS_CLASSES.get(name)
+    if options_cls is None:
+        return {}
+    return _instantiate_options(options_cls, {})
 
 
 def current_assertions(name: str) -> Any:

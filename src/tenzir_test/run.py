@@ -4195,6 +4195,7 @@ class Worker:
         debug: bool = False,
         run_skipped_selector: RunSkippedSelector | None = None,
         jobs: int | None = None,
+        test_slots: threading.Semaphore | None = None,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -4205,6 +4206,7 @@ class Worker:
         self._debug = debug
         self._run_skipped_selector = run_skipped_selector or RunSkippedSelector()
         self._jobs = max(1, jobs if jobs is not None else get_default_jobs())
+        self._test_slots = test_slots or threading.BoundedSemaphore(self._jobs)
         self._run_skipped_match_count = 0
         self._run_skipped_match_count_lock = threading.Lock()
         self._thread = threading.Thread(target=self._work)
@@ -4357,7 +4359,7 @@ class Worker:
                 if isinstance(queue_item, SuiteQueueItem):
                     self._run_suite(queue_item, result)
                 else:
-                    self._run_test_item(queue_item, result)
+                    self._run_test_item_with_slot(queue_item, result)
                 if interrupt_requested():
                     break
             return result
@@ -4366,6 +4368,29 @@ class Worker:
             if self._result is None:
                 self._result = Summary()
             return self._result
+
+    def _run_test_item_with_slot(
+        self,
+        test_item: TestQueueItem,
+        summary: Summary,
+        *,
+        suite_progress: tuple[str, int, int] | None = None,
+        suite_fixtures: tuple[fixtures_impl.FixtureSpec, ...] | None = None,
+        suite_assertion_lock: threading.Lock | None = None,
+    ) -> bool:
+        while not self._test_slots.acquire(timeout=0.1):
+            if interrupt_requested():
+                return True
+        try:
+            return self._run_test_item(
+                test_item,
+                summary,
+                suite_progress=suite_progress,
+                suite_fixtures=suite_fixtures,
+                suite_assertion_lock=suite_assertion_lock,
+            )
+        finally:
+            self._test_slots.release()
 
     def _run_suite_sequential(
         self,
@@ -4380,7 +4405,7 @@ class Worker:
             if interrupt_requested():
                 interrupted = True
                 break
-            interrupted = self._run_test_item(
+            interrupted = self._run_test_item_with_slot(
                 test_item,
                 summary,
                 suite_progress=(suite_item.suite.name, index, total),
@@ -4401,7 +4426,7 @@ class Worker:
     ) -> tuple[Summary, bool]:
         local_summary = Summary()
         interrupted = run_context.run(
-            self._run_test_item,
+            self._run_test_item_with_slot,
             test_item,
             local_summary,
             suite_progress=suite_progress,
@@ -5369,6 +5394,7 @@ def run_cli(
                     print(f"{INFO}   {count:>{count_width}}× {name}{version_segment}")
                 printed_projects += 1
 
+                test_slots = threading.BoundedSemaphore(max(1, jobs))
                 workers = [
                     Worker(
                         queue,
@@ -5378,6 +5404,7 @@ def run_cli(
                         debug=debug_enabled,
                         run_skipped_selector=run_skipped_selector,
                         jobs=jobs,
+                        test_slots=test_slots,
                     )
                     for _ in range(jobs)
                 ]

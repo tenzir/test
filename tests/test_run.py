@@ -728,6 +728,103 @@ def test_worker_parallel_suite_caps_executor_workers_to_jobs(
         run.apply_settings(original_settings)
 
 
+def test_worker_parallel_suites_honor_shared_jobs_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    tests_dir = tmp_path / "tests"
+    alpha_dir = tests_dir / "alpha"
+    beta_dir = tests_dir / "beta"
+    alpha_dir.mkdir(parents=True)
+    beta_dir.mkdir(parents=True)
+    (alpha_dir / "test.yaml").write_text(
+        "suite:\n  name: alpha\n  mode: parallel\n",
+        encoding="utf-8",
+    )
+    (beta_dir / "test.yaml").write_text(
+        "suite:\n  name: beta\n  mode: parallel\n",
+        encoding="utf-8",
+    )
+    tests: list[Path] = []
+    for suite_dir in (alpha_dir, beta_dir):
+        for index in range(1, 4):
+            test_path = suite_dir / f"{index:02d}.tql"
+            test_path.write_text("version\nwrite_json\n", encoding="utf-8")
+            tests.append(test_path)
+    run._clear_directory_config_cache()
+
+    observed = {"active": 0, "max_active": 0}
+    observed_lock = threading.Lock()
+
+    class SlowRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="slow")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:  # noqa: ARG002
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            with observed_lock:
+                observed["active"] += 1
+                observed["max_active"] = max(observed["max_active"], observed["active"])
+            time.sleep(0.05)
+            with observed_lock:
+                observed["active"] -= 1
+            return True
+
+    runner = SlowRunner()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
+
+    try:
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        queue.sort(key=run._queue_sort_key, reverse=True)
+        assert len(queue) == 2
+        for item in queue:
+            assert isinstance(item, run.SuiteQueueItem)
+            assert item.suite.mode is run.SuiteExecutionMode.PARALLEL
+
+        jobs = 2
+        test_slots = threading.BoundedSemaphore(jobs)
+        workers = [
+            run.Worker(
+                queue,
+                update=False,
+                coverage=False,
+                jobs=jobs,
+                test_slots=test_slots,
+            )
+            for _ in range(jobs)
+        ]
+        for worker in workers:
+            worker.start()
+        summary = run.Summary()
+        for worker in workers:
+            summary += worker.join()
+
+        assert summary.total == 6
+        assert summary.failed == 0
+        assert observed["max_active"] <= jobs
+    finally:
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
+
+
 def test_worker_parallel_suite_interrupt_skips_unstarted_members(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

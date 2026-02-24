@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
 import shutil
@@ -454,6 +455,58 @@ def test_acquire_fixture_controller(monkeypatch: pytest.MonkeyPatch) -> None:
             fixtures._FACTORIES.pop("controller_fixture", None)  # type: ignore[attr-defined]
         else:
             fixtures._FACTORIES["controller_fixture"] = previous  # type: ignore[attr-defined]
+
+
+def test_acquire_fixture_uses_default_options_from_context() -> None:
+    @dataclass(frozen=True)
+    class DemoOptions:
+        greeting: str = "hello"
+
+    def _factory() -> fixtures.FixtureHandle:
+        options = fixtures.current_options("controller_fixture_with_options")
+        return fixtures.FixtureHandle(env={"GREETING": options.greeting})
+
+    previous_factory = fixtures._FACTORIES.get(  # type: ignore[attr-defined]
+        "controller_fixture_with_options"
+    )
+    previous_options = fixtures._OPTIONS_CLASSES.get(  # type: ignore[attr-defined]
+        "controller_fixture_with_options"
+    )
+    fixtures.register(
+        "controller_fixture_with_options",
+        _factory,
+        replace=True,
+        options=DemoOptions,
+    )
+    context = fixtures.FixtureContext(
+        test=Path("dummy.py"),
+        config={},
+        coverage=False,
+        env={},
+        config_args=tuple(),
+        tenzir_binary=None,
+        tenzir_node_binary=None,
+    )
+    token = fixtures.push_context(context)
+    try:
+        controller = fixtures.acquire_fixture("controller_fixture_with_options")
+        env = controller.start()
+        assert env == {"GREETING": "hello"}
+        controller.stop()
+    finally:
+        fixtures.pop_context(token)
+        if previous_factory is None:
+            fixtures._FACTORIES.pop(  # type: ignore[attr-defined]
+                "controller_fixture_with_options", None
+            )
+        else:
+            fixtures._FACTORIES["controller_fixture_with_options"] = previous_factory  # type: ignore[attr-defined]
+        if previous_options is None:
+            fixtures._OPTIONS_CLASSES.pop(  # type: ignore[attr-defined]
+                "controller_fixture_with_options", None
+            )
+        else:
+            fixtures._OPTIONS_CLASSES["controller_fixture_with_options"] = previous_options  # type: ignore[attr-defined]
 
 
 def test_executor_from_env() -> None:
