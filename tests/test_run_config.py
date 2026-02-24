@@ -237,6 +237,92 @@ write_json
     assert "'retry' cannot be overridden in test frontmatter" in str(exc.value)
 
 
+def test_parse_test_config_forbids_fixtures_frontmatter_with_suite_record(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: shared-suite\n  mode: parallel\nfixtures:\n  - shared\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "member.tql"
+    test_file.write_text(
+        """---
+fixtures:
+  - override
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        run.parse_test_config(test_file)
+
+    assert "'fixtures' cannot be specified in test frontmatter within a suite" in str(exc.value)
+
+
+def test_resolve_suite_for_test_reads_suite_record_mode(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: shared-suite\n  mode: parallel\n",
+        encoding="utf-8",
+    )
+    test_file = suite_dir / "member.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    suite_info = run._resolve_suite_for_test(test_file)
+
+    assert suite_info is not None
+    assert suite_info.name == "shared-suite"
+    assert suite_info.directory == suite_dir.resolve()
+    assert suite_info.mode is run.SuiteExecutionMode.PARALLEL
+
+
+def test_resolve_suite_for_test_defaults_suite_record_mode_to_sequential(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: shared-suite\n",
+        encoding="utf-8",
+    )
+    test_file = suite_dir / "member.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    suite_info = run._resolve_suite_for_test(test_file)
+
+    assert suite_info is not None
+    assert suite_info.mode is run.SuiteExecutionMode.SEQUENTIAL
+
+
+def test_parse_test_config_rejects_suite_record_with_invalid_mode(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: shared-suite\n  mode: invalid\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "member.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid value for 'suite.mode'"):
+        run.parse_test_config(test_file)
+
+
 def test_get_test_env_and_config_args(configured_root: Path) -> None:
     test_dir = configured_root / "suite"
     test_dir.mkdir()

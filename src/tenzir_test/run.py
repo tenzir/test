@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import atexit
 import builtins
+import concurrent.futures
 import contextlib
+import contextvars
 import dataclasses
 import difflib
 import enum
@@ -361,6 +363,21 @@ class RunSkippedSelector:
         return flags
 
 
+class SuiteExecutionMode(enum.Enum):
+    """Supported execution modes for suite members."""
+
+    SEQUENTIAL = "sequential"
+    PARALLEL = "parallel"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SuiteConfig:
+    """Normalized suite configuration from directory-level `test.yaml`."""
+
+    name: str
+    mode: SuiteExecutionMode = SuiteExecutionMode.SEQUENTIAL
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class TestQueueItem:
     runner: Runner
@@ -371,6 +388,7 @@ class TestQueueItem:
 class SuiteInfo:
     name: str
     directory: Path
+    mode: SuiteExecutionMode = SuiteExecutionMode.SEQUENTIAL
 
 
 @dataclasses.dataclass(slots=True)
@@ -1582,6 +1600,97 @@ def _default_test_config() -> TestConfig:
     }
 
 
+def _suite_config_from_value(value: object) -> SuiteConfig | None:
+    """Return a normalized SuiteConfig from raw config values."""
+
+    if isinstance(value, SuiteConfig):
+        return value
+    if isinstance(value, str):
+        name = value.strip()
+        if not name:
+            return None
+        return SuiteConfig(name=name)
+    if isinstance(value, Mapping):
+        raw_name = value.get("name")
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            return None
+        raw_mode = value.get("mode", SuiteExecutionMode.SEQUENTIAL.value)
+        if isinstance(raw_mode, SuiteExecutionMode):
+            mode = raw_mode
+        elif isinstance(raw_mode, str):
+            try:
+                mode = SuiteExecutionMode(raw_mode.strip().lower())
+            except ValueError:
+                return None
+        else:
+            return None
+        return SuiteConfig(name=raw_name.strip(), mode=mode)
+    return None
+
+
+def _normalize_suite_value(
+    value: object,
+    *,
+    location: Path | str,
+    line_number: int | None = None,
+) -> SuiteConfig:
+    """Normalize the `suite` config value from string or mapping form."""
+
+    if isinstance(value, str):
+        name = value.strip()
+        if not name:
+            _raise_config_error(
+                location,
+                "'suite' value must be a non-empty string",
+                line_number,
+            )
+        return SuiteConfig(name=name)
+
+    if isinstance(value, Mapping):
+        unknown_keys = {str(key) for key in value.keys()} - {"name", "mode"}
+        if unknown_keys:
+            _raise_config_error(
+                location,
+                f"'suite' mapping contains unknown keys: {', '.join(sorted(unknown_keys))}; "
+                "allowed keys are: name, mode",
+                line_number,
+            )
+        raw_name = value.get("name")
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            _raise_config_error(
+                location,
+                "'suite.name' value must be a non-empty string",
+                line_number,
+            )
+        raw_mode = value.get("mode", SuiteExecutionMode.SEQUENTIAL.value)
+        mode: SuiteExecutionMode
+        if isinstance(raw_mode, SuiteExecutionMode):
+            mode = raw_mode
+        elif isinstance(raw_mode, str):
+            try:
+                mode = SuiteExecutionMode(raw_mode.strip().lower())
+            except ValueError:
+                valid_modes = ", ".join(mode.value for mode in SuiteExecutionMode)
+                _raise_config_error(
+                    location,
+                    f"Invalid value for 'suite.mode', expected one of {valid_modes}, got '{raw_mode}'",
+                    line_number,
+                )
+        else:
+            _raise_config_error(
+                location,
+                f"Invalid value for 'suite.mode', expected string, got '{type(raw_mode).__name__}'",
+                line_number,
+            )
+        return SuiteConfig(name=raw_name.strip(), mode=mode)
+
+    _raise_config_error(
+        location,
+        f"Invalid value for 'suite', expected non-empty string or mapping, got '{type(value).__name__}'",
+        line_number,
+    )
+
+
 def _canonical_config_key(key: str) -> str:
     if key == "fixture":
         return "fixtures"
@@ -2011,13 +2120,11 @@ def _assign_config_option(
                 "'suite' can only be specified in directory-level test.yaml files",
                 line_number,
             )
-        if not isinstance(value, str) or not value.strip():
-            _raise_config_error(
-                location,
-                "'suite' value must be a non-empty string",
-                line_number,
-            )
-        config[canonical] = value.strip()
+        config[canonical] = _normalize_suite_value(
+            value,
+            location=location,
+            line_number=line_number,
+        )
         return
 
     if canonical == "skip":
@@ -2078,8 +2185,8 @@ def _assign_config_option(
         return
 
     if canonical == "fixtures":
-        suite_value = config.get("suite")
-        if origin == "test" and isinstance(suite_value, str) and suite_value.strip():
+        suite_value = _suite_config_from_value(config.get("suite"))
+        if origin == "test" and suite_value is not None:
             _raise_config_error(
                 location,
                 "'fixtures' cannot be specified in test frontmatter within a suite; configure fixtures in test.yaml",
@@ -2113,7 +2220,7 @@ def _assign_config_option(
         )
         return
     if canonical == "retry":
-        if origin == "test" and isinstance(config.get("suite"), str):
+        if origin == "test" and _suite_config_from_value(config.get("suite")) is not None:
             _raise_config_error(
                 location,
                 "'retry' cannot be overridden in test frontmatter within a suite",
@@ -2250,8 +2357,8 @@ def _get_directory_defaults(directory: Path) -> TestConfig:
 
 def _resolve_suite_for_test(test: Path) -> SuiteInfo | None:
     directory_config = _load_directory_config(test.parent)
-    suite_value = directory_config.values.get("suite")
-    if not isinstance(suite_value, str) or not suite_value.strip():
+    suite_value = _suite_config_from_value(directory_config.values.get("suite"))
+    if suite_value is None:
         return None
     suite_source = directory_config.sources.get("suite")
     if suite_source is None:
@@ -2266,7 +2373,7 @@ def _resolve_suite_for_test(test: Path) -> SuiteInfo | None:
     except (OSError, ValueError):
         # Only treat as a suite when the test lives under the suite directory.
         return None
-    return SuiteInfo(name=suite_value.strip(), directory=resolved_dir)
+    return SuiteInfo(name=suite_value.name, directory=resolved_dir, mode=suite_value.mode)
 
 
 def _clear_directory_config_cache() -> None:
@@ -2852,6 +2959,21 @@ class Summary:
             return
         self.assertion_checks_total += total
         self.assertion_checks_failed += max(0, min(failed, total))
+
+
+def _merge_summary_inplace(target: Summary, source: Summary) -> None:
+    """Merge `source` counts into `target` while preserving list/dict fields."""
+
+    merged = target + source
+    target.failed = merged.failed
+    target.total = merged.total
+    target.skipped = merged.skipped
+    target.assertion_checks_total = merged.assertion_checks_total
+    target.assertion_checks_failed = merged.assertion_checks_failed
+    target.failed_paths = merged.failed_paths
+    target.skipped_paths = merged.skipped_paths
+    target.runner_stats = merged.runner_stats
+    target.fixture_stats = merged.fixture_stats
 
 
 @dataclasses.dataclass(slots=True)
@@ -4072,6 +4194,7 @@ class Worker:
         runner_versions: Mapping[str, str] | None = None,
         debug: bool = False,
         run_skipped_selector: RunSkippedSelector | None = None,
+        jobs: int | None = None,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -4081,7 +4204,9 @@ class Worker:
         self._runner_versions = dict(runner_versions or {})
         self._debug = debug
         self._run_skipped_selector = run_skipped_selector or RunSkippedSelector()
+        self._jobs = max(1, jobs if jobs is not None else get_default_jobs())
         self._run_skipped_match_count = 0
+        self._run_skipped_match_count_lock = threading.Lock()
         self._thread = threading.Thread(target=self._work)
 
     def start(self) -> None:
@@ -4098,6 +4223,12 @@ class Worker:
     @property
     def run_skipped_match_count(self) -> int:
         return self._run_skipped_match_count
+
+    def _increment_run_skipped_match_count(self, amount: int = 1) -> None:
+        if amount <= 0:
+            return
+        with self._run_skipped_match_count_lock:
+            self._run_skipped_match_count += amount
 
     def _record_static_skip(
         self,
@@ -4131,7 +4262,7 @@ class Worker:
     ) -> bool:
         total = len(tests)
         if self._run_skipped_selector.should_run_skipped(reason=displayed_reason):
-            self._run_skipped_match_count += total
+            self._increment_run_skipped_match_count(total)
             return False
         for skip_index, test_item in enumerate(tests, start=1):
             rel_path = _relativize_path(test_item.path)
@@ -4236,6 +4367,102 @@ class Worker:
                 self._result = Summary()
             return self._result
 
+    def _run_suite_sequential(
+        self,
+        *,
+        suite_item: SuiteQueueItem,
+        tests: Sequence[TestQueueItem],
+        summary: Summary,
+    ) -> bool:
+        total = len(tests)
+        interrupted = False
+        for index, test_item in enumerate(tests, start=1):
+            if interrupt_requested():
+                interrupted = True
+                break
+            interrupted = self._run_test_item(
+                test_item,
+                summary,
+                suite_progress=(suite_item.suite.name, index, total),
+                suite_fixtures=suite_item.fixtures,
+            )
+            if interrupted:
+                break
+        return interrupted
+
+    def _run_suite_member(
+        self,
+        *,
+        run_context: contextvars.Context,
+        test_item: TestQueueItem,
+        suite_progress: tuple[str, int, int],
+        suite_fixtures: tuple[fixtures_impl.FixtureSpec, ...],
+        suite_assertion_lock: threading.Lock | None,
+    ) -> tuple[Summary, bool]:
+        local_summary = Summary()
+        interrupted = run_context.run(
+            self._run_test_item,
+            test_item,
+            local_summary,
+            suite_progress=suite_progress,
+            suite_fixtures=suite_fixtures,
+            suite_assertion_lock=suite_assertion_lock,
+        )
+        return local_summary, interrupted
+
+    def _run_suite_parallel(
+        self,
+        *,
+        suite_item: SuiteQueueItem,
+        tests: Sequence[TestQueueItem],
+        summary: Summary,
+    ) -> bool:
+        total = len(tests)
+        max_workers = min(max(1, total), self._jobs)
+        suite_assertion_lock = threading.Lock()
+        suite_summary = Summary()
+        interrupted = False
+        futures: list[concurrent.futures.Future[tuple[Summary, bool]]] = []
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="suite",
+        ) as executor:
+            for index, test_item in enumerate(tests, start=1):
+                if interrupt_requested():
+                    interrupted = True
+                    break
+                run_context = contextvars.copy_context()
+                futures.append(
+                    executor.submit(
+                        self._run_suite_member,
+                        run_context=run_context,
+                        test_item=test_item,
+                        suite_progress=(suite_item.suite.name, index, total),
+                        suite_fixtures=suite_item.fixtures,
+                        suite_assertion_lock=suite_assertion_lock,
+                    )
+                )
+            if interrupt_requested():
+                interrupted = True
+                for pending in futures:
+                    if pending.done():
+                        continue
+                    pending.cancel()
+            for future in concurrent.futures.as_completed(futures):
+                if future.cancelled():
+                    continue
+                member_summary, member_interrupted = future.result()
+                _merge_summary_inplace(suite_summary, member_summary)
+                if member_interrupted:
+                    interrupted = True
+                    _request_interrupt()
+                    for pending in futures:
+                        if pending.done():
+                            continue
+                        pending.cancel()
+        _merge_summary_inplace(summary, suite_summary)
+        return interrupted
+
     def _run_suite(self, suite_item: SuiteQueueItem, summary: Summary) -> None:
         tests = suite_item.tests
         total = len(tests)
@@ -4330,18 +4557,18 @@ class Worker:
         interrupted = False
         try:
             with fixtures_impl.suite_scope(suite_item.fixtures):
-                for index, test_item in enumerate(tests, start=1):
-                    if interrupt_requested():
-                        interrupted = True
-                        break
-                    interrupted = self._run_test_item(
-                        test_item,
-                        summary,
-                        suite_progress=(suite_item.suite.name, index, total),
-                        suite_fixtures=suite_item.fixtures,
+                if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
+                    interrupted = self._run_suite_parallel(
+                        suite_item=suite_item,
+                        tests=tests,
+                        summary=summary,
                     )
-                    if interrupted:
-                        break
+                else:
+                    interrupted = self._run_suite_sequential(
+                        suite_item=suite_item,
+                        tests=tests,
+                        summary=summary,
+                    )
         except fixtures_impl.FixtureUnavailable as exc:
             if not (
                 isinstance(skip_cfg, SkipConfig)
@@ -4376,10 +4603,13 @@ class Worker:
         *,
         suite_progress: tuple[str, int, int] | None = None,
         suite_fixtures: tuple[fixtures_impl.FixtureSpec, ...] | None = None,
+        suite_assertion_lock: threading.Lock | None = None,
     ) -> bool:
         test_path = test_item.path
         runner = test_item.runner
         rel_path = _relativize_path(test_path)
+        if interrupt_requested():
+            return True
         configured_fixtures = suite_fixtures or _get_test_fixtures(
             test_path, coverage=self._coverage
         )
@@ -4420,7 +4650,7 @@ class Worker:
             if skip_cfg is not None and skip_cfg.is_static:
                 assert skip_cfg.reason is not None
                 if self._run_skipped_selector.should_run_skipped(reason=skip_cfg.reason):
-                    self._run_skipped_match_count += 1
+                    self._increment_run_skipped_match_count()
                 else:
                     self._record_static_skip(
                         test_item=test_item,
@@ -4482,11 +4712,19 @@ class Worker:
                         with attempt_context:
                             outcome = runner.run(test_path, self._update, self._coverage)
                             if outcome and outcome != "skipped" and suite_fixtures is not None:
-                                _run_fixture_assertions_for_test(
-                                    test=test_path,
-                                    fixture_specs=suite_fixtures,
-                                    fixture_assertions=fixture_assertions,
-                                )
+                                if suite_assertion_lock is None:
+                                    _run_fixture_assertions_for_test(
+                                        test=test_path,
+                                        fixture_specs=suite_fixtures,
+                                        fixture_assertions=fixture_assertions,
+                                    )
+                                else:
+                                    with suite_assertion_lock:
+                                        _run_fixture_assertions_for_test(
+                                            test=test_path,
+                                            fixture_specs=suite_fixtures,
+                                            fixture_assertions=fixture_assertions,
+                                        )
                     except KeyboardInterrupt:  # pragma: no cover - defensive guard
                         _request_interrupt()
                         interrupted = True
@@ -4528,6 +4766,11 @@ class Worker:
                     break
                 if attempts < max_attempts:
                     continue
+        if attempts == 0 and final_interrupted:
+            # The test never started an execution attempt (for example, work
+            # was cancelled after an interrupt), so do not count it as failed.
+            return True
+
         summary.total += 1
         summary.record_runner_outcome(runner.name, final_outcome)
         if fixtures:
@@ -5134,6 +5377,7 @@ def run_cli(
                         runner_versions=runner_versions,
                         debug=debug_enabled,
                         run_skipped_selector=run_skipped_selector,
+                        jobs=jobs,
                     )
                     for _ in range(jobs)
                 ]

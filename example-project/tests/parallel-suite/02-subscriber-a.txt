@@ -1,0 +1,4 @@
+{
+  stream: "parallel-suite",
+  value: 1,
+}

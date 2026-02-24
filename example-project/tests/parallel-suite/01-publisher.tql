@@ -1,0 +1,5 @@
+every 20ms {
+  from {stream: "parallel-suite", value: 1}
+}
+head 250
+publish "parallel-suite-events"

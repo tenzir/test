@@ -503,6 +503,7 @@ class _SuiteScope:
     stack: ExitStack
     env: dict[str, str]
     depth: int = 0
+    depth_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 _SUITE_SCOPE: ContextVar[_SuiteScope | None] = ContextVar(
@@ -829,11 +830,13 @@ def activate(names: Iterable[FixtureSpec | str]) -> Iterator[dict[str, str]]:
     normalized = _coerce_specs(names)
     scope = _SUITE_SCOPE.get()
     if scope is not None and scope.fixtures == normalized:
-        scope.depth += 1
+        with scope.depth_lock:
+            scope.depth += 1
         try:
             yield scope.env
         finally:
-            scope.depth -= 1
+            with scope.depth_lock:
+                scope.depth -= 1
         return
 
     context_token = _push_fixture_options_context(normalized)
