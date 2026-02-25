@@ -1,0 +1,6 @@
+created: 2026-02-25
+title: Parallel Suite Execution
+intro: >-
+  This release adds parallel suite execution and fixes several bugs, including clean
+  Ctrl+C handling, consistent default fixture options, and reliable shell runner defaults
+  for .sh test files.
