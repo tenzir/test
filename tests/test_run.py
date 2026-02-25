@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import signal
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -1935,6 +1936,24 @@ def test_is_interrupt_exit_handles_signal_codes() -> None:
     assert not run._is_interrupt_exit(1)
 
 
+def test_exception_is_interrupt_handles_nested_causes() -> None:
+    with pytest.raises(RuntimeError) as exc_info:
+        try:
+            raise subprocess.CalledProcessError(-signal.SIGINT, ["/usr/bin/env", "version"])
+        except subprocess.CalledProcessError as cause:
+            raise RuntimeError("wrapped") from cause
+    assert run._exception_is_interrupt(exc_info.value)
+
+
+def test_exception_is_interrupt_ignores_non_interrupt_errors() -> None:
+    with pytest.raises(RuntimeError) as exc_info:
+        try:
+            raise subprocess.CalledProcessError(1, ["/usr/bin/env", "version"])
+        except subprocess.CalledProcessError as cause:
+            raise RuntimeError("wrapped") from cause
+    assert not run._exception_is_interrupt(exc_info.value)
+
+
 def test_build_execution_plan_discovers_nested_projects(tmp_path: Path, monkeypatch):
     root = tmp_path / "main" / "test"
     (root / "tests").mkdir(parents=True)
@@ -3680,6 +3699,39 @@ def test_run_cli_reports_no_matching_run_skipped_filters(
         run.apply_settings(original_settings)
 
 
+def test_run_cli_handles_interrupt_during_version_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    info = _make_project(tmp_path)
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
+
+    def _raise_interrupt() -> str:
+        raise subprocess.CalledProcessError(
+            -signal.SIGINT,
+            ["/usr/bin/env", "version"],
+        )
+
+    monkeypatch.setattr(run, "get_version", _raise_interrupt)
+
+    try:
+        result = run.run_cli(**_run_cli_kwargs(info["root"]))
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+    assert result.exit_code == 130
+    assert result.interrupted is True
+    assert result.summary.total == 0
+    assert result.queue_size == 0
+    assert not run.interrupt_requested()
+
+
 def test_run_cli_wraps_fixture_unavailable_from_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3713,6 +3765,49 @@ def test_run_cli_wraps_fixture_unavailable_from_worker(
     finally:
         run._clear_directory_config_cache()
         run.apply_settings(original_settings)
+
+
+def test_run_cli_handles_interrupt_exception_from_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    info = _make_project(tmp_path)
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    class InterruptingWorker:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            self.run_skipped_match_count = 0
+
+        def start(self) -> None:
+            return None
+
+        def join(self) -> run.Summary:
+            try:
+                raise subprocess.CalledProcessError(
+                    -signal.SIGINT,
+                    ["docker", "compose", "up"],
+                )
+            except subprocess.CalledProcessError as cause:
+                raise RuntimeError("docker compose up failed (exit code 130)") from cause
+
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
+    monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
+    monkeypatch.setattr(run, "Worker", InterruptingWorker)
+
+    try:
+        result = run.run_cli(**_run_cli_kwargs(info["root"]))
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+    assert result.exit_code == 130
+    assert result.interrupted is True
+    assert not run.interrupt_requested()
 
 
 # --- Tests for run-skipped selectors in Worker ---
