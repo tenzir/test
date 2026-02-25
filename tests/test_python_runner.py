@@ -63,13 +63,17 @@ class _DummyCompleted:
 def test_jsonify_config_converts_skip_config() -> None:
     config_payload = {
         "fixtures": ("sink", "mysql"),
+        "suite": run.SuiteConfig(name="meta", mode=run.SuiteExecutionMode.SEQUENTIAL),
         "skip": run.SkipConfig(on_fixture_unavailable=True),
+        "modes": [run.SuiteExecutionMode.PARALLEL],
         "nested": {"skip": run.SkipConfig(reason="maintenance")},
     }
 
     converted = _jsonify_config(config_payload)
 
     assert converted["fixtures"] == ["sink", "mysql"]
+    assert converted["suite"] == {"name": "meta", "mode": "sequential"}
+    assert converted["modes"] == ["parallel"]
     assert converted["skip"] == {
         "reason": None,
         "on_fixture_unavailable": True,
@@ -197,6 +201,42 @@ def test_python_runner_context_serializes_skip_config(
             "reason": None,
             "on_fixture_unavailable": True,
             "on_capability_unavailable": False,
+        }
+        return _DummyCompleted(stdout=b"payload", stderr=b"")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    runner = run.CustomPythonFixture()
+    assert runner.run(script, update=True, coverage=False)
+
+
+@pytest.mark.parametrize("suite_mode", ["sequential", "parallel"])
+def test_python_runner_context_serializes_suite_mode(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch, suite_mode: str
+) -> None:
+    script = python_fixture_root / "suite" / f"{suite_mode}.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text('print("ok")\n', encoding="utf-8")
+    script.parent.joinpath("test.yaml").write_text(
+        "\n".join(
+            [
+                "timeout: 30",
+                "suite:",
+                "  name: fixture-suite",
+                f"  mode: {suite_mode}",
+                "fixtures:",
+                "  - sink",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
+        payload = json.loads(env["TENZIR_PYTHON_FIXTURE_CONTEXT"])
+        assert payload["config"]["suite"] == {
+            "name": "fixture-suite",
+            "mode": suite_mode,
         }
         return _DummyCompleted(stdout=b"payload", stderr=b"")
 
