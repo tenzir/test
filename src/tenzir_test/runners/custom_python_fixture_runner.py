@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import enum
 import json
 import os
 import shutil
@@ -24,6 +25,8 @@ _INSTALLED_SCRIPT_DEPENDENCIES: set[str] = set()
 
 def _jsonify_config(config: dict[str, typing.Any]) -> dict[str, typing.Any]:
     def _convert(value: typing.Any) -> typing.Any:
+        if isinstance(value, enum.Enum):
+            return value.value
         if dataclasses.is_dataclass(value) and not isinstance(value, type):
             return {
                 field.name: _convert(getattr(value, field.name))
