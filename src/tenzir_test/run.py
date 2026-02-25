@@ -719,6 +719,32 @@ def _is_interrupt_exit(returncode: int) -> bool:
     return returncode in {128 + sig for sig in _INTERRUPT_SIGNALS}
 
 
+def _exception_is_interrupt(exc: BaseException) -> bool:
+    pending: list[BaseException] = [exc]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        marker = id(current)
+        if marker in visited:
+            continue
+        visited.add(marker)
+
+        if isinstance(current, KeyboardInterrupt):
+            return True
+
+        returncode = getattr(current, "returncode", None)
+        if isinstance(returncode, int) and _is_interrupt_exit(returncode):
+            return True
+
+        cause = current.__cause__
+        if isinstance(cause, BaseException):
+            pending.append(cause)
+        context = current.__context__
+        if isinstance(context, BaseException):
+            pending.append(context)
+    return False
+
+
 _CURRENT_RETRY_CONTEXT = threading.local()
 _CURRENT_SUITE_CONTEXT = threading.local()
 _CURRENT_ASSERTION_CHECK_CONTEXT = threading.local()
@@ -5382,6 +5408,12 @@ def run_cli(
                     raise HarnessError(
                         f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`"
                     )
+                except subprocess.CalledProcessError as exc:
+                    if _is_interrupt_exit(exc.returncode) or interrupt_requested():
+                        _request_interrupt()
+                        interrupted = True
+                        break
+                    raise
 
                 runner_versions = _collect_runner_versions(queue, tenzir_version=tenzir_version)
                 runner_breakdown = _runner_breakdown(
@@ -5433,6 +5465,18 @@ def run_cli(
                     break
                 except fixtures_impl.FixtureUnavailable as exc:
                     _raise_fixture_unavailable_harness_error(exc)
+                except Exception as exc:
+                    if not (_exception_is_interrupt(exc) or interrupt_requested()):
+                        raise
+                    _request_interrupt()
+                    for remaining_worker in workers:
+                        try:
+                            remaining_worker.join()
+                        except Exception as join_exc:
+                            if not (_exception_is_interrupt(join_exc) or interrupt_requested()):
+                                raise
+                    interrupted = True
+                    break
                 if run_skipped_selector.has_reason_filters and skip_filter_matches == 0:
                     print(f"{INFO} no skipped tests matched run-skipped filters")
 
@@ -5473,6 +5517,16 @@ def run_cli(
             _set_project_root(settings.root)
             engine_state.refresh()
 
+            interrupted = interrupted or interrupt_requested()
+            if interrupted:
+                return ExecutionResult(
+                    summary=overall_summary,
+                    project_results=tuple(project_results),
+                    queue_size=overall_queue_count,
+                    exit_code=130,
+                    interrupted=True,
+                )
+
             if purge:
                 for runner in runners_iter_runners():
                     runner.purge()
@@ -5496,15 +5550,6 @@ def run_cli(
 
             if len(executed_projects) > 1:
                 _print_aggregate_totals(len(executed_projects), overall_summary)
-
-            if interrupted:
-                return ExecutionResult(
-                    summary=overall_summary,
-                    project_results=tuple(project_results),
-                    queue_size=overall_queue_count,
-                    exit_code=130,
-                    interrupted=True,
-                )
 
             exit_code = 1 if overall_summary.failed > 0 else 0
             return ExecutionResult(
