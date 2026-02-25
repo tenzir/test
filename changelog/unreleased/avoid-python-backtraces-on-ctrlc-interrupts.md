@@ -1,6 +1,7 @@
 ---
 title: Avoid Python backtraces on Ctrl+C interrupts
 type: bugfix
+pr: 31
 authors:
   - mavam
   - codex
