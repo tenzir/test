@@ -1,0 +1,5 @@
+created: 2026-02-25
+title: Tenzir Test v1.7.2
+intro: >-
+  This release fixes enum serialization errors when Python fixture tests use configuration
+  values like mode: sequential in test.yaml.
