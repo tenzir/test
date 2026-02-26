@@ -430,6 +430,11 @@ RunnerQueueItem = TestQueueItem | SuiteQueueItem
 
 
 @dataclasses.dataclass(slots=True)
+class SuiteQueueState:
+    pending_items: int = 0
+
+
+@dataclasses.dataclass(slots=True)
 class ProjectSelection:
     """Describe which tests to execute for a given project root."""
 
@@ -3268,6 +3273,10 @@ def _count_queue_tests(queue: Sequence[RunnerQueueItem]) -> int:
     return total
 
 
+def _count_suite_queue_items(queue: Sequence[RunnerQueueItem]) -> int:
+    return sum(1 for item in queue if isinstance(item, SuiteQueueItem))
+
+
 def _iter_parallel_suite_queue_items(queue: Sequence[RunnerQueueItem]) -> Iterator[SuiteQueueItem]:
     for item in queue:
         if isinstance(item, SuiteQueueItem) and item.suite.mode is SuiteExecutionMode.PARALLEL:
@@ -3310,13 +3319,24 @@ def _pop_next_queue_item(
     queue: list[RunnerQueueItem],
     *,
     queue_lock: threading.Lock,
+    suite_state: SuiteQueueState | None = None,
 ) -> RunnerQueueItem | None:
     with queue_lock:
         if not queue:
             return None
+        if suite_state is not None and suite_state.pending_items <= 0:
+            return queue.pop()
+        if isinstance(queue[-1], SuiteQueueItem):
+            if suite_state is not None and suite_state.pending_items > 0:
+                suite_state.pending_items -= 1
+            return queue.pop()
         for index in range(len(queue) - 1, -1, -1):
             if isinstance(queue[index], SuiteQueueItem):
+                if suite_state is not None and suite_state.pending_items > 0:
+                    suite_state.pending_items -= 1
                 return queue.pop(index)
+        if suite_state is not None:
+            suite_state.pending_items = 0
         return queue.pop()
 
 
@@ -4323,6 +4343,7 @@ class Worker:
         test_slots: threading.Semaphore | None = None,
         slot_lock: threading.Lock | None = None,
         queue_lock: threading.Lock | None = None,
+        suite_queue_state: SuiteQueueState | None = None,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -4336,6 +4357,9 @@ class Worker:
         self._test_slots = test_slots or threading.BoundedSemaphore(self._jobs)
         self._slot_lock = slot_lock or threading.Lock()
         self._queue_lock = queue_lock or threading.Lock()
+        self._suite_queue_state = suite_queue_state or SuiteQueueState(
+            pending_items=_count_suite_queue_items(queue)
+        )
         self._run_skipped_match_count = 0
         self._run_skipped_match_count_lock = threading.Lock()
         self._thread = threading.Thread(target=self._work)
@@ -4500,7 +4524,11 @@ class Worker:
             while True:
                 if interrupt_requested():
                     break
-                queue_item = _pop_next_queue_item(self._queue, queue_lock=self._queue_lock)
+                queue_item = _pop_next_queue_item(
+                    self._queue,
+                    queue_lock=self._queue_lock,
+                    suite_state=self._suite_queue_state,
+                )
                 if queue_item is None:
                     break
 
@@ -5579,6 +5607,9 @@ def run_cli(
                 test_slots = threading.BoundedSemaphore(max(1, jobs))
                 slot_lock = threading.Lock()
                 queue_lock = threading.Lock()
+                suite_queue_state = SuiteQueueState(
+                    pending_items=_count_suite_queue_items(queue)
+                )
                 workers = [
                     Worker(
                         queue,
@@ -5591,6 +5622,7 @@ def run_cli(
                         test_slots=test_slots,
                         slot_lock=slot_lock,
                         queue_lock=queue_lock,
+                        suite_queue_state=suite_queue_state,
                     )
                     for _ in range(jobs)
                 ]

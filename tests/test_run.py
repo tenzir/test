@@ -1934,6 +1934,105 @@ def test_pop_next_queue_item_prefers_suites() -> None:
     assert len(queue) == 2
 
 
+def test_pop_next_queue_item_skips_scan_when_no_suites_pending() -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    class TrackingQueue(list):
+        def __init__(self, items: list[run.RunnerQueueItem]) -> None:
+            super().__init__(items)
+            self.index_reads = 0
+
+        def __getitem__(self, index):
+            self.index_reads += 1
+            return super().__getitem__(index)
+
+    runner = StubRunner()
+    queue = TrackingQueue(
+        [
+            run.TestQueueItem(runner=runner, path=Path("/tmp/a.tql")),
+            run.TestQueueItem(runner=runner, path=Path("/tmp/b.tql")),
+            run.TestQueueItem(runner=runner, path=Path("/tmp/c.tql")),
+        ]
+    )
+    queue_lock = threading.Lock()
+    suite_state = run.SuiteQueueState(pending_items=0)
+
+    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
+
+    assert isinstance(popped, run.TestQueueItem)
+    assert popped.path == Path("/tmp/c.tql")
+    assert queue.index_reads == 0
+
+    queue.index_reads = 0
+    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
+    assert isinstance(popped, run.TestQueueItem)
+    assert popped.path == Path("/tmp/b.tql")
+    assert queue.index_reads == 0
+
+
+def test_pop_next_queue_item_clears_stale_suite_state_after_scan_miss() -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    class TrackingQueue(list):
+        def __init__(self, items: list[run.RunnerQueueItem]) -> None:
+            super().__init__(items)
+            self.index_reads = 0
+
+        def __getitem__(self, index):
+            self.index_reads += 1
+            return super().__getitem__(index)
+
+    runner = StubRunner()
+    queue = TrackingQueue(
+        [
+            run.TestQueueItem(runner=runner, path=Path("/tmp/a.tql")),
+            run.TestQueueItem(runner=runner, path=Path("/tmp/b.tql")),
+            run.TestQueueItem(runner=runner, path=Path("/tmp/c.tql")),
+        ]
+    )
+    queue_lock = threading.Lock()
+    suite_state = run.SuiteQueueState(pending_items=1)
+
+    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
+
+    assert isinstance(popped, run.TestQueueItem)
+    assert popped.path == Path("/tmp/c.tql")
+    assert queue.index_reads > 0
+    assert suite_state.pending_items == 0
+
+    queue.index_reads = 0
+    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
+    assert isinstance(popped, run.TestQueueItem)
+    assert popped.path == Path("/tmp/b.tql")
+    assert queue.index_reads == 0
+
+
 def test_cli_rejects_partial_suite_selection(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
