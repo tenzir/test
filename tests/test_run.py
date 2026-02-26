@@ -729,6 +729,60 @@ def test_worker_parallel_suite_caps_executor_workers_to_jobs(
         run.apply_settings(original_settings)
 
 
+def test_worker_parallel_suite_min_jobs_guard_raises_when_underprovisioned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "parallel"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n  min_jobs: 2\n",
+        encoding="utf-8",
+    )
+    test_file = suite_dir / "01-case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    class AlwaysPassRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="always-pass")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = AlwaysPassRunner()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
+
+    try:
+        queue = run._build_queue_from_paths([test_file], coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False, jobs=1)
+        worker.start()
+        with pytest.raises(run.HarnessError, match="requires at least --jobs=2"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
 def test_worker_parallel_suites_honor_shared_jobs_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -800,6 +854,8 @@ def test_worker_parallel_suites_honor_shared_jobs_budget(
 
         jobs = 2
         test_slots = threading.BoundedSemaphore(jobs)
+        slot_lock = threading.Lock()
+        queue_lock = threading.Lock()
         workers = [
             run.Worker(
                 queue,
@@ -807,6 +863,8 @@ def test_worker_parallel_suites_honor_shared_jobs_budget(
                 coverage=False,
                 jobs=jobs,
                 test_slots=test_slots,
+                slot_lock=slot_lock,
+                queue_lock=queue_lock,
             )
             for _ in range(jobs)
         ]
@@ -819,6 +877,115 @@ def test_worker_parallel_suites_honor_shared_jobs_budget(
         assert summary.total == 6
         assert summary.failed == 0
         assert observed["max_active"] <= jobs
+    finally:
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
+
+
+def test_workers_prioritize_parallel_suites_before_standalone_tests(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    tests_dir = tmp_path / "tests"
+    alpha_dir = tests_dir / "alpha"
+    beta_dir = tests_dir / "beta"
+    solo_dir = tests_dir / "solo"
+    alpha_dir.mkdir(parents=True)
+    beta_dir.mkdir(parents=True)
+    solo_dir.mkdir(parents=True)
+
+    alpha_tests = [alpha_dir / "01.tql", alpha_dir / "02.tql"]
+    beta_tests = [beta_dir / "01.tql", beta_dir / "02.tql"]
+    solo_tests = [solo_dir / f"{index:02d}.tql" for index in range(1, 9)]
+    for path in [*alpha_tests, *beta_tests, *solo_tests]:
+        path.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    execution_order: list[str] = []
+    execution_lock = threading.Lock()
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:  # noqa: ARG002
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            with execution_lock:
+                execution_order.append(f"{test.parent.name}:{test.name}")
+            time.sleep(0.01)
+            return True
+
+    runner = RecordingRunner()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="alpha",
+                directory=alpha_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=path) for path in alpha_tests],
+            fixtures=tuple(),
+        ),
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="beta",
+                directory=beta_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=path) for path in beta_tests],
+            fixtures=tuple(),
+        ),
+        *[run.TestQueueItem(runner=runner, path=path) for path in solo_tests],
+    ]
+
+    jobs = 2
+    test_slots = threading.BoundedSemaphore(jobs)
+    slot_lock = threading.Lock()
+    queue_lock = threading.Lock()
+    workers = [
+        run.Worker(
+            queue,
+            update=False,
+            coverage=False,
+            jobs=jobs,
+            test_slots=test_slots,
+            slot_lock=slot_lock,
+            queue_lock=queue_lock,
+        )
+        for _ in range(jobs)
+    ]
+
+    try:
+        for worker in workers:
+            worker.start()
+        summary = run.Summary()
+        for worker in workers:
+            summary += worker.join()
+
+        assert summary.total == len(alpha_tests) + len(beta_tests) + len(solo_tests)
+        assert summary.failed == 0
+
+        first_solo_index = next(i for i, item in enumerate(execution_order) if item.startswith("solo:"))
+        first_alpha_index = next(i for i, item in enumerate(execution_order) if item.startswith("alpha:"))
+        first_beta_index = next(i for i, item in enumerate(execution_order) if item.startswith("beta:"))
+        assert first_alpha_index < first_solo_index
+        assert first_beta_index < first_solo_index
     finally:
         run._clear_directory_config_cache()
         run._INTERRUPT_EVENT.clear()
@@ -1644,6 +1811,127 @@ def test_count_queue_tests_includes_suite_members(tmp_path: Path) -> None:
     ]
 
     assert run._count_queue_tests(queue) == 4
+
+
+def test_validate_parallel_suite_min_jobs_raises_when_underprovisioned(tmp_path: Path) -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = StubRunner()
+    suite_dir = tmp_path / "suite"
+    suite_dir.mkdir()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="parallel-pubsub",
+                directory=suite_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+                min_jobs=3,
+            ),
+            tests=[
+                run.TestQueueItem(runner=runner, path=suite_dir / "01.tql"),
+                run.TestQueueItem(runner=runner, path=suite_dir / "02.tql"),
+            ],
+            fixtures=tuple(),
+        )
+    ]
+
+    with pytest.raises(run.HarnessError, match="requires at least --jobs=3"):
+        run._validate_parallel_suite_min_jobs(queue, jobs=2)
+
+
+def test_warn_parallel_suite_oversubscription_emits_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = StubRunner()
+    suite_dir = tmp_path / "suite"
+    suite_dir.mkdir()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="parallel-pubsub",
+                directory=suite_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+            ),
+            tests=[
+                run.TestQueueItem(runner=runner, path=suite_dir / "01.tql"),
+                run.TestQueueItem(runner=runner, path=suite_dir / "02.tql"),
+                run.TestQueueItem(runner=runner, path=suite_dir / "03.tql"),
+            ],
+            fixtures=tuple(),
+        )
+    ]
+
+    run._warn_parallel_suite_oversubscription(queue, jobs=2)
+    output = capsys.readouterr().out
+    assert "warning: parallel suite 'parallel-pubsub'" in output
+    assert "--jobs=2" in output
+
+
+def test_pop_next_queue_item_prefers_suites() -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = StubRunner()
+    suite_dir = Path("/tmp/suite")
+    queue: list[run.RunnerQueueItem] = [
+        run.TestQueueItem(runner=runner, path=Path("/tmp/a.tql")),
+        run.TestQueueItem(runner=runner, path=Path("/tmp/b.tql")),
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="parallel-pubsub",
+                directory=suite_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=Path("/tmp/suite/01.tql"))],
+            fixtures=tuple(),
+        ),
+    ]
+    queue_lock = threading.Lock()
+
+    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock)
+
+    assert isinstance(popped, run.SuiteQueueItem)
+    assert len(queue) == 2
 
 
 def test_cli_rejects_partial_suite_selection(
@@ -3694,6 +3982,95 @@ def test_run_cli_reports_no_matching_run_skipped_filters(
         assert result.summary.skipped == 3
         output = capsys.readouterr().out
         assert "no skipped tests matched run-skipped filters" in output
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_run_cli_warns_for_parallel_suite_larger_than_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    info = _make_project(tmp_path)
+    suite_dir = info["root"] / "tests" / "parallel"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n",
+        encoding="utf-8",
+    )
+    for index in range(1, 4):
+        (suite_dir / f"{index:02d}.tql").write_text("version\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    class FakeWorker:
+        def __init__(self, queue: list[run.RunnerQueueItem], *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            self.run_skipped_match_count = 0
+            self._summary = run.Summary(total=run._count_queue_tests(queue))
+
+        def start(self) -> None:
+            return None
+
+        def join(self) -> run.Summary:
+            return self._summary
+
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
+    monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
+    monkeypatch.setattr(run, "Worker", FakeWorker)
+
+    try:
+        kwargs = _run_cli_kwargs(info["root"], tests=[suite_dir])
+        kwargs["jobs"] = 1
+        result = run.run_cli(**kwargs)
+        assert result.exit_code == 0
+        output = capsys.readouterr().out
+        assert "warning: parallel suite 'parallel'" in output
+        assert "--jobs=1" in output
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_run_cli_fails_fast_when_parallel_suite_min_jobs_is_unmet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = _make_project(tmp_path)
+    suite_dir = info["root"] / "tests" / "parallel"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n  min_jobs: 2\n",
+        encoding="utf-8",
+    )
+    (suite_dir / "01.tql").write_text("version\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    class UnexpectedWorker:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("worker construction should not be reached")
+
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
+    monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
+    monkeypatch.setattr(run, "Worker", UnexpectedWorker)
+
+    try:
+        kwargs = _run_cli_kwargs(info["root"], tests=[suite_dir])
+        kwargs["jobs"] = 1
+        with pytest.raises(run.HarnessError, match="parallel suite job requirements not met"):
+            run.run_cli(**kwargs)
     finally:
         run._clear_directory_config_cache()
         run.apply_settings(original_settings)

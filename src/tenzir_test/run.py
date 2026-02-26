@@ -376,6 +376,7 @@ class SuiteConfig:
 
     name: str
     mode: SuiteExecutionMode = SuiteExecutionMode.SEQUENTIAL
+    min_jobs: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -389,6 +390,7 @@ class SuiteInfo:
     name: str
     directory: Path
     mode: SuiteExecutionMode = SuiteExecutionMode.SEQUENTIAL
+    min_jobs: int | None = None
 
 
 @dataclasses.dataclass(slots=True)
@@ -1650,7 +1652,15 @@ def _suite_config_from_value(value: object) -> SuiteConfig | None:
                 return None
         else:
             return None
-        return SuiteConfig(name=raw_name.strip(), mode=mode)
+        raw_min_jobs = value.get("min_jobs")
+        min_jobs: int | None = None
+        if raw_min_jobs is not None:
+            if not isinstance(raw_min_jobs, int) or isinstance(raw_min_jobs, bool):
+                return None
+            if raw_min_jobs <= 0:
+                return None
+            min_jobs = raw_min_jobs
+        return SuiteConfig(name=raw_name.strip(), mode=mode, min_jobs=min_jobs)
     return None
 
 
@@ -1673,12 +1683,12 @@ def _normalize_suite_value(
         return SuiteConfig(name=name)
 
     if isinstance(value, Mapping):
-        unknown_keys = {str(key) for key in value.keys()} - {"name", "mode"}
+        unknown_keys = {str(key) for key in value.keys()} - {"name", "mode", "min_jobs"}
         if unknown_keys:
             _raise_config_error(
                 location,
                 f"'suite' mapping contains unknown keys: {', '.join(sorted(unknown_keys))}; "
-                "allowed keys are: name, mode",
+                "allowed keys are: min_jobs, mode, name",
                 line_number,
             )
         raw_name = value.get("name")
@@ -1708,7 +1718,29 @@ def _normalize_suite_value(
                 f"Invalid value for 'suite.mode', expected string, got '{type(raw_mode).__name__}'",
                 line_number,
             )
-        return SuiteConfig(name=raw_name.strip(), mode=mode)
+        raw_min_jobs = value.get("min_jobs")
+        min_jobs: int | None = None
+        if raw_min_jobs is not None:
+            if not isinstance(raw_min_jobs, int) or isinstance(raw_min_jobs, bool):
+                _raise_config_error(
+                    location,
+                    (
+                        "Invalid value for 'suite.min_jobs', expected positive integer, "
+                        f"got '{type(raw_min_jobs).__name__}'"
+                    ),
+                    line_number,
+                )
+            if raw_min_jobs <= 0:
+                _raise_config_error(
+                    location,
+                    (
+                        "Invalid value for 'suite.min_jobs', expected positive integer, "
+                        f"got '{raw_min_jobs}'"
+                    ),
+                    line_number,
+                )
+            min_jobs = raw_min_jobs
+        return SuiteConfig(name=raw_name.strip(), mode=mode, min_jobs=min_jobs)
 
     _raise_config_error(
         location,
@@ -2399,7 +2431,12 @@ def _resolve_suite_for_test(test: Path) -> SuiteInfo | None:
     except (OSError, ValueError):
         # Only treat as a suite when the test lives under the suite directory.
         return None
-    return SuiteInfo(name=suite_value.name, directory=resolved_dir, mode=suite_value.mode)
+    return SuiteInfo(
+        name=suite_value.name,
+        directory=resolved_dir,
+        mode=suite_value.mode,
+        min_jobs=suite_value.min_jobs,
+    )
 
 
 def _clear_directory_config_cache() -> None:
@@ -3229,6 +3266,58 @@ def _count_queue_tests(queue: Sequence[RunnerQueueItem]) -> int:
         else:
             total += 1
     return total
+
+
+def _iter_parallel_suite_queue_items(queue: Sequence[RunnerQueueItem]) -> Iterator[SuiteQueueItem]:
+    for item in queue:
+        if isinstance(item, SuiteQueueItem) and item.suite.mode is SuiteExecutionMode.PARALLEL:
+            yield item
+
+
+def _validate_parallel_suite_min_jobs(queue: Sequence[RunnerQueueItem], *, jobs: int) -> None:
+    violations: list[str] = []
+    for suite_item in _iter_parallel_suite_queue_items(queue):
+        min_jobs = suite_item.suite.min_jobs
+        if min_jobs is None or jobs >= min_jobs:
+            continue
+        suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
+        violations.append(
+            (
+                f"'{suite_item.suite.name}' ({suite_dir}) requires at least --jobs={min_jobs} "
+                f"for correctness, got --jobs={jobs}"
+            )
+        )
+    if violations:
+        detail = "; ".join(violations)
+        raise HarnessError(f"parallel suite job requirements not met: {detail}")
+
+
+def _warn_parallel_suite_oversubscription(queue: Sequence[RunnerQueueItem], *, jobs: int) -> None:
+    for suite_item in _iter_parallel_suite_queue_items(queue):
+        suite_size = len(suite_item.tests)
+        if suite_size <= jobs:
+            continue
+        suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
+        print(
+            (
+                f"{INFO} warning: parallel suite '{suite_item.suite.name}' in {suite_dir} has "
+                f"{suite_size} tests but --jobs={jobs}; not all members can run at once"
+            )
+        )
+
+
+def _pop_next_queue_item(
+    queue: list[RunnerQueueItem],
+    *,
+    queue_lock: threading.Lock,
+) -> RunnerQueueItem | None:
+    with queue_lock:
+        if not queue:
+            return None
+        for index in range(len(queue) - 1, -1, -1):
+            if isinstance(queue[index], SuiteQueueItem):
+                return queue.pop(index)
+        return queue.pop()
 
 
 def _print_aggregate_totals(project_count: int, summary: Summary) -> None:
@@ -4232,6 +4321,8 @@ class Worker:
         run_skipped_selector: RunSkippedSelector | None = None,
         jobs: int | None = None,
         test_slots: threading.Semaphore | None = None,
+        slot_lock: threading.Lock | None = None,
+        queue_lock: threading.Lock | None = None,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -4243,6 +4334,8 @@ class Worker:
         self._run_skipped_selector = run_skipped_selector or RunSkippedSelector()
         self._jobs = max(1, jobs if jobs is not None else get_default_jobs())
         self._test_slots = test_slots or threading.BoundedSemaphore(self._jobs)
+        self._slot_lock = slot_lock or threading.Lock()
+        self._queue_lock = queue_lock or threading.Lock()
         self._run_skipped_match_count = 0
         self._run_skipped_match_count_lock = threading.Lock()
         self._thread = threading.Thread(target=self._work)
@@ -4267,6 +4360,26 @@ class Worker:
             return
         with self._run_skipped_match_count_lock:
             self._run_skipped_match_count += amount
+
+    def _acquire_test_slots(self, slots: int) -> bool:
+        if slots <= 0:
+            return True
+        acquired = 0
+        with self._slot_lock:
+            while acquired < slots:
+                if self._test_slots.acquire(timeout=0.1):
+                    acquired += 1
+                    continue
+                if interrupt_requested():
+                    self._release_test_slots(acquired)
+                    return False
+        return True
+
+    def _release_test_slots(self, slots: int) -> None:
+        if slots <= 0:
+            return
+        for _ in range(slots):
+            self._test_slots.release()
 
     def _record_static_skip(
         self,
@@ -4387,9 +4500,8 @@ class Worker:
             while True:
                 if interrupt_requested():
                     break
-                try:
-                    queue_item = self._queue.pop()
-                except IndexError:
+                queue_item = _pop_next_queue_item(self._queue, queue_lock=self._queue_lock)
+                if queue_item is None:
                     break
 
                 if isinstance(queue_item, SuiteQueueItem):
@@ -4414,9 +4526,8 @@ class Worker:
         suite_fixtures: tuple[fixtures_impl.FixtureSpec, ...] | None = None,
         suite_assertion_lock: threading.Lock | None = None,
     ) -> bool:
-        while not self._test_slots.acquire(timeout=0.1):
-            if interrupt_requested():
-                return True
+        if not self._acquire_test_slots(1):
+            return True
         try:
             return self._run_test_item(
                 test_item,
@@ -4426,7 +4537,7 @@ class Worker:
                 suite_assertion_lock=suite_assertion_lock,
             )
         finally:
-            self._test_slots.release()
+            self._release_test_slots(1)
 
     def _run_suite_sequential(
         self,
@@ -4459,16 +4570,27 @@ class Worker:
         suite_progress: tuple[str, int, int],
         suite_fixtures: tuple[fixtures_impl.FixtureSpec, ...],
         suite_assertion_lock: threading.Lock | None,
+        acquire_slot: bool = True,
     ) -> tuple[Summary, bool]:
         local_summary = Summary()
-        interrupted = run_context.run(
-            self._run_test_item_with_slot,
-            test_item,
-            local_summary,
-            suite_progress=suite_progress,
-            suite_fixtures=suite_fixtures,
-            suite_assertion_lock=suite_assertion_lock,
-        )
+        if acquire_slot:
+            interrupted = run_context.run(
+                self._run_test_item_with_slot,
+                test_item,
+                local_summary,
+                suite_progress=suite_progress,
+                suite_fixtures=suite_fixtures,
+                suite_assertion_lock=suite_assertion_lock,
+            )
+        else:
+            interrupted = run_context.run(
+                self._run_test_item,
+                test_item,
+                local_summary,
+                suite_progress=suite_progress,
+                suite_fixtures=suite_fixtures,
+                suite_assertion_lock=suite_assertion_lock,
+            )
         return local_summary, interrupted
 
     def _run_suite_parallel(
@@ -4480,47 +4602,53 @@ class Worker:
     ) -> bool:
         total = len(tests)
         max_workers = min(max(1, total), self._jobs)
+        if not self._acquire_test_slots(max_workers):
+            return True
         suite_assertion_lock = threading.Lock()
         suite_summary = Summary()
         interrupted = False
         futures: list[concurrent.futures.Future[tuple[Summary, bool]]] = []
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="suite",
-        ) as executor:
-            for index, test_item in enumerate(tests, start=1):
+        try:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix="suite",
+            ) as executor:
+                for index, test_item in enumerate(tests, start=1):
+                    if interrupt_requested():
+                        interrupted = True
+                        break
+                    run_context = contextvars.copy_context()
+                    futures.append(
+                        executor.submit(
+                            self._run_suite_member,
+                            run_context=run_context,
+                            test_item=test_item,
+                            suite_progress=(suite_item.suite.name, index, total),
+                            suite_fixtures=suite_item.fixtures,
+                            suite_assertion_lock=suite_assertion_lock,
+                            acquire_slot=False,
+                        )
+                    )
                 if interrupt_requested():
                     interrupted = True
-                    break
-                run_context = contextvars.copy_context()
-                futures.append(
-                    executor.submit(
-                        self._run_suite_member,
-                        run_context=run_context,
-                        test_item=test_item,
-                        suite_progress=(suite_item.suite.name, index, total),
-                        suite_fixtures=suite_item.fixtures,
-                        suite_assertion_lock=suite_assertion_lock,
-                    )
-                )
-            if interrupt_requested():
-                interrupted = True
-                for pending in futures:
-                    if pending.done():
-                        continue
-                    pending.cancel()
-            for future in concurrent.futures.as_completed(futures):
-                if future.cancelled():
-                    continue
-                member_summary, member_interrupted = future.result()
-                _merge_summary_inplace(suite_summary, member_summary)
-                if member_interrupted:
-                    interrupted = True
-                    _request_interrupt()
                     for pending in futures:
                         if pending.done():
                             continue
                         pending.cancel()
+                for future in concurrent.futures.as_completed(futures):
+                    if future.cancelled():
+                        continue
+                    member_summary, member_interrupted = future.result()
+                    _merge_summary_inplace(suite_summary, member_summary)
+                    if member_interrupted:
+                        interrupted = True
+                        _request_interrupt()
+                        for pending in futures:
+                            if pending.done():
+                                continue
+                            pending.cancel()
+        finally:
+            self._release_test_slots(max_workers)
         _merge_summary_inplace(summary, suite_summary)
         return interrupted
 
@@ -4529,6 +4657,16 @@ class Worker:
         total = len(tests)
         if total == 0:
             return
+        if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
+            min_jobs = suite_item.suite.min_jobs
+            if min_jobs is not None and self._jobs < min_jobs:
+                suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
+                raise HarnessError(
+                    (
+                        f"parallel suite '{suite_item.suite.name}' in {suite_dir} "
+                        f"requires at least --jobs={min_jobs} for correctness, got --jobs={self._jobs}"
+                    )
+                )
         primary_test = tests[0].path
         try:
             primary_config = parse_test_config(primary_test, coverage=self._coverage)
@@ -5371,6 +5509,8 @@ def run_cli(
 
                 queue = _build_queue_from_paths(collected_paths, coverage=coverage)
                 queue.sort(key=_queue_sort_key, reverse=True)
+                _validate_parallel_suite_min_jobs(queue, jobs=jobs)
+                _warn_parallel_suite_oversubscription(queue, jobs=jobs)
                 project_queue_size = _count_queue_tests(queue)
                 project_summary = Summary()
                 job_count, enabled_flags, verb = _summarize_harness_configuration(
@@ -5437,6 +5577,8 @@ def run_cli(
                 printed_projects += 1
 
                 test_slots = threading.BoundedSemaphore(max(1, jobs))
+                slot_lock = threading.Lock()
+                queue_lock = threading.Lock()
                 workers = [
                     Worker(
                         queue,
@@ -5447,6 +5589,8 @@ def run_cli(
                         run_skipped_selector=run_skipped_selector,
                         jobs=jobs,
                         test_slots=test_slots,
+                        slot_lock=slot_lock,
+                        queue_lock=queue_lock,
                     )
                     for _ in range(jobs)
                 ]
