@@ -4410,6 +4410,23 @@ class Worker:
         for _ in range(slots):
             self._test_slots.release()
 
+    def _acquire_suite_test_slots(self, max_slots: int) -> int:
+        """Reserve up to `max_slots` slots for a parallel suite execution."""
+
+        if max_slots <= 0:
+            return 0
+        acquired = 0
+        with self._slot_lock:
+            while acquired == 0:
+                if self._test_slots.acquire(timeout=0.1):
+                    acquired = 1
+                    break
+                if interrupt_requested():
+                    return 0
+            while acquired < max_slots and self._test_slots.acquire(blocking=False):
+                acquired += 1
+        return acquired
+
     def _record_static_skip(
         self,
         *,
@@ -4634,16 +4651,28 @@ class Worker:
         summary: Summary,
     ) -> bool:
         total = len(tests)
-        max_workers = min(max(1, total), self._jobs)
-        if not self._acquire_test_slots(max_workers):
+        requested_workers = min(max(1, total), self._jobs)
+        reserved_workers = self._acquire_suite_test_slots(requested_workers)
+        if reserved_workers <= 0:
             return True
+        min_jobs = suite_item.suite.min_jobs
+        if min_jobs is not None and reserved_workers < min_jobs:
+            self._release_test_slots(reserved_workers)
+            suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
+            raise HarnessError(
+                (
+                    f"parallel suite '{suite_item.suite.name}' in {suite_dir} "
+                    f"requires at least {min_jobs} concurrent workers for correctness, "
+                    f"but only {reserved_workers} are currently available"
+                )
+            )
         suite_assertion_lock = threading.Lock()
         suite_summary = Summary()
         interrupted = False
         futures: list[concurrent.futures.Future[tuple[Summary, bool]]] = []
         try:
             with concurrent.futures.ThreadPoolExecutor(
-                max_workers=max_workers,
+                max_workers=reserved_workers,
                 thread_name_prefix="suite",
             ) as executor:
                 for index, test_item in enumerate(tests, start=1):
@@ -4681,7 +4710,7 @@ class Worker:
                                 continue
                             pending.cancel()
         finally:
-            self._release_test_slots(max_workers)
+            self._release_test_slots(reserved_workers)
         _merge_summary_inplace(summary, suite_summary)
         return interrupted
 
@@ -5612,9 +5641,7 @@ def run_cli(
                 test_slots = threading.BoundedSemaphore(max(1, jobs))
                 slot_lock = threading.Lock()
                 queue_lock = threading.Lock()
-                suite_queue_state = SuiteQueueState(
-                    pending_items=_count_suite_queue_items(queue)
-                )
+                suite_queue_state = SuiteQueueState(pending_items=_count_suite_queue_items(queue))
                 workers = [
                     Worker(
                         queue,

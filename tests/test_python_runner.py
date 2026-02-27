@@ -72,7 +72,7 @@ def test_jsonify_config_converts_skip_config() -> None:
     converted = _jsonify_config(config_payload)
 
     assert converted["fixtures"] == ["sink", "mysql"]
-    assert converted["suite"] == {"name": "meta", "mode": "sequential"}
+    assert converted["suite"] == {"name": "meta", "mode": "sequential", "min_jobs": None}
     assert converted["modes"] == ["parallel"]
     assert converted["skip"] == {
         "reason": None,
@@ -237,6 +237,7 @@ def test_python_runner_context_serializes_suite_mode(
         assert payload["config"]["suite"] == {
             "name": "fixture-suite",
             "mode": suite_mode,
+            "min_jobs": None,
         }
         return _DummyCompleted(stdout=b"payload", stderr=b"")
 
