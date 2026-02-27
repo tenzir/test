@@ -1,0 +1,5 @@
+created: 2026-02-27
+title: Parallel Suite Scheduling
+intro: >-
+  This release improves parallel suite scheduling reliability and adds correctness
+  guards via suite.min_jobs in test.yaml.
