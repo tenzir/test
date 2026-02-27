@@ -287,6 +287,25 @@ def test_resolve_suite_for_test_reads_suite_record_mode(
     assert suite_info.mode is run.SuiteExecutionMode.PARALLEL
 
 
+def test_resolve_suite_for_test_reads_suite_record_min_jobs(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: shared-suite\n  mode: parallel\n  min_jobs: 2\n",
+        encoding="utf-8",
+    )
+    test_file = suite_dir / "member.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    suite_info = run._resolve_suite_for_test(test_file)
+
+    assert suite_info is not None
+    assert suite_info.min_jobs == 2
+
+
 def test_resolve_suite_for_test_defaults_suite_record_mode_to_sequential(
     tmp_path: Path, configured_root: Path
 ) -> None:
@@ -304,6 +323,7 @@ def test_resolve_suite_for_test_defaults_suite_record_mode_to_sequential(
 
     assert suite_info is not None
     assert suite_info.mode is run.SuiteExecutionMode.SEQUENTIAL
+    assert suite_info.min_jobs is None
 
 
 def test_parse_test_config_rejects_suite_record_with_invalid_mode(
@@ -320,6 +340,40 @@ def test_parse_test_config_rejects_suite_record_with_invalid_mode(
     test_file.write_text("version\nwrite_json\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="Invalid value for 'suite.mode'"):
+        run.parse_test_config(test_file)
+
+
+def test_parse_test_config_rejects_suite_record_with_invalid_min_jobs_type(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: shared-suite\n  mode: parallel\n  min_jobs: two\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "member.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid value for 'suite.min_jobs'"):
+        run.parse_test_config(test_file)
+
+
+def test_parse_test_config_rejects_suite_record_with_nonpositive_min_jobs(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests"
+    suite_dir.mkdir()
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: shared-suite\n  mode: parallel\n  min_jobs: 0\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "member.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid value for 'suite.min_jobs'"):
         run.parse_test_config(test_file)
 
 

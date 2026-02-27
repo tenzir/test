@@ -729,6 +729,177 @@ def test_worker_parallel_suite_caps_executor_workers_to_jobs(
         run.apply_settings(original_settings)
 
 
+def test_worker_parallel_suite_min_jobs_guard_raises_when_underprovisioned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "parallel"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n  min_jobs: 2\n",
+        encoding="utf-8",
+    )
+    test_file = suite_dir / "01-case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    class AlwaysPassRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="always-pass")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = AlwaysPassRunner()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
+
+    try:
+        queue = run._build_queue_from_paths([test_file], coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False, jobs=1)
+        worker.start()
+        with pytest.raises(run.HarnessError, match="requires at least --jobs=2"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_worker_parallel_suite_min_jobs_waits_for_required_reserved_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "parallel"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n  min_jobs: 2\n",
+        encoding="utf-8",
+    )
+    tests: list[Path] = []
+    for index in range(1, 3):
+        test_path = suite_dir / f"{index:02d}.tql"
+        test_path.write_text("version\nwrite_json\n", encoding="utf-8")
+        tests.append(test_path)
+    run._clear_directory_config_cache()
+
+    class AlwaysPassRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="always-pass")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = AlwaysPassRunner()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
+
+    reserved_slot = threading.BoundedSemaphore(2)
+    acquired = reserved_slot.acquire(timeout=0.1)
+    assert acquired
+    delayed_release = threading.Event()
+
+    def _release_slot_later() -> None:
+        if not delayed_release.wait(timeout=1.0):
+            return
+        reserved_slot.release()
+
+    release_thread = threading.Thread(target=_release_slot_later)
+    release_thread.start()
+    try:
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        assert len(queue) == 1
+        suite_item = queue[0]
+        assert isinstance(suite_item, run.SuiteQueueItem)
+        assert suite_item.suite.mode is run.SuiteExecutionMode.PARALLEL
+
+        worker = run.Worker(
+            queue,
+            update=False,
+            coverage=False,
+            jobs=2,
+            test_slots=reserved_slot,
+        )
+        worker.start()
+        delayed_release.set()
+        summary = worker.join()
+        assert summary.total == 2
+        assert summary.failed == 0
+    finally:
+        delayed_release.set()
+        release_thread.join(timeout=1.0)
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
+
+
+def test_acquire_suite_test_slots_waits_for_required_minimum() -> None:
+    queue: list[run.RunnerQueueItem] = []
+    shared_slots = threading.BoundedSemaphore(2)
+    worker = run.Worker(
+        queue,
+        update=False,
+        coverage=False,
+        jobs=2,
+        test_slots=shared_slots,
+    )
+    acquired = shared_slots.acquire(timeout=0.1)
+    assert acquired
+
+    reserved: dict[str, int] = {"slots": 0}
+
+    def reserve_slots() -> None:
+        reserved["slots"] = worker._acquire_suite_test_slots(2, min_slots=2)
+
+    thread = threading.Thread(target=reserve_slots)
+    thread.start()
+    time.sleep(0.05)
+    assert thread.is_alive()
+
+    shared_slots.release()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    assert reserved["slots"] == 2
+
+    worker._release_test_slots(reserved["slots"])
+
+
 def test_worker_parallel_suites_honor_shared_jobs_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -800,6 +971,9 @@ def test_worker_parallel_suites_honor_shared_jobs_budget(
 
         jobs = 2
         test_slots = threading.BoundedSemaphore(jobs)
+        slot_lock = threading.Lock()
+        queue_lock = threading.Lock()
+        suite_queue_state = run.SuiteQueueState(pending_items=run._count_suite_queue_items(queue))
         workers = [
             run.Worker(
                 queue,
@@ -807,6 +981,9 @@ def test_worker_parallel_suites_honor_shared_jobs_budget(
                 coverage=False,
                 jobs=jobs,
                 test_slots=test_slots,
+                slot_lock=slot_lock,
+                queue_lock=queue_lock,
+                suite_queue_state=suite_queue_state,
             )
             for _ in range(jobs)
         ]
@@ -819,6 +996,539 @@ def test_worker_parallel_suites_honor_shared_jobs_budget(
         assert summary.total == 6
         assert summary.failed == 0
         assert observed["max_active"] <= jobs
+    finally:
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
+
+
+def test_worker_parallel_suite_caps_reservation_by_available_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "parallel"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n",
+        encoding="utf-8",
+    )
+    tests: list[Path] = []
+    for index in range(1, 4):
+        test_path = suite_dir / f"{index:02d}.tql"
+        test_path.write_text("version\nwrite_json\n", encoding="utf-8")
+        tests.append(test_path)
+    run._clear_directory_config_cache()
+
+    observed = {"active": 0, "max_active": 0}
+    observed_lock = threading.Lock()
+
+    class SlowRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="slow")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:  # noqa: ARG002
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            with observed_lock:
+                observed["active"] += 1
+                observed["max_active"] = max(observed["max_active"], observed["active"])
+            time.sleep(0.05)
+            with observed_lock:
+                observed["active"] -= 1
+            return True
+
+    runner = SlowRunner()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
+
+    worker: run.Worker | None = None
+    try:
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        assert len(queue) == 1
+        assert isinstance(queue[0], run.SuiteQueueItem)
+        assert queue[0].suite.mode is run.SuiteExecutionMode.PARALLEL
+
+        worker = run.Worker(
+            queue,
+            update=False,
+            coverage=False,
+            jobs=2,
+            test_slots=threading.BoundedSemaphore(1),
+        )
+        worker.start()
+        worker._thread.join(timeout=2.0)
+        if worker._thread.is_alive():
+            run._request_interrupt()
+            worker._thread.join(timeout=2.0)
+        assert not worker._thread.is_alive(), "worker deadlocked reserving suite test slots"
+
+        summary = worker.join()
+        assert summary.total == len(tests)
+        assert summary.failed == 0
+        assert observed["max_active"] == 1
+    finally:
+        if worker is not None and worker._thread.is_alive():
+            run._request_interrupt()
+            worker._thread.join(timeout=2.0)
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
+
+
+def test_worker_defaults_share_sync_locks_for_shared_resources() -> None:
+    queue: list[run.RunnerQueueItem] = []
+    test_slots = threading.BoundedSemaphore(2)
+    first = run.Worker(queue, update=False, coverage=False, jobs=2, test_slots=test_slots)
+    second = run.Worker(queue, update=False, coverage=False, jobs=2, test_slots=test_slots)
+
+    assert first._queue_lock is second._queue_lock
+    assert first._slot_lock is second._slot_lock
+    assert first._suite_queue_state is second._suite_queue_state
+
+
+def test_workers_with_default_suite_state_do_not_stall_on_remaining_solo_tests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    tests_dir = tmp_path / "tests"
+    parallel_dir = tests_dir / "parallel"
+    solo_dir = tests_dir / "solo"
+    parallel_dir.mkdir(parents=True)
+    solo_dir.mkdir(parents=True)
+    (parallel_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n",
+        encoding="utf-8",
+    )
+    parallel_tests = [parallel_dir / "01.tql", parallel_dir / "02.tql"]
+    solo_tests = [solo_dir / "01.tql", solo_dir / "02.tql"]
+    for path in [*parallel_tests, *solo_tests]:
+        path.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            time.sleep(0.01)
+            return True
+
+    runner = RecordingRunner()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
+
+    try:
+        queue = run._build_queue_from_paths([*parallel_tests, *solo_tests], coverage=False)
+        queue.sort(key=run._queue_sort_key, reverse=True)
+        jobs = 2
+        test_slots = threading.BoundedSemaphore(jobs)
+        workers = [
+            run.Worker(
+                queue,
+                update=False,
+                coverage=False,
+                jobs=jobs,
+                test_slots=test_slots,
+            )
+            for _ in range(jobs)
+        ]
+
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker._thread.join(timeout=2.0)
+            assert not worker._thread.is_alive(), "worker stalled with default suite queue state"
+
+        summary = run.Summary()
+        for worker in workers:
+            summary += worker.join()
+        assert summary.total == len(parallel_tests) + len(solo_tests)
+        assert summary.failed == 0
+    finally:
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
+
+
+def test_workers_prioritize_parallel_suites_before_standalone_tests(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    tests_dir = tmp_path / "tests"
+    alpha_dir = tests_dir / "alpha"
+    beta_dir = tests_dir / "beta"
+    solo_dir = tests_dir / "solo"
+    alpha_dir.mkdir(parents=True)
+    beta_dir.mkdir(parents=True)
+    solo_dir.mkdir(parents=True)
+
+    alpha_tests = [alpha_dir / "01.tql", alpha_dir / "02.tql"]
+    beta_tests = [beta_dir / "01.tql", beta_dir / "02.tql"]
+    solo_tests = [solo_dir / f"{index:02d}.tql" for index in range(1, 9)]
+    for path in [*alpha_tests, *beta_tests, *solo_tests]:
+        path.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    execution_order: list[str] = []
+    execution_lock = threading.Lock()
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:  # noqa: ARG002
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            with execution_lock:
+                execution_order.append(f"{test.parent.name}:{test.name}")
+            time.sleep(0.01)
+            return True
+
+    runner = RecordingRunner()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="alpha",
+                directory=alpha_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=path) for path in alpha_tests],
+            fixtures=tuple(),
+        ),
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="beta",
+                directory=beta_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=path) for path in beta_tests],
+            fixtures=tuple(),
+        ),
+        *[run.TestQueueItem(runner=runner, path=path) for path in solo_tests],
+    ]
+
+    jobs = 2
+    test_slots = threading.BoundedSemaphore(jobs)
+    slot_lock = threading.Lock()
+    queue_lock = threading.Lock()
+    suite_queue_state = run.SuiteQueueState(pending_items=run._count_suite_queue_items(queue))
+    workers = [
+        run.Worker(
+            queue,
+            update=False,
+            coverage=False,
+            jobs=jobs,
+            test_slots=test_slots,
+            slot_lock=slot_lock,
+            queue_lock=queue_lock,
+            suite_queue_state=suite_queue_state,
+        )
+        for _ in range(jobs)
+    ]
+
+    try:
+        for worker in workers:
+            worker.start()
+        summary = run.Summary()
+        for worker in workers:
+            summary += worker.join()
+
+        assert summary.total == len(alpha_tests) + len(beta_tests) + len(solo_tests)
+        assert summary.failed == 0
+
+        first_solo_index = next(
+            i for i, item in enumerate(execution_order) if item.startswith("solo:")
+        )
+        first_alpha_index = next(
+            i for i, item in enumerate(execution_order) if item.startswith("alpha:")
+        )
+        first_beta_index = next(
+            i for i, item in enumerate(execution_order) if item.startswith("beta:")
+        )
+        assert first_alpha_index < first_solo_index
+        assert first_beta_index < first_solo_index
+    finally:
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
+
+
+def test_workers_hold_suite_priority_until_parallel_suite_reserves_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    tests_dir = tmp_path / "tests"
+    suite_dir = tests_dir / "suite"
+    solo_dir = tests_dir / "solo"
+    suite_dir.mkdir(parents=True)
+    solo_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: suite\n  mode: parallel\n  min_jobs: 2\n",
+        encoding="utf-8",
+    )
+    suite_test = suite_dir / "01.tql"
+    suite_test_two = suite_dir / "02.tql"
+    solo_test = solo_dir / "01.tql"
+    suite_test.write_text("version\nwrite_json\n", encoding="utf-8")
+    suite_test_two.write_text("version\nwrite_json\n", encoding="utf-8")
+    solo_test.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    reservation_waiting = threading.Event()
+    release_reservation = threading.Event()
+    solo_started = threading.Event()
+    original_acquire_suite_slots = run.Worker._acquire_suite_test_slots
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            if test == solo_test:
+                solo_started.set()
+            time.sleep(0.02)
+            return True
+
+    def delayed_acquire(self: run.Worker, max_slots: int, *, min_slots: int = 1) -> int:
+        reservation_waiting.set()
+        release_reservation.wait(timeout=1.0)
+        return original_acquire_suite_slots(self, max_slots, min_slots=min_slots)
+
+    runner = RecordingRunner()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
+    monkeypatch.setattr(run.Worker, "_acquire_suite_test_slots", delayed_acquire)
+
+    try:
+        queue = run._build_queue_from_paths([suite_test, suite_test_two, solo_test], coverage=False)
+        queue.sort(key=run._queue_sort_key, reverse=True)
+        assert len(queue) == 2
+        assert isinstance(queue[0], run.SuiteQueueItem) or isinstance(queue[1], run.SuiteQueueItem)
+
+        jobs = 2
+        test_slots = threading.BoundedSemaphore(jobs)
+        slot_lock = threading.Lock()
+        queue_lock = threading.Lock()
+        suite_queue_state = run.SuiteQueueState(pending_items=run._count_suite_queue_items(queue))
+        workers = [
+            run.Worker(
+                queue,
+                update=False,
+                coverage=False,
+                jobs=jobs,
+                test_slots=test_slots,
+                slot_lock=slot_lock,
+                queue_lock=queue_lock,
+                suite_queue_state=suite_queue_state,
+            )
+            for _ in range(jobs)
+        ]
+        for worker in workers:
+            worker.start()
+
+        assert reservation_waiting.wait(timeout=1.0)
+        time.sleep(0.05)
+        assert not solo_started.is_set()
+
+        release_reservation.set()
+        summary = run.Summary()
+        for worker in workers:
+            summary += worker.join()
+        assert summary.total == 3
+        assert summary.failed == 0
+    finally:
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
+
+
+def test_workers_do_not_start_sequential_suite_while_parallel_priority_is_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    tests_dir = tmp_path / "tests"
+    parallel_dir = tests_dir / "parallel"
+    sequential_dir = tests_dir / "sequential"
+    parallel_dir.mkdir(parents=True)
+    sequential_dir.mkdir(parents=True)
+    (parallel_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n  min_jobs: 2\n",
+        encoding="utf-8",
+    )
+    (sequential_dir / "test.yaml").write_text(
+        "suite:\n  name: sequential\n  mode: sequential\n",
+        encoding="utf-8",
+    )
+    parallel_tests = [parallel_dir / "01.tql", parallel_dir / "02.tql"]
+    sequential_test = sequential_dir / "01.tql"
+    for path in [*parallel_tests, sequential_test]:
+        path.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    reservation_waiting = threading.Event()
+    release_reservation = threading.Event()
+    sequential_started = threading.Event()
+    original_acquire_suite_slots = run.Worker._acquire_suite_test_slots
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            if test.parent == sequential_dir:
+                sequential_started.set()
+            time.sleep(0.02)
+            return True
+
+    def delayed_acquire(self: run.Worker, max_slots: int, *, min_slots: int = 1) -> int:
+        reservation_waiting.set()
+        release_reservation.wait(timeout=1.0)
+        return original_acquire_suite_slots(self, max_slots, min_slots=min_slots)
+
+    runner = RecordingRunner()
+    monkeypatch.setattr(run.Worker, "_acquire_suite_test_slots", delayed_acquire)
+
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="parallel",
+                directory=parallel_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+                min_jobs=2,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=path) for path in parallel_tests],
+            fixtures=tuple(),
+        ),
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="sequential",
+                directory=sequential_dir,
+                mode=run.SuiteExecutionMode.SEQUENTIAL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=sequential_test)],
+            fixtures=tuple(),
+        ),
+    ]
+
+    try:
+        jobs = 2
+        test_slots = threading.BoundedSemaphore(jobs)
+        slot_lock = threading.Lock()
+        queue_lock = threading.Lock()
+        suite_queue_state = run.SuiteQueueState(pending_items=run._count_suite_queue_items(queue))
+        workers = [
+            run.Worker(
+                queue,
+                update=False,
+                coverage=False,
+                jobs=jobs,
+                test_slots=test_slots,
+                slot_lock=slot_lock,
+                queue_lock=queue_lock,
+                suite_queue_state=suite_queue_state,
+            )
+            for _ in range(jobs)
+        ]
+        for worker in workers:
+            worker.start()
+
+        assert reservation_waiting.wait(timeout=1.0)
+        time.sleep(0.05)
+        assert not sequential_started.is_set()
+
+        release_reservation.set()
+        summary = run.Summary()
+        for worker in workers:
+            summary += worker.join()
+        assert summary.total == 3
+        assert summary.failed == 0
     finally:
         run._clear_directory_config_cache()
         run._INTERRUPT_EVENT.clear()
@@ -1644,6 +2354,318 @@ def test_count_queue_tests_includes_suite_members(tmp_path: Path) -> None:
     ]
 
     assert run._count_queue_tests(queue) == 4
+
+
+def test_count_suite_queue_items_counts_only_parallel_suites(tmp_path: Path) -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = StubRunner()
+    parallel_dir = tmp_path / "parallel"
+    sequential_dir = tmp_path / "sequential"
+    parallel_dir.mkdir()
+    sequential_dir.mkdir()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="parallel",
+                directory=parallel_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=parallel_dir / "01.tql")],
+            fixtures=tuple(),
+        ),
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="sequential",
+                directory=sequential_dir,
+                mode=run.SuiteExecutionMode.SEQUENTIAL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=sequential_dir / "01.tql")],
+            fixtures=tuple(),
+        ),
+    ]
+
+    assert run._count_suite_queue_items(queue) == 1
+
+
+def test_validate_parallel_suite_min_jobs_raises_when_underprovisioned(tmp_path: Path) -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = StubRunner()
+    suite_dir = tmp_path / "suite"
+    suite_dir.mkdir()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="parallel-pubsub",
+                directory=suite_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+                min_jobs=3,
+            ),
+            tests=[
+                run.TestQueueItem(runner=runner, path=suite_dir / "01.tql"),
+                run.TestQueueItem(runner=runner, path=suite_dir / "02.tql"),
+            ],
+            fixtures=tuple(),
+        )
+    ]
+
+    with pytest.raises(run.HarnessError, match="requires at least --jobs=3"):
+        run._validate_parallel_suite_min_jobs(queue, jobs=2)
+
+
+def test_warn_parallel_suite_oversubscription_emits_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = StubRunner()
+    suite_dir = tmp_path / "suite"
+    suite_dir.mkdir()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="parallel-pubsub",
+                directory=suite_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+            ),
+            tests=[
+                run.TestQueueItem(runner=runner, path=suite_dir / "01.tql"),
+                run.TestQueueItem(runner=runner, path=suite_dir / "02.tql"),
+                run.TestQueueItem(runner=runner, path=suite_dir / "03.tql"),
+            ],
+            fixtures=tuple(),
+        )
+    ]
+
+    run._warn_parallel_suite_oversubscription(queue, jobs=2)
+    output = capsys.readouterr().out
+    assert "warning: parallel suite 'parallel-pubsub'" in output
+    assert "--jobs=2" in output
+
+
+def test_pop_next_queue_item_prefers_suites() -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = StubRunner()
+    suite_dir = Path("/tmp/suite")
+    queue: list[run.RunnerQueueItem] = [
+        run.TestQueueItem(runner=runner, path=Path("/tmp/a.tql")),
+        run.TestQueueItem(runner=runner, path=Path("/tmp/b.tql")),
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="parallel-pubsub",
+                directory=suite_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=Path("/tmp/suite/01.tql"))],
+            fixtures=tuple(),
+        ),
+    ]
+    queue_lock = threading.Lock()
+
+    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock)
+
+    assert isinstance(popped, run.SuiteQueueItem)
+    assert len(queue) == 2
+
+
+def test_pop_next_queue_item_prefers_parallel_suite_when_pending() -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = StubRunner()
+    parallel_dir = Path("/tmp/parallel")
+    sequential_dir = Path("/tmp/sequential")
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="parallel",
+                directory=parallel_dir,
+                mode=run.SuiteExecutionMode.PARALLEL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=parallel_dir / "01.tql")],
+            fixtures=tuple(),
+        ),
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(
+                name="sequential",
+                directory=sequential_dir,
+                mode=run.SuiteExecutionMode.SEQUENTIAL,
+            ),
+            tests=[run.TestQueueItem(runner=runner, path=sequential_dir / "01.tql")],
+            fixtures=tuple(),
+        ),
+        run.TestQueueItem(runner=runner, path=Path("/tmp/solo.tql")),
+    ]
+    queue_lock = threading.Lock()
+    suite_state = run.SuiteQueueState(pending_items=1)
+
+    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
+
+    assert isinstance(popped, run.SuiteQueueItem)
+    assert popped.suite.mode is run.SuiteExecutionMode.PARALLEL
+
+
+def test_pop_next_queue_item_skips_scan_when_no_suites_pending() -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    class TrackingQueue(list):
+        def __init__(self, items: list[run.RunnerQueueItem]) -> None:
+            super().__init__(items)
+            self.index_reads = 0
+
+        def __getitem__(self, index):
+            self.index_reads += 1
+            return super().__getitem__(index)
+
+    runner = StubRunner()
+    queue = TrackingQueue(
+        [
+            run.TestQueueItem(runner=runner, path=Path("/tmp/a.tql")),
+            run.TestQueueItem(runner=runner, path=Path("/tmp/b.tql")),
+            run.TestQueueItem(runner=runner, path=Path("/tmp/c.tql")),
+        ]
+    )
+    queue_lock = threading.Lock()
+    suite_state = run.SuiteQueueState(pending_items=0)
+
+    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
+
+    assert isinstance(popped, run.TestQueueItem)
+    assert popped.path == Path("/tmp/c.tql")
+    assert queue.index_reads == 0
+
+    queue.index_reads = 0
+    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
+    assert isinstance(popped, run.TestQueueItem)
+    assert popped.path == Path("/tmp/b.tql")
+    assert queue.index_reads == 0
+
+
+def test_pop_next_queue_item_waits_for_pending_suite_priority() -> None:
+    class StubRunner(run.Runner):
+        def __init__(self) -> None:
+            super().__init__(name="stub")
+
+        def collect_tests(  # noqa: ARG002
+            self, path: Path
+        ) -> set[tuple[run.Runner, Path]]:
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    runner = StubRunner()
+    queue: list[run.RunnerQueueItem] = [
+        run.TestQueueItem(runner=runner, path=Path("/tmp/a.tql")),
+        run.TestQueueItem(runner=runner, path=Path("/tmp/b.tql")),
+        run.TestQueueItem(runner=runner, path=Path("/tmp/c.tql")),
+    ]
+    queue_lock = threading.Lock()
+    suite_state = run.SuiteQueueState(pending_items=1)
+    popped: list[run.RunnerQueueItem | None] = []
+
+    def pop_item() -> None:
+        popped.append(
+            run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
+        )
+
+    thread = threading.Thread(target=pop_item)
+    thread.start()
+    time.sleep(0.05)
+    assert thread.is_alive()
+    assert not popped
+
+    with queue_lock:
+        suite_state.pending_items = 0
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+
+    assert len(popped) == 1
+    popped_item = popped[0]
+    assert isinstance(popped_item, run.TestQueueItem)
+    assert popped_item.path == Path("/tmp/c.tql")
 
 
 def test_cli_rejects_partial_suite_selection(
@@ -3694,6 +4716,97 @@ def test_run_cli_reports_no_matching_run_skipped_filters(
         assert result.summary.skipped == 3
         output = capsys.readouterr().out
         assert "no skipped tests matched run-skipped filters" in output
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_run_cli_warns_for_parallel_suite_larger_than_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    info = _make_project(tmp_path)
+    suite_dir = info["root"] / "tests" / "parallel"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n",
+        encoding="utf-8",
+    )
+    for index in range(1, 4):
+        (suite_dir / f"{index:02d}.tql").write_text("version\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    class FakeWorker:
+        def __init__(
+            self, queue: list[run.RunnerQueueItem], *args: object, **kwargs: object
+        ) -> None:
+            del args, kwargs
+            self.run_skipped_match_count = 0
+            self._summary = run.Summary(total=run._count_queue_tests(queue))
+
+        def start(self) -> None:
+            return None
+
+        def join(self) -> run.Summary:
+            return self._summary
+
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
+    monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
+    monkeypatch.setattr(run, "Worker", FakeWorker)
+
+    try:
+        kwargs = _run_cli_kwargs(info["root"], tests=[suite_dir])
+        kwargs["jobs"] = 1
+        result = run.run_cli(**kwargs)
+        assert result.exit_code == 0
+        output = capsys.readouterr().out
+        assert "warning: parallel suite 'parallel'" in output
+        assert "--jobs=1" in output
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+
+def test_run_cli_fails_fast_when_parallel_suite_min_jobs_is_unmet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = _make_project(tmp_path)
+    suite_dir = info["root"] / "tests" / "parallel"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n  min_jobs: 2\n",
+        encoding="utf-8",
+    )
+    (suite_dir / "01.tql").write_text("version\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    class UnexpectedWorker:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("worker construction should not be reached")
+
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
+    monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
+    monkeypatch.setattr(run, "Worker", UnexpectedWorker)
+
+    try:
+        kwargs = _run_cli_kwargs(info["root"], tests=[suite_dir])
+        kwargs["jobs"] = 1
+        with pytest.raises(run.HarnessError, match="parallel suite job requirements not met"):
+            run.run_cli(**kwargs)
     finally:
         run._clear_directory_config_cache()
         run.apply_settings(original_settings)

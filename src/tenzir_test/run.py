@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import typing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
@@ -376,6 +377,7 @@ class SuiteConfig:
 
     name: str
     mode: SuiteExecutionMode = SuiteExecutionMode.SEQUENTIAL
+    min_jobs: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -389,6 +391,7 @@ class SuiteInfo:
     name: str
     directory: Path
     mode: SuiteExecutionMode = SuiteExecutionMode.SEQUENTIAL
+    min_jobs: int | None = None
 
 
 @dataclasses.dataclass(slots=True)
@@ -425,6 +428,11 @@ class SuiteCandidate:
 
 
 RunnerQueueItem = TestQueueItem | SuiteQueueItem
+
+
+@dataclasses.dataclass(slots=True)
+class SuiteQueueState:
+    pending_items: int = 0
 
 
 @dataclasses.dataclass(slots=True)
@@ -1650,7 +1658,15 @@ def _suite_config_from_value(value: object) -> SuiteConfig | None:
                 return None
         else:
             return None
-        return SuiteConfig(name=raw_name.strip(), mode=mode)
+        raw_min_jobs = value.get("min_jobs")
+        min_jobs: int | None = None
+        if raw_min_jobs is not None:
+            if not isinstance(raw_min_jobs, int) or isinstance(raw_min_jobs, bool):
+                return None
+            if raw_min_jobs <= 0:
+                return None
+            min_jobs = raw_min_jobs
+        return SuiteConfig(name=raw_name.strip(), mode=mode, min_jobs=min_jobs)
     return None
 
 
@@ -1673,12 +1689,12 @@ def _normalize_suite_value(
         return SuiteConfig(name=name)
 
     if isinstance(value, Mapping):
-        unknown_keys = {str(key) for key in value.keys()} - {"name", "mode"}
+        unknown_keys = {str(key) for key in value.keys()} - {"name", "mode", "min_jobs"}
         if unknown_keys:
             _raise_config_error(
                 location,
                 f"'suite' mapping contains unknown keys: {', '.join(sorted(unknown_keys))}; "
-                "allowed keys are: name, mode",
+                "allowed keys are: min_jobs, mode, name",
                 line_number,
             )
         raw_name = value.get("name")
@@ -1708,7 +1724,29 @@ def _normalize_suite_value(
                 f"Invalid value for 'suite.mode', expected string, got '{type(raw_mode).__name__}'",
                 line_number,
             )
-        return SuiteConfig(name=raw_name.strip(), mode=mode)
+        raw_min_jobs = value.get("min_jobs")
+        min_jobs: int | None = None
+        if raw_min_jobs is not None:
+            if not isinstance(raw_min_jobs, int) or isinstance(raw_min_jobs, bool):
+                _raise_config_error(
+                    location,
+                    (
+                        "Invalid value for 'suite.min_jobs', expected positive integer, "
+                        f"got '{type(raw_min_jobs).__name__}'"
+                    ),
+                    line_number,
+                )
+            if raw_min_jobs <= 0:
+                _raise_config_error(
+                    location,
+                    (
+                        "Invalid value for 'suite.min_jobs', expected positive integer, "
+                        f"got '{raw_min_jobs}'"
+                    ),
+                    line_number,
+                )
+            min_jobs = raw_min_jobs
+        return SuiteConfig(name=raw_name.strip(), mode=mode, min_jobs=min_jobs)
 
     _raise_config_error(
         location,
@@ -2399,7 +2437,12 @@ def _resolve_suite_for_test(test: Path) -> SuiteInfo | None:
     except (OSError, ValueError):
         # Only treat as a suite when the test lives under the suite directory.
         return None
-    return SuiteInfo(name=suite_value.name, directory=resolved_dir, mode=suite_value.mode)
+    return SuiteInfo(
+        name=suite_value.name,
+        directory=resolved_dir,
+        mode=suite_value.mode,
+        min_jobs=suite_value.min_jobs,
+    )
 
 
 def _clear_directory_config_cache() -> None:
@@ -3229,6 +3272,80 @@ def _count_queue_tests(queue: Sequence[RunnerQueueItem]) -> int:
         else:
             total += 1
     return total
+
+
+def _count_suite_queue_items(queue: Sequence[RunnerQueueItem]) -> int:
+    return sum(
+        1
+        for item in queue
+        if isinstance(item, SuiteQueueItem) and item.suite.mode is SuiteExecutionMode.PARALLEL
+    )
+
+
+def _iter_parallel_suite_queue_items(queue: Sequence[RunnerQueueItem]) -> Iterator[SuiteQueueItem]:
+    for item in queue:
+        if isinstance(item, SuiteQueueItem) and item.suite.mode is SuiteExecutionMode.PARALLEL:
+            yield item
+
+
+def _validate_parallel_suite_min_jobs(queue: Sequence[RunnerQueueItem], *, jobs: int) -> None:
+    violations: list[str] = []
+    for suite_item in _iter_parallel_suite_queue_items(queue):
+        min_jobs = suite_item.suite.min_jobs
+        if min_jobs is None or jobs >= min_jobs:
+            continue
+        suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
+        violations.append(
+            (
+                f"'{suite_item.suite.name}' ({suite_dir}) requires at least --jobs={min_jobs} "
+                f"for correctness, got --jobs={jobs}"
+            )
+        )
+    if violations:
+        detail = "; ".join(violations)
+        raise HarnessError(f"parallel suite job requirements not met: {detail}")
+
+
+def _warn_parallel_suite_oversubscription(queue: Sequence[RunnerQueueItem], *, jobs: int) -> None:
+    for suite_item in _iter_parallel_suite_queue_items(queue):
+        suite_size = len(suite_item.tests)
+        if suite_size <= jobs:
+            continue
+        suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
+        print(
+            (
+                f"{INFO} warning: parallel suite '{suite_item.suite.name}' in {suite_dir} has "
+                f"{suite_size} tests but --jobs={jobs}; not all members can run at once"
+            )
+        )
+
+
+def _pop_next_queue_item(
+    queue: list[RunnerQueueItem],
+    *,
+    queue_lock: threading.Lock,
+    suite_state: SuiteQueueState | None = None,
+) -> RunnerQueueItem | None:
+    while True:
+        with queue_lock:
+            if not queue:
+                return None
+            if suite_state is None or suite_state.pending_items <= 0:
+                return queue.pop()
+            if (
+                isinstance(queue[-1], SuiteQueueItem)
+                and queue[-1].suite.mode is SuiteExecutionMode.PARALLEL
+            ):
+                return queue.pop()
+            for index in range(len(queue) - 1, -1, -1):
+                item = queue[index]
+                if not isinstance(item, SuiteQueueItem):
+                    continue
+                if item.suite.mode is SuiteExecutionMode.PARALLEL:
+                    return queue.pop(index)
+        if interrupt_requested():
+            return None
+        time.sleep(0.01)
 
 
 def _print_aggregate_totals(project_count: int, summary: Summary) -> None:
@@ -4221,6 +4338,13 @@ def _log_suite_event(
 
 
 class Worker:
+    # Default locks are shared so multiple workers created with shared resources
+    # remain synchronized even when callers omit explicit lock arguments.
+    _DEFAULT_SLOT_LOCK = threading.Lock()
+    _DEFAULT_QUEUE_LOCK = threading.Lock()
+    _DEFAULT_SUITE_STATE_LOCK = threading.Lock()
+    _DEFAULT_SUITE_QUEUE_STATES: dict[int, tuple[SuiteQueueState, int]] = {}
+
     def __init__(
         self,
         queue: list[RunnerQueueItem],
@@ -4232,6 +4356,9 @@ class Worker:
         run_skipped_selector: RunSkippedSelector | None = None,
         jobs: int | None = None,
         test_slots: threading.Semaphore | None = None,
+        slot_lock: threading.Lock | None = None,
+        queue_lock: threading.Lock | None = None,
+        suite_queue_state: SuiteQueueState | None = None,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -4243,9 +4370,21 @@ class Worker:
         self._run_skipped_selector = run_skipped_selector or RunSkippedSelector()
         self._jobs = max(1, jobs if jobs is not None else get_default_jobs())
         self._test_slots = test_slots or threading.BoundedSemaphore(self._jobs)
+        self._slot_lock = slot_lock or self._DEFAULT_SLOT_LOCK
+        self._queue_lock = queue_lock or self._DEFAULT_QUEUE_LOCK
+        self._default_suite_state_queue_id: int | None = None
+        if suite_queue_state is None:
+            self._suite_queue_state = self._acquire_default_suite_queue_state(queue)
+        else:
+            self._suite_queue_state = suite_queue_state
         self._run_skipped_match_count = 0
         self._run_skipped_match_count_lock = threading.Lock()
         self._thread = threading.Thread(target=self._work)
+
+    def __del__(self) -> None:
+        # Ensure default suite-queue state references are released even when
+        # a Worker is constructed but never started.
+        self._release_default_suite_queue_state()
 
     def start(self) -> None:
         self._thread.start()
@@ -4267,6 +4406,80 @@ class Worker:
             return
         with self._run_skipped_match_count_lock:
             self._run_skipped_match_count += amount
+
+    def _acquire_default_suite_queue_state(self, queue: list[RunnerQueueItem]) -> SuiteQueueState:
+        queue_id = id(queue)
+        with self._DEFAULT_SUITE_STATE_LOCK:
+            entry = self._DEFAULT_SUITE_QUEUE_STATES.get(queue_id)
+            if entry is None:
+                state = SuiteQueueState(pending_items=_count_suite_queue_items(queue))
+                references = 1
+            else:
+                state, references = entry
+                references += 1
+            self._DEFAULT_SUITE_QUEUE_STATES[queue_id] = (state, references)
+        self._default_suite_state_queue_id = queue_id
+        return state
+
+    def _release_default_suite_queue_state(self) -> None:
+        queue_id = getattr(self, "_default_suite_state_queue_id", None)
+        if queue_id is None:
+            return
+        with self._DEFAULT_SUITE_STATE_LOCK:
+            entry = self._DEFAULT_SUITE_QUEUE_STATES.get(queue_id)
+            if entry is None:
+                self._default_suite_state_queue_id = None
+                return
+            state, references = entry
+            if references <= 1:
+                self._DEFAULT_SUITE_QUEUE_STATES.pop(queue_id, None)
+            else:
+                self._DEFAULT_SUITE_QUEUE_STATES[queue_id] = (state, references - 1)
+        self._default_suite_state_queue_id = None
+
+    def _acquire_test_slots(self, slots: int) -> bool:
+        if slots <= 0:
+            return True
+        acquired = 0
+        with self._slot_lock:
+            while acquired < slots:
+                if self._test_slots.acquire(timeout=0.1):
+                    acquired += 1
+                    continue
+                if interrupt_requested():
+                    self._release_test_slots(acquired)
+                    return False
+        return True
+
+    def _release_test_slots(self, slots: int) -> None:
+        if slots <= 0:
+            return
+        for _ in range(slots):
+            self._test_slots.release()
+
+    def _acquire_suite_test_slots(self, max_slots: int, *, min_slots: int = 1) -> int:
+        """Reserve up to `max_slots` slots for a parallel suite execution."""
+
+        if max_slots <= 0:
+            return 0
+        required = max(1, min(min_slots, max_slots))
+        while True:
+            acquired = 0
+            with self._slot_lock:
+                while acquired == 0:
+                    if self._test_slots.acquire(timeout=0.1):
+                        acquired = 1
+                        break
+                    if interrupt_requested():
+                        return 0
+                while acquired < max_slots and self._test_slots.acquire(blocking=False):
+                    acquired += 1
+            if acquired >= required:
+                return acquired
+            self._release_test_slots(acquired)
+            if interrupt_requested():
+                return 0
+            time.sleep(0.01)
 
     def _record_static_skip(
         self,
@@ -4387,9 +4600,12 @@ class Worker:
             while True:
                 if interrupt_requested():
                     break
-                try:
-                    queue_item = self._queue.pop()
-                except IndexError:
+                queue_item = _pop_next_queue_item(
+                    self._queue,
+                    queue_lock=self._queue_lock,
+                    suite_state=self._suite_queue_state,
+                )
+                if queue_item is None:
                     break
 
                 if isinstance(queue_item, SuiteQueueItem):
@@ -4404,6 +4620,8 @@ class Worker:
             if self._result is None:
                 self._result = Summary()
             return self._result
+        finally:
+            self._release_default_suite_queue_state()
 
     def _run_test_item_with_slot(
         self,
@@ -4414,9 +4632,8 @@ class Worker:
         suite_fixtures: tuple[fixtures_impl.FixtureSpec, ...] | None = None,
         suite_assertion_lock: threading.Lock | None = None,
     ) -> bool:
-        while not self._test_slots.acquire(timeout=0.1):
-            if interrupt_requested():
-                return True
+        if not self._acquire_test_slots(1):
+            return True
         try:
             return self._run_test_item(
                 test_item,
@@ -4426,7 +4643,7 @@ class Worker:
                 suite_assertion_lock=suite_assertion_lock,
             )
         finally:
-            self._test_slots.release()
+            self._release_test_slots(1)
 
     def _run_suite_sequential(
         self,
@@ -4459,16 +4676,27 @@ class Worker:
         suite_progress: tuple[str, int, int],
         suite_fixtures: tuple[fixtures_impl.FixtureSpec, ...],
         suite_assertion_lock: threading.Lock | None,
+        acquire_slot: bool = True,
     ) -> tuple[Summary, bool]:
         local_summary = Summary()
-        interrupted = run_context.run(
-            self._run_test_item_with_slot,
-            test_item,
-            local_summary,
-            suite_progress=suite_progress,
-            suite_fixtures=suite_fixtures,
-            suite_assertion_lock=suite_assertion_lock,
-        )
+        if acquire_slot:
+            interrupted = run_context.run(
+                self._run_test_item_with_slot,
+                test_item,
+                local_summary,
+                suite_progress=suite_progress,
+                suite_fixtures=suite_fixtures,
+                suite_assertion_lock=suite_assertion_lock,
+            )
+        else:
+            interrupted = run_context.run(
+                self._run_test_item,
+                test_item,
+                local_summary,
+                suite_progress=suite_progress,
+                suite_fixtures=suite_fixtures,
+                suite_assertion_lock=suite_assertion_lock,
+            )
         return local_summary, interrupted
 
     def _run_suite_parallel(
@@ -4477,185 +4705,239 @@ class Worker:
         suite_item: SuiteQueueItem,
         tests: Sequence[TestQueueItem],
         summary: Summary,
+        release_suite_priority: typing.Callable[[], None],
     ) -> bool:
         total = len(tests)
-        max_workers = min(max(1, total), self._jobs)
+        requested_workers = min(max(1, total), self._jobs)
+        min_jobs = suite_item.suite.min_jobs
+        required_workers = min_jobs if min_jobs is not None else 1
+        reserved_workers = self._acquire_suite_test_slots(
+            requested_workers,
+            min_slots=required_workers,
+        )
+        release_suite_priority()
+        if reserved_workers <= 0:
+            return True
+        if min_jobs is not None and reserved_workers < min_jobs:
+            self._release_test_slots(reserved_workers)
+            suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
+            raise HarnessError(
+                (
+                    f"parallel suite '{suite_item.suite.name}' in {suite_dir} "
+                    f"requires at least {min_jobs} concurrent workers for correctness, "
+                    f"but only {reserved_workers} are currently available"
+                )
+            )
         suite_assertion_lock = threading.Lock()
         suite_summary = Summary()
         interrupted = False
         futures: list[concurrent.futures.Future[tuple[Summary, bool]]] = []
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="suite",
-        ) as executor:
-            for index, test_item in enumerate(tests, start=1):
+        try:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=reserved_workers,
+                thread_name_prefix="suite",
+            ) as executor:
+                for index, test_item in enumerate(tests, start=1):
+                    if interrupt_requested():
+                        interrupted = True
+                        break
+                    run_context = contextvars.copy_context()
+                    futures.append(
+                        executor.submit(
+                            self._run_suite_member,
+                            run_context=run_context,
+                            test_item=test_item,
+                            suite_progress=(suite_item.suite.name, index, total),
+                            suite_fixtures=suite_item.fixtures,
+                            suite_assertion_lock=suite_assertion_lock,
+                            acquire_slot=False,
+                        )
+                    )
                 if interrupt_requested():
                     interrupted = True
-                    break
-                run_context = contextvars.copy_context()
-                futures.append(
-                    executor.submit(
-                        self._run_suite_member,
-                        run_context=run_context,
-                        test_item=test_item,
-                        suite_progress=(suite_item.suite.name, index, total),
-                        suite_fixtures=suite_item.fixtures,
-                        suite_assertion_lock=suite_assertion_lock,
-                    )
-                )
-            if interrupt_requested():
-                interrupted = True
-                for pending in futures:
-                    if pending.done():
-                        continue
-                    pending.cancel()
-            for future in concurrent.futures.as_completed(futures):
-                if future.cancelled():
-                    continue
-                member_summary, member_interrupted = future.result()
-                _merge_summary_inplace(suite_summary, member_summary)
-                if member_interrupted:
-                    interrupted = True
-                    _request_interrupt()
                     for pending in futures:
                         if pending.done():
                             continue
                         pending.cancel()
+                for future in concurrent.futures.as_completed(futures):
+                    if future.cancelled():
+                        continue
+                    member_summary, member_interrupted = future.result()
+                    _merge_summary_inplace(suite_summary, member_summary)
+                    if member_interrupted:
+                        interrupted = True
+                        _request_interrupt()
+                        for pending in futures:
+                            if pending.done():
+                                continue
+                            pending.cancel()
+        finally:
+            self._release_test_slots(reserved_workers)
         _merge_summary_inplace(summary, suite_summary)
         return interrupted
 
     def _run_suite(self, suite_item: SuiteQueueItem, summary: Summary) -> None:
-        tests = suite_item.tests
-        total = len(tests)
-        if total == 0:
-            return
-        primary_test = tests[0].path
+        suite_priority_released = False
+
+        def release_suite_priority() -> None:
+            nonlocal suite_priority_released
+            if suite_priority_released:
+                return
+            with self._queue_lock:
+                if self._suite_queue_state.pending_items > 0:
+                    self._suite_queue_state.pending_items -= 1
+            suite_priority_released = True
+
         try:
-            primary_config = parse_test_config(primary_test, coverage=self._coverage)
-        except ValueError as exc:
-            raise RuntimeError(f"failed to parse suite config for {primary_test}: {exc}") from exc
-        # Avoid activating suite fixtures when every suite member is statically skipped.
-        static_skip_plan = self._suite_static_skip_plan(suite_item)
-        if static_skip_plan is not None:
-            for test_item, reason in static_skip_plan:
-                self._record_static_skip(
-                    test_item=test_item,
-                    fixtures=suite_item.fixtures,
-                    reason=reason,
+            tests = suite_item.tests
+            total = len(tests)
+            if total == 0:
+                return
+            if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
+                min_jobs = suite_item.suite.min_jobs
+                if min_jobs is not None and self._jobs < min_jobs:
+                    suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
+                    raise HarnessError(
+                        (
+                            f"parallel suite '{suite_item.suite.name}' in {suite_dir} "
+                            f"requires at least --jobs={min_jobs} for correctness, got --jobs={self._jobs}"
+                        )
+                    )
+            primary_test = tests[0].path
+            try:
+                primary_config = parse_test_config(primary_test, coverage=self._coverage)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"failed to parse suite config for {primary_test}: {exc}"
+                ) from exc
+            # Avoid activating suite fixtures when every suite member is statically skipped.
+            static_skip_plan = self._suite_static_skip_plan(suite_item)
+            if static_skip_plan is not None:
+                for test_item, reason in static_skip_plan:
+                    self._record_static_skip(
+                        test_item=test_item,
+                        fixtures=suite_item.fixtures,
+                        reason=reason,
+                        summary=summary,
+                    )
+                return
+            inputs_override = typing.cast(str | None, primary_config.get("inputs"))
+            env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
+            config_package_dirs = cast(tuple[str, ...], primary_config.get("package_dirs", tuple()))
+            additional_package_dirs: list[str] = []
+            for entry in config_package_dirs:
+                additional_package_dirs.extend(_expand_package_dirs(Path(entry)))
+            package_root = packages.find_package_root(primary_test)
+            package_dir_candidates: list[str] = []
+            if package_root is not None:
+                env["TENZIR_PACKAGE_ROOT"] = str(package_root)
+                if inputs_override is None:
+                    # Try nearest inputs/ directory, fall back to package-level
+                    nearest = _find_nearest_inputs_dir(primary_test, package_root)
+                    if nearest is not None:
+                        env["TENZIR_INPUTS"] = str(nearest.resolve())
+                    else:
+                        env["TENZIR_INPUTS"] = str((package_root / "tests" / "inputs"))
+                package_dir_candidates.append(str(package_root))
+            package_dir_candidates.extend(additional_package_dirs)
+            for cli_path in _get_cli_packages():
+                package_dir_candidates.extend(_expand_package_dirs(cli_path))
+            if package_dir_candidates:
+                merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
+                env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
+                config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
+            skip_cfg = cast(SkipConfig | None, primary_config.get("skip"))
+            requires_cfg = cast(RequiresConfig | None, primary_config.get("requires"))
+            if isinstance(requires_cfg, RequiresConfig) and requires_cfg.has_requirements:
+                missing_requirements = self._evaluate_suite_requirements(
+                    suite_item=suite_item,
+                    tests=tests,
+                    requires=requires_cfg,
+                    env=env,
+                    config_args=config_args,
+                )
+                if missing_requirements is not None:
+                    configured_reason = (
+                        skip_cfg.reason if isinstance(skip_cfg, SkipConfig) else None
+                    )
+                    reason = _compose_skip_reason(
+                        configured_reason,
+                        missing_requirements,
+                        fallback=missing_requirements,
+                    )
+                    displayed_reason = f"capability unavailable: {reason}"
+                    allows_capability_skip = isinstance(
+                        skip_cfg, SkipConfig
+                    ) and skip_cfg.allows_condition(SKIP_ON_CAPABILITY_UNAVAILABLE)
+                    if allows_capability_skip:
+                        if not self._skip_suite_with_reason(
+                            suite_item=suite_item,
+                            tests=tests,
+                            displayed_reason=displayed_reason,
+                            summary=summary,
+                        ):
+                            raise HarnessError(displayed_reason)
+                        return
+                    raise HarnessError(displayed_reason)
+            suite_fixture_options = _build_fixture_options(suite_item.fixtures)
+            context_token = fixtures_impl.push_context(
+                fixtures_impl.FixtureContext(
+                    test=primary_test,
+                    config=typing.cast(dict[str, Any], primary_config),
+                    coverage=self._coverage,
+                    env=env,
+                    config_args=tuple(config_args),
+                    tenzir_binary=TENZIR_BINARY,
+                    tenzir_node_binary=TENZIR_NODE_BINARY,
+                    fixture_options=suite_fixture_options,
+                )
+            )
+            _log_suite_event(suite_item.suite, event="setup", total=total)
+            interrupted = False
+            try:
+                with fixtures_impl.suite_scope(suite_item.fixtures):
+                    if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
+                        interrupted = self._run_suite_parallel(
+                            suite_item=suite_item,
+                            tests=tests,
+                            summary=summary,
+                            release_suite_priority=release_suite_priority,
+                        )
+                    else:
+                        release_suite_priority()
+                        interrupted = self._run_suite_sequential(
+                            suite_item=suite_item,
+                            tests=tests,
+                            summary=summary,
+                        )
+            except fixtures_impl.FixtureUnavailable as exc:
+                if not (
+                    isinstance(skip_cfg, SkipConfig)
+                    and skip_cfg.allows_condition(SKIP_ON_FIXTURE_UNAVAILABLE)
+                ):
+                    raise
+                reason = _compose_skip_reason(skip_cfg.reason, str(exc))
+                displayed_reason = f"fixture unavailable: {reason}"
+                if not self._skip_suite_with_reason(
+                    suite_item=suite_item,
+                    tests=tests,
+                    displayed_reason=displayed_reason,
                     summary=summary,
+                ):
+                    raise
+                _CLI_LOGGER.warning(
+                    "fixture unavailable for suite '%s': %s",
+                    suite_item.suite.name,
+                    reason,
                 )
-            return
-        inputs_override = typing.cast(str | None, primary_config.get("inputs"))
-        env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
-        config_package_dirs = cast(tuple[str, ...], primary_config.get("package_dirs", tuple()))
-        additional_package_dirs: list[str] = []
-        for entry in config_package_dirs:
-            additional_package_dirs.extend(_expand_package_dirs(Path(entry)))
-        package_root = packages.find_package_root(primary_test)
-        package_dir_candidates: list[str] = []
-        if package_root is not None:
-            env["TENZIR_PACKAGE_ROOT"] = str(package_root)
-            if inputs_override is None:
-                # Try nearest inputs/ directory, fall back to package-level
-                nearest = _find_nearest_inputs_dir(primary_test, package_root)
-                if nearest is not None:
-                    env["TENZIR_INPUTS"] = str(nearest.resolve())
-                else:
-                    env["TENZIR_INPUTS"] = str((package_root / "tests" / "inputs"))
-            package_dir_candidates.append(str(package_root))
-        package_dir_candidates.extend(additional_package_dirs)
-        for cli_path in _get_cli_packages():
-            package_dir_candidates.extend(_expand_package_dirs(cli_path))
-        if package_dir_candidates:
-            merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
-            env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
-            config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
-        skip_cfg = cast(SkipConfig | None, primary_config.get("skip"))
-        requires_cfg = cast(RequiresConfig | None, primary_config.get("requires"))
-        if isinstance(requires_cfg, RequiresConfig) and requires_cfg.has_requirements:
-            missing_requirements = self._evaluate_suite_requirements(
-                suite_item=suite_item,
-                tests=tests,
-                requires=requires_cfg,
-                env=env,
-                config_args=config_args,
-            )
-            if missing_requirements is not None:
-                configured_reason = skip_cfg.reason if isinstance(skip_cfg, SkipConfig) else None
-                reason = _compose_skip_reason(
-                    configured_reason,
-                    missing_requirements,
-                    fallback=missing_requirements,
-                )
-                displayed_reason = f"capability unavailable: {reason}"
-                allows_capability_skip = isinstance(
-                    skip_cfg, SkipConfig
-                ) and skip_cfg.allows_condition(SKIP_ON_CAPABILITY_UNAVAILABLE)
-                if allows_capability_skip:
-                    if not self._skip_suite_with_reason(
-                        suite_item=suite_item,
-                        tests=tests,
-                        displayed_reason=displayed_reason,
-                        summary=summary,
-                    ):
-                        raise HarnessError(displayed_reason)
-                    return
-                raise HarnessError(displayed_reason)
-        suite_fixture_options = _build_fixture_options(suite_item.fixtures)
-        context_token = fixtures_impl.push_context(
-            fixtures_impl.FixtureContext(
-                test=primary_test,
-                config=typing.cast(dict[str, Any], primary_config),
-                coverage=self._coverage,
-                env=env,
-                config_args=tuple(config_args),
-                tenzir_binary=TENZIR_BINARY,
-                tenzir_node_binary=TENZIR_NODE_BINARY,
-                fixture_options=suite_fixture_options,
-            )
-        )
-        _log_suite_event(suite_item.suite, event="setup", total=total)
-        interrupted = False
-        try:
-            with fixtures_impl.suite_scope(suite_item.fixtures):
-                if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
-                    interrupted = self._run_suite_parallel(
-                        suite_item=suite_item,
-                        tests=tests,
-                        summary=summary,
-                    )
-                else:
-                    interrupted = self._run_suite_sequential(
-                        suite_item=suite_item,
-                        tests=tests,
-                        summary=summary,
-                    )
-        except fixtures_impl.FixtureUnavailable as exc:
-            if not (
-                isinstance(skip_cfg, SkipConfig)
-                and skip_cfg.allows_condition(SKIP_ON_FIXTURE_UNAVAILABLE)
-            ):
-                raise
-            reason = _compose_skip_reason(skip_cfg.reason, str(exc))
-            displayed_reason = f"fixture unavailable: {reason}"
-            if not self._skip_suite_with_reason(
-                suite_item=suite_item,
-                tests=tests,
-                displayed_reason=displayed_reason,
-                summary=summary,
-            ):
-                raise
-            _CLI_LOGGER.warning(
-                "fixture unavailable for suite '%s': %s",
-                suite_item.suite.name,
-                reason,
-            )
+            finally:
+                _log_suite_event(suite_item.suite, event="teardown", total=total)
+                fixtures_impl.pop_context(context_token)
+                cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
+            if interrupted:
+                _request_interrupt()
         finally:
-            _log_suite_event(suite_item.suite, event="teardown", total=total)
-            fixtures_impl.pop_context(context_token)
-            cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
-        if interrupted:
-            _request_interrupt()
+            release_suite_priority()
 
     def _run_test_item(
         self,
@@ -5371,6 +5653,8 @@ def run_cli(
 
                 queue = _build_queue_from_paths(collected_paths, coverage=coverage)
                 queue.sort(key=_queue_sort_key, reverse=True)
+                _validate_parallel_suite_min_jobs(queue, jobs=jobs)
+                _warn_parallel_suite_oversubscription(queue, jobs=jobs)
                 project_queue_size = _count_queue_tests(queue)
                 project_summary = Summary()
                 job_count, enabled_flags, verb = _summarize_harness_configuration(
@@ -5437,6 +5721,9 @@ def run_cli(
                 printed_projects += 1
 
                 test_slots = threading.BoundedSemaphore(max(1, jobs))
+                slot_lock = threading.Lock()
+                queue_lock = threading.Lock()
+                suite_queue_state = SuiteQueueState(pending_items=_count_suite_queue_items(queue))
                 workers = [
                     Worker(
                         queue,
@@ -5447,6 +5734,9 @@ def run_cli(
                         run_skipped_selector=run_skipped_selector,
                         jobs=jobs,
                         test_slots=test_slots,
+                        slot_lock=slot_lock,
+                        queue_lock=queue_lock,
+                        suite_queue_state=suite_queue_state,
                     )
                     for _ in range(jobs)
                 ]
