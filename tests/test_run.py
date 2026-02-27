@@ -884,6 +884,16 @@ def test_worker_parallel_suites_honor_shared_jobs_budget(
         run.apply_settings(original_settings)
 
 
+def test_worker_defaults_share_sync_locks_for_shared_resources() -> None:
+    queue: list[run.RunnerQueueItem] = []
+    test_slots = threading.BoundedSemaphore(2)
+    first = run.Worker(queue, update=False, coverage=False, jobs=2, test_slots=test_slots)
+    second = run.Worker(queue, update=False, coverage=False, jobs=2, test_slots=test_slots)
+
+    assert first._queue_lock is second._queue_lock
+    assert first._slot_lock is second._slot_lock
+
+
 def test_workers_prioritize_parallel_suites_before_standalone_tests(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,

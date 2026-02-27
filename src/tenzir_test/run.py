@@ -4330,6 +4330,11 @@ def _log_suite_event(
 
 
 class Worker:
+    # Default locks are shared so multiple workers created with shared resources
+    # remain synchronized even when callers omit explicit lock arguments.
+    _DEFAULT_SLOT_LOCK = threading.Lock()
+    _DEFAULT_QUEUE_LOCK = threading.Lock()
+
     def __init__(
         self,
         queue: list[RunnerQueueItem],
@@ -4355,8 +4360,8 @@ class Worker:
         self._run_skipped_selector = run_skipped_selector or RunSkippedSelector()
         self._jobs = max(1, jobs if jobs is not None else get_default_jobs())
         self._test_slots = test_slots or threading.BoundedSemaphore(self._jobs)
-        self._slot_lock = slot_lock or threading.Lock()
-        self._queue_lock = queue_lock or threading.Lock()
+        self._slot_lock = slot_lock or self._DEFAULT_SLOT_LOCK
+        self._queue_lock = queue_lock or self._DEFAULT_QUEUE_LOCK
         self._suite_queue_state = suite_queue_state or SuiteQueueState(
             pending_items=_count_suite_queue_items(queue)
         )
