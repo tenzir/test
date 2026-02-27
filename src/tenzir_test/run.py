@@ -3275,7 +3275,11 @@ def _count_queue_tests(queue: Sequence[RunnerQueueItem]) -> int:
 
 
 def _count_suite_queue_items(queue: Sequence[RunnerQueueItem]) -> int:
-    return sum(1 for item in queue if isinstance(item, SuiteQueueItem))
+    return sum(
+        1
+        for item in queue
+        if isinstance(item, SuiteQueueItem) and item.suite.mode is SuiteExecutionMode.PARALLEL
+    )
 
 
 def _iter_parallel_suite_queue_items(queue: Sequence[RunnerQueueItem]) -> Iterator[SuiteQueueItem]:
@@ -3328,10 +3332,16 @@ def _pop_next_queue_item(
                 return None
             if suite_state is None or suite_state.pending_items <= 0:
                 return queue.pop()
-            if isinstance(queue[-1], SuiteQueueItem):
+            if (
+                isinstance(queue[-1], SuiteQueueItem)
+                and queue[-1].suite.mode is SuiteExecutionMode.PARALLEL
+            ):
                 return queue.pop()
             for index in range(len(queue) - 1, -1, -1):
-                if isinstance(queue[index], SuiteQueueItem):
+                item = queue[index]
+                if not isinstance(item, SuiteQueueItem):
+                    continue
+                if item.suite.mode is SuiteExecutionMode.PARALLEL:
                     return queue.pop(index)
         if interrupt_requested():
             return None
