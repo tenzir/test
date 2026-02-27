@@ -783,7 +783,7 @@ def test_worker_parallel_suite_min_jobs_guard_raises_when_underprovisioned(
         run.apply_settings(original_settings)
 
 
-def test_worker_parallel_suite_min_jobs_guard_raises_when_reserved_workers_underflow(
+def test_worker_parallel_suite_min_jobs_waits_for_required_reserved_workers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     original_settings = config.Settings(
@@ -832,6 +832,15 @@ def test_worker_parallel_suite_min_jobs_guard_raises_when_reserved_workers_under
     reserved_slot = threading.BoundedSemaphore(2)
     acquired = reserved_slot.acquire(timeout=0.1)
     assert acquired
+    delayed_release = threading.Event()
+
+    def _release_slot_later() -> None:
+        if not delayed_release.wait(timeout=1.0):
+            return
+        reserved_slot.release()
+
+    release_thread = threading.Thread(target=_release_slot_later)
+    release_thread.start()
     try:
         queue = run._build_queue_from_paths(tests, coverage=False)
         assert len(queue) == 1
@@ -847,12 +856,48 @@ def test_worker_parallel_suite_min_jobs_guard_raises_when_reserved_workers_under
             test_slots=reserved_slot,
         )
         worker.start()
-        with pytest.raises(run.HarnessError, match="requires at least 2 concurrent workers"):
-            worker.join()
+        delayed_release.set()
+        summary = worker.join()
+        assert summary.total == 2
+        assert summary.failed == 0
     finally:
-        reserved_slot.release()
+        delayed_release.set()
+        release_thread.join(timeout=1.0)
         run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
         run.apply_settings(original_settings)
+
+
+def test_acquire_suite_test_slots_waits_for_required_minimum() -> None:
+    queue: list[run.RunnerQueueItem] = []
+    shared_slots = threading.BoundedSemaphore(2)
+    worker = run.Worker(
+        queue,
+        update=False,
+        coverage=False,
+        jobs=2,
+        test_slots=shared_slots,
+    )
+    acquired = shared_slots.acquire(timeout=0.1)
+    assert acquired
+
+    reserved: dict[str, int] = {"slots": 0}
+
+    def reserve_slots() -> None:
+        reserved["slots"] = worker._acquire_suite_test_slots(2, min_slots=2)
+
+    thread = threading.Thread(target=reserve_slots)
+    thread.start()
+    time.sleep(0.05)
+    assert thread.is_alive()
+
+    shared_slots.release()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    assert reserved["slots"] == 2
+
+    worker._release_test_slots(reserved["slots"])
 
 
 def test_worker_parallel_suites_honor_shared_jobs_budget(
@@ -1312,10 +1357,10 @@ def test_workers_hold_suite_priority_until_parallel_suite_reserves_slots(
             time.sleep(0.02)
             return True
 
-    def delayed_acquire(self: run.Worker, max_slots: int) -> int:
+    def delayed_acquire(self: run.Worker, max_slots: int, *, min_slots: int = 1) -> int:
         reservation_waiting.set()
         release_reservation.wait(timeout=1.0)
-        return original_acquire_suite_slots(self, max_slots)
+        return original_acquire_suite_slots(self, max_slots, min_slots=min_slots)
 
     runner = RecordingRunner()
     monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
@@ -1422,10 +1467,10 @@ def test_workers_do_not_start_sequential_suite_while_parallel_priority_is_pendin
             time.sleep(0.02)
             return True
 
-    def delayed_acquire(self: run.Worker, max_slots: int) -> int:
+    def delayed_acquire(self: run.Worker, max_slots: int, *, min_slots: int = 1) -> int:
         reservation_waiting.set()
         release_reservation.wait(timeout=1.0)
-        return original_acquire_suite_slots(self, max_slots)
+        return original_acquire_suite_slots(self, max_slots, min_slots=min_slots)
 
     runner = RecordingRunner()
     monkeypatch.setattr(run.Worker, "_acquire_suite_test_slots", delayed_acquire)

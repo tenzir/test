@@ -4457,22 +4457,29 @@ class Worker:
         for _ in range(slots):
             self._test_slots.release()
 
-    def _acquire_suite_test_slots(self, max_slots: int) -> int:
+    def _acquire_suite_test_slots(self, max_slots: int, *, min_slots: int = 1) -> int:
         """Reserve up to `max_slots` slots for a parallel suite execution."""
 
         if max_slots <= 0:
             return 0
-        acquired = 0
-        with self._slot_lock:
-            while acquired == 0:
-                if self._test_slots.acquire(timeout=0.1):
-                    acquired = 1
-                    break
-                if interrupt_requested():
-                    return 0
-            while acquired < max_slots and self._test_slots.acquire(blocking=False):
-                acquired += 1
-        return acquired
+        required = max(1, min(min_slots, max_slots))
+        while True:
+            acquired = 0
+            with self._slot_lock:
+                while acquired == 0:
+                    if self._test_slots.acquire(timeout=0.1):
+                        acquired = 1
+                        break
+                    if interrupt_requested():
+                        return 0
+                while acquired < max_slots and self._test_slots.acquire(blocking=False):
+                    acquired += 1
+            if acquired >= required:
+                return acquired
+            self._release_test_slots(acquired)
+            if interrupt_requested():
+                return 0
+            time.sleep(0.01)
 
     def _record_static_skip(
         self,
@@ -4702,11 +4709,15 @@ class Worker:
     ) -> bool:
         total = len(tests)
         requested_workers = min(max(1, total), self._jobs)
-        reserved_workers = self._acquire_suite_test_slots(requested_workers)
+        min_jobs = suite_item.suite.min_jobs
+        required_workers = min_jobs if min_jobs is not None else 1
+        reserved_workers = self._acquire_suite_test_slots(
+            requested_workers,
+            min_slots=required_workers,
+        )
         release_suite_priority()
         if reserved_workers <= 0:
             return True
-        min_jobs = suite_item.suite.min_jobs
         if min_jobs is not None and reserved_workers < min_jobs:
             self._release_test_slots(reserved_workers)
             suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
