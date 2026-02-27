@@ -4342,6 +4342,8 @@ class Worker:
     # remain synchronized even when callers omit explicit lock arguments.
     _DEFAULT_SLOT_LOCK = threading.Lock()
     _DEFAULT_QUEUE_LOCK = threading.Lock()
+    _DEFAULT_SUITE_STATE_LOCK = threading.Lock()
+    _DEFAULT_SUITE_QUEUE_STATES: dict[int, tuple[SuiteQueueState, int]] = {}
 
     def __init__(
         self,
@@ -4370,12 +4372,19 @@ class Worker:
         self._test_slots = test_slots or threading.BoundedSemaphore(self._jobs)
         self._slot_lock = slot_lock or self._DEFAULT_SLOT_LOCK
         self._queue_lock = queue_lock or self._DEFAULT_QUEUE_LOCK
-        self._suite_queue_state = suite_queue_state or SuiteQueueState(
-            pending_items=_count_suite_queue_items(queue)
-        )
+        self._default_suite_state_queue_id: int | None = None
+        if suite_queue_state is None:
+            self._suite_queue_state = self._acquire_default_suite_queue_state(queue)
+        else:
+            self._suite_queue_state = suite_queue_state
         self._run_skipped_match_count = 0
         self._run_skipped_match_count_lock = threading.Lock()
         self._thread = threading.Thread(target=self._work)
+
+    def __del__(self) -> None:
+        # Ensure default suite-queue state references are released even when
+        # a Worker is constructed but never started.
+        self._release_default_suite_queue_state()
 
     def start(self) -> None:
         self._thread.start()
@@ -4397,6 +4406,36 @@ class Worker:
             return
         with self._run_skipped_match_count_lock:
             self._run_skipped_match_count += amount
+
+    def _acquire_default_suite_queue_state(self, queue: list[RunnerQueueItem]) -> SuiteQueueState:
+        queue_id = id(queue)
+        with self._DEFAULT_SUITE_STATE_LOCK:
+            entry = self._DEFAULT_SUITE_QUEUE_STATES.get(queue_id)
+            if entry is None:
+                state = SuiteQueueState(pending_items=_count_suite_queue_items(queue))
+                references = 1
+            else:
+                state, references = entry
+                references += 1
+            self._DEFAULT_SUITE_QUEUE_STATES[queue_id] = (state, references)
+        self._default_suite_state_queue_id = queue_id
+        return state
+
+    def _release_default_suite_queue_state(self) -> None:
+        queue_id = getattr(self, "_default_suite_state_queue_id", None)
+        if queue_id is None:
+            return
+        with self._DEFAULT_SUITE_STATE_LOCK:
+            entry = self._DEFAULT_SUITE_QUEUE_STATES.get(queue_id)
+            if entry is None:
+                self._default_suite_state_queue_id = None
+                return
+            state, references = entry
+            if references <= 1:
+                self._DEFAULT_SUITE_QUEUE_STATES.pop(queue_id, None)
+            else:
+                self._DEFAULT_SUITE_QUEUE_STATES[queue_id] = (state, references - 1)
+        self._default_suite_state_queue_id = None
 
     def _acquire_test_slots(self, slots: int) -> bool:
         if slots <= 0:
@@ -4574,6 +4613,8 @@ class Worker:
             if self._result is None:
                 self._result = Summary()
             return self._result
+        finally:
+            self._release_default_suite_queue_state()
 
     def _run_test_item_with_slot(
         self,

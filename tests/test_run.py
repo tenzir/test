@@ -1054,6 +1054,90 @@ def test_worker_defaults_share_sync_locks_for_shared_resources() -> None:
 
     assert first._queue_lock is second._queue_lock
     assert first._slot_lock is second._slot_lock
+    assert first._suite_queue_state is second._suite_queue_state
+
+
+def test_workers_with_default_suite_state_do_not_stall_on_remaining_solo_tests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    tests_dir = tmp_path / "tests"
+    parallel_dir = tests_dir / "parallel"
+    solo_dir = tests_dir / "solo"
+    parallel_dir.mkdir(parents=True)
+    solo_dir.mkdir(parents=True)
+    (parallel_dir / "test.yaml").write_text(
+        "suite:\n  name: parallel\n  mode: parallel\n",
+        encoding="utf-8",
+    )
+    parallel_tests = [parallel_dir / "01.tql", parallel_dir / "02.tql"]
+    solo_tests = [solo_dir / "01.tql", solo_dir / "02.tql"]
+    for path in [*parallel_tests, *solo_tests]:
+        path.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            time.sleep(0.01)
+            return True
+
+    runner = RecordingRunner()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
+
+    try:
+        queue = run._build_queue_from_paths([*parallel_tests, *solo_tests], coverage=False)
+        queue.sort(key=run._queue_sort_key, reverse=True)
+        jobs = 2
+        test_slots = threading.BoundedSemaphore(jobs)
+        workers = [
+            run.Worker(
+                queue,
+                update=False,
+                coverage=False,
+                jobs=jobs,
+                test_slots=test_slots,
+            )
+            for _ in range(jobs)
+        ]
+
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker._thread.join(timeout=2.0)
+            assert not worker._thread.is_alive(), "worker stalled with default suite queue state"
+
+        summary = run.Summary()
+        for worker in workers:
+            summary += worker.join()
+        assert summary.total == len(parallel_tests) + len(solo_tests)
+        assert summary.failed == 0
+    finally:
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
 
 
 def test_workers_prioritize_parallel_suites_before_standalone_tests(tmp_path: Path) -> None:
