@@ -928,6 +928,7 @@ def test_worker_parallel_suites_honor_shared_jobs_budget(
         test_slots = threading.BoundedSemaphore(jobs)
         slot_lock = threading.Lock()
         queue_lock = threading.Lock()
+        suite_queue_state = run.SuiteQueueState(pending_items=run._count_suite_queue_items(queue))
         workers = [
             run.Worker(
                 queue,
@@ -937,6 +938,7 @@ def test_worker_parallel_suites_honor_shared_jobs_budget(
                 test_slots=test_slots,
                 slot_lock=slot_lock,
                 queue_lock=queue_lock,
+                suite_queue_state=suite_queue_state,
             )
             for _ in range(jobs)
         ]
@@ -1128,6 +1130,7 @@ def test_workers_prioritize_parallel_suites_before_standalone_tests(tmp_path: Pa
     test_slots = threading.BoundedSemaphore(jobs)
     slot_lock = threading.Lock()
     queue_lock = threading.Lock()
+    suite_queue_state = run.SuiteQueueState(pending_items=run._count_suite_queue_items(queue))
     workers = [
         run.Worker(
             queue,
@@ -1137,6 +1140,7 @@ def test_workers_prioritize_parallel_suites_before_standalone_tests(tmp_path: Pa
             test_slots=test_slots,
             slot_lock=slot_lock,
             queue_lock=queue_lock,
+            suite_queue_state=suite_queue_state,
         )
         for _ in range(jobs)
     ]
@@ -1162,6 +1166,114 @@ def test_workers_prioritize_parallel_suites_before_standalone_tests(tmp_path: Pa
         )
         assert first_alpha_index < first_solo_index
         assert first_beta_index < first_solo_index
+    finally:
+        run._clear_directory_config_cache()
+        run._INTERRUPT_EVENT.clear()
+        run._INTERRUPT_ANNOUNCED.clear()
+        run.apply_settings(original_settings)
+
+
+def test_workers_hold_suite_priority_until_parallel_suite_reserves_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    tests_dir = tmp_path / "tests"
+    suite_dir = tests_dir / "suite"
+    solo_dir = tests_dir / "solo"
+    suite_dir.mkdir(parents=True)
+    solo_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite:\n  name: suite\n  mode: parallel\n  min_jobs: 2\n",
+        encoding="utf-8",
+    )
+    suite_test = suite_dir / "01.tql"
+    suite_test_two = suite_dir / "02.tql"
+    solo_test = solo_dir / "01.tql"
+    suite_test.write_text("version\nwrite_json\n", encoding="utf-8")
+    suite_test_two.write_text("version\nwrite_json\n", encoding="utf-8")
+    solo_test.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    reservation_waiting = threading.Event()
+    release_reservation = threading.Event()
+    solo_started = threading.Event()
+    original_acquire_suite_slots = run.Worker._acquire_suite_test_slots
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return None
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            if test == solo_test:
+                solo_started.set()
+            time.sleep(0.02)
+            return True
+
+    def delayed_acquire(self: run.Worker, max_slots: int) -> int:
+        reservation_waiting.set()
+        release_reservation.wait(timeout=1.0)
+        return original_acquire_suite_slots(self, max_slots)
+
+    runner = RecordingRunner()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
+    monkeypatch.setattr(run.Worker, "_acquire_suite_test_slots", delayed_acquire)
+
+    try:
+        queue = run._build_queue_from_paths([suite_test, suite_test_two, solo_test], coverage=False)
+        queue.sort(key=run._queue_sort_key, reverse=True)
+        assert len(queue) == 2
+        assert isinstance(queue[0], run.SuiteQueueItem) or isinstance(queue[1], run.SuiteQueueItem)
+
+        jobs = 2
+        test_slots = threading.BoundedSemaphore(jobs)
+        slot_lock = threading.Lock()
+        queue_lock = threading.Lock()
+        suite_queue_state = run.SuiteQueueState(pending_items=run._count_suite_queue_items(queue))
+        workers = [
+            run.Worker(
+                queue,
+                update=False,
+                coverage=False,
+                jobs=jobs,
+                test_slots=test_slots,
+                slot_lock=slot_lock,
+                queue_lock=queue_lock,
+                suite_queue_state=suite_queue_state,
+            )
+            for _ in range(jobs)
+        ]
+        for worker in workers:
+            worker.start()
+
+        assert reservation_waiting.wait(timeout=1.0)
+        time.sleep(0.05)
+        assert not solo_started.is_set()
+
+        release_reservation.set()
+        summary = run.Summary()
+        for worker in workers:
+            summary += worker.join()
+        assert summary.total == 3
+        assert summary.failed == 0
     finally:
         run._clear_directory_config_cache()
         run._INTERRUPT_EVENT.clear()
@@ -2159,7 +2271,7 @@ def test_pop_next_queue_item_skips_scan_when_no_suites_pending() -> None:
     assert queue.index_reads == 0
 
 
-def test_pop_next_queue_item_clears_stale_suite_state_after_scan_miss() -> None:
+def test_pop_next_queue_item_waits_for_pending_suite_priority() -> None:
     class StubRunner(run.Runner):
         def __init__(self) -> None:
             super().__init__(name="stub")
@@ -2175,38 +2287,36 @@ def test_pop_next_queue_item_clears_stale_suite_state_after_scan_miss() -> None:
         def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
             return True
 
-    class TrackingQueue(list):
-        def __init__(self, items: list[run.RunnerQueueItem]) -> None:
-            super().__init__(items)
-            self.index_reads = 0
-
-        def __getitem__(self, index):
-            self.index_reads += 1
-            return super().__getitem__(index)
-
     runner = StubRunner()
-    queue = TrackingQueue(
-        [
-            run.TestQueueItem(runner=runner, path=Path("/tmp/a.tql")),
-            run.TestQueueItem(runner=runner, path=Path("/tmp/b.tql")),
-            run.TestQueueItem(runner=runner, path=Path("/tmp/c.tql")),
-        ]
-    )
+    queue: list[run.RunnerQueueItem] = [
+        run.TestQueueItem(runner=runner, path=Path("/tmp/a.tql")),
+        run.TestQueueItem(runner=runner, path=Path("/tmp/b.tql")),
+        run.TestQueueItem(runner=runner, path=Path("/tmp/c.tql")),
+    ]
     queue_lock = threading.Lock()
     suite_state = run.SuiteQueueState(pending_items=1)
+    popped: list[run.RunnerQueueItem | None] = []
 
-    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
+    def pop_item() -> None:
+        popped.append(
+            run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
+        )
 
-    assert isinstance(popped, run.TestQueueItem)
-    assert popped.path == Path("/tmp/c.tql")
-    assert queue.index_reads > 0
-    assert suite_state.pending_items == 0
+    thread = threading.Thread(target=pop_item)
+    thread.start()
+    time.sleep(0.05)
+    assert thread.is_alive()
+    assert not popped
 
-    queue.index_reads = 0
-    popped = run._pop_next_queue_item(queue, queue_lock=queue_lock, suite_state=suite_state)
-    assert isinstance(popped, run.TestQueueItem)
-    assert popped.path == Path("/tmp/b.tql")
-    assert queue.index_reads == 0
+    with queue_lock:
+        suite_state.pending_items = 0
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+
+    assert len(popped) == 1
+    popped_item = popped[0]
+    assert isinstance(popped_item, run.TestQueueItem)
+    assert popped_item.path == Path("/tmp/c.tql")
 
 
 def test_cli_rejects_partial_suite_selection(

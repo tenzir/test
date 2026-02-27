@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import typing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
@@ -3321,23 +3322,20 @@ def _pop_next_queue_item(
     queue_lock: threading.Lock,
     suite_state: SuiteQueueState | None = None,
 ) -> RunnerQueueItem | None:
-    with queue_lock:
-        if not queue:
+    while True:
+        with queue_lock:
+            if not queue:
+                return None
+            if suite_state is None or suite_state.pending_items <= 0:
+                return queue.pop()
+            if isinstance(queue[-1], SuiteQueueItem):
+                return queue.pop()
+            for index in range(len(queue) - 1, -1, -1):
+                if isinstance(queue[index], SuiteQueueItem):
+                    return queue.pop(index)
+        if interrupt_requested():
             return None
-        if suite_state is not None and suite_state.pending_items <= 0:
-            return queue.pop()
-        if isinstance(queue[-1], SuiteQueueItem):
-            if suite_state is not None and suite_state.pending_items > 0:
-                suite_state.pending_items -= 1
-            return queue.pop()
-        for index in range(len(queue) - 1, -1, -1):
-            if isinstance(queue[index], SuiteQueueItem):
-                if suite_state is not None and suite_state.pending_items > 0:
-                    suite_state.pending_items -= 1
-                return queue.pop(index)
-        if suite_state is not None:
-            suite_state.pending_items = 0
-        return queue.pop()
+        time.sleep(0.01)
 
 
 def _print_aggregate_totals(project_count: int, summary: Summary) -> None:
@@ -4649,10 +4647,12 @@ class Worker:
         suite_item: SuiteQueueItem,
         tests: Sequence[TestQueueItem],
         summary: Summary,
+        release_suite_priority: typing.Callable[[], None],
     ) -> bool:
         total = len(tests)
         requested_workers = min(max(1, total), self._jobs)
         reserved_workers = self._acquire_suite_test_slots(requested_workers)
+        release_suite_priority()
         if reserved_workers <= 0:
             return True
         min_jobs = suite_item.suite.min_jobs
@@ -4715,147 +4715,167 @@ class Worker:
         return interrupted
 
     def _run_suite(self, suite_item: SuiteQueueItem, summary: Summary) -> None:
-        tests = suite_item.tests
-        total = len(tests)
-        if total == 0:
-            return
-        if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
-            min_jobs = suite_item.suite.min_jobs
-            if min_jobs is not None and self._jobs < min_jobs:
-                suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
-                raise HarnessError(
-                    (
-                        f"parallel suite '{suite_item.suite.name}' in {suite_dir} "
-                        f"requires at least --jobs={min_jobs} for correctness, got --jobs={self._jobs}"
-                    )
-                )
-        primary_test = tests[0].path
+        suite_priority_released = False
+
+        def release_suite_priority() -> None:
+            nonlocal suite_priority_released
+            if suite_priority_released:
+                return
+            with self._queue_lock:
+                if self._suite_queue_state.pending_items > 0:
+                    self._suite_queue_state.pending_items -= 1
+            suite_priority_released = True
+
         try:
-            primary_config = parse_test_config(primary_test, coverage=self._coverage)
-        except ValueError as exc:
-            raise RuntimeError(f"failed to parse suite config for {primary_test}: {exc}") from exc
-        # Avoid activating suite fixtures when every suite member is statically skipped.
-        static_skip_plan = self._suite_static_skip_plan(suite_item)
-        if static_skip_plan is not None:
-            for test_item, reason in static_skip_plan:
-                self._record_static_skip(
-                    test_item=test_item,
-                    fixtures=suite_item.fixtures,
-                    reason=reason,
+            tests = suite_item.tests
+            total = len(tests)
+            if total == 0:
+                return
+            if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
+                min_jobs = suite_item.suite.min_jobs
+                if min_jobs is not None and self._jobs < min_jobs:
+                    suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
+                    raise HarnessError(
+                        (
+                            f"parallel suite '{suite_item.suite.name}' in {suite_dir} "
+                            f"requires at least --jobs={min_jobs} for correctness, got --jobs={self._jobs}"
+                        )
+                    )
+            primary_test = tests[0].path
+            try:
+                primary_config = parse_test_config(primary_test, coverage=self._coverage)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"failed to parse suite config for {primary_test}: {exc}"
+                ) from exc
+            # Avoid activating suite fixtures when every suite member is statically skipped.
+            static_skip_plan = self._suite_static_skip_plan(suite_item)
+            if static_skip_plan is not None:
+                for test_item, reason in static_skip_plan:
+                    self._record_static_skip(
+                        test_item=test_item,
+                        fixtures=suite_item.fixtures,
+                        reason=reason,
+                        summary=summary,
+                    )
+                return
+            inputs_override = typing.cast(str | None, primary_config.get("inputs"))
+            env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
+            config_package_dirs = cast(tuple[str, ...], primary_config.get("package_dirs", tuple()))
+            additional_package_dirs: list[str] = []
+            for entry in config_package_dirs:
+                additional_package_dirs.extend(_expand_package_dirs(Path(entry)))
+            package_root = packages.find_package_root(primary_test)
+            package_dir_candidates: list[str] = []
+            if package_root is not None:
+                env["TENZIR_PACKAGE_ROOT"] = str(package_root)
+                if inputs_override is None:
+                    # Try nearest inputs/ directory, fall back to package-level
+                    nearest = _find_nearest_inputs_dir(primary_test, package_root)
+                    if nearest is not None:
+                        env["TENZIR_INPUTS"] = str(nearest.resolve())
+                    else:
+                        env["TENZIR_INPUTS"] = str((package_root / "tests" / "inputs"))
+                package_dir_candidates.append(str(package_root))
+            package_dir_candidates.extend(additional_package_dirs)
+            for cli_path in _get_cli_packages():
+                package_dir_candidates.extend(_expand_package_dirs(cli_path))
+            if package_dir_candidates:
+                merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
+                env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
+                config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
+            skip_cfg = cast(SkipConfig | None, primary_config.get("skip"))
+            requires_cfg = cast(RequiresConfig | None, primary_config.get("requires"))
+            if isinstance(requires_cfg, RequiresConfig) and requires_cfg.has_requirements:
+                missing_requirements = self._evaluate_suite_requirements(
+                    suite_item=suite_item,
+                    tests=tests,
+                    requires=requires_cfg,
+                    env=env,
+                    config_args=config_args,
+                )
+                if missing_requirements is not None:
+                    configured_reason = (
+                        skip_cfg.reason if isinstance(skip_cfg, SkipConfig) else None
+                    )
+                    reason = _compose_skip_reason(
+                        configured_reason,
+                        missing_requirements,
+                        fallback=missing_requirements,
+                    )
+                    displayed_reason = f"capability unavailable: {reason}"
+                    allows_capability_skip = isinstance(
+                        skip_cfg, SkipConfig
+                    ) and skip_cfg.allows_condition(SKIP_ON_CAPABILITY_UNAVAILABLE)
+                    if allows_capability_skip:
+                        if not self._skip_suite_with_reason(
+                            suite_item=suite_item,
+                            tests=tests,
+                            displayed_reason=displayed_reason,
+                            summary=summary,
+                        ):
+                            raise HarnessError(displayed_reason)
+                        return
+                    raise HarnessError(displayed_reason)
+            suite_fixture_options = _build_fixture_options(suite_item.fixtures)
+            context_token = fixtures_impl.push_context(
+                fixtures_impl.FixtureContext(
+                    test=primary_test,
+                    config=typing.cast(dict[str, Any], primary_config),
+                    coverage=self._coverage,
+                    env=env,
+                    config_args=tuple(config_args),
+                    tenzir_binary=TENZIR_BINARY,
+                    tenzir_node_binary=TENZIR_NODE_BINARY,
+                    fixture_options=suite_fixture_options,
+                )
+            )
+            _log_suite_event(suite_item.suite, event="setup", total=total)
+            interrupted = False
+            try:
+                with fixtures_impl.suite_scope(suite_item.fixtures):
+                    if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
+                        interrupted = self._run_suite_parallel(
+                            suite_item=suite_item,
+                            tests=tests,
+                            summary=summary,
+                            release_suite_priority=release_suite_priority,
+                        )
+                    else:
+                        release_suite_priority()
+                        interrupted = self._run_suite_sequential(
+                            suite_item=suite_item,
+                            tests=tests,
+                            summary=summary,
+                        )
+            except fixtures_impl.FixtureUnavailable as exc:
+                if not (
+                    isinstance(skip_cfg, SkipConfig)
+                    and skip_cfg.allows_condition(SKIP_ON_FIXTURE_UNAVAILABLE)
+                ):
+                    raise
+                reason = _compose_skip_reason(skip_cfg.reason, str(exc))
+                displayed_reason = f"fixture unavailable: {reason}"
+                if not self._skip_suite_with_reason(
+                    suite_item=suite_item,
+                    tests=tests,
+                    displayed_reason=displayed_reason,
                     summary=summary,
+                ):
+                    raise
+                _CLI_LOGGER.warning(
+                    "fixture unavailable for suite '%s': %s",
+                    suite_item.suite.name,
+                    reason,
                 )
-            return
-        inputs_override = typing.cast(str | None, primary_config.get("inputs"))
-        env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
-        config_package_dirs = cast(tuple[str, ...], primary_config.get("package_dirs", tuple()))
-        additional_package_dirs: list[str] = []
-        for entry in config_package_dirs:
-            additional_package_dirs.extend(_expand_package_dirs(Path(entry)))
-        package_root = packages.find_package_root(primary_test)
-        package_dir_candidates: list[str] = []
-        if package_root is not None:
-            env["TENZIR_PACKAGE_ROOT"] = str(package_root)
-            if inputs_override is None:
-                # Try nearest inputs/ directory, fall back to package-level
-                nearest = _find_nearest_inputs_dir(primary_test, package_root)
-                if nearest is not None:
-                    env["TENZIR_INPUTS"] = str(nearest.resolve())
-                else:
-                    env["TENZIR_INPUTS"] = str((package_root / "tests" / "inputs"))
-            package_dir_candidates.append(str(package_root))
-        package_dir_candidates.extend(additional_package_dirs)
-        for cli_path in _get_cli_packages():
-            package_dir_candidates.extend(_expand_package_dirs(cli_path))
-        if package_dir_candidates:
-            merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
-            env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
-            config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
-        skip_cfg = cast(SkipConfig | None, primary_config.get("skip"))
-        requires_cfg = cast(RequiresConfig | None, primary_config.get("requires"))
-        if isinstance(requires_cfg, RequiresConfig) and requires_cfg.has_requirements:
-            missing_requirements = self._evaluate_suite_requirements(
-                suite_item=suite_item,
-                tests=tests,
-                requires=requires_cfg,
-                env=env,
-                config_args=config_args,
-            )
-            if missing_requirements is not None:
-                configured_reason = skip_cfg.reason if isinstance(skip_cfg, SkipConfig) else None
-                reason = _compose_skip_reason(
-                    configured_reason,
-                    missing_requirements,
-                    fallback=missing_requirements,
-                )
-                displayed_reason = f"capability unavailable: {reason}"
-                allows_capability_skip = isinstance(
-                    skip_cfg, SkipConfig
-                ) and skip_cfg.allows_condition(SKIP_ON_CAPABILITY_UNAVAILABLE)
-                if allows_capability_skip:
-                    if not self._skip_suite_with_reason(
-                        suite_item=suite_item,
-                        tests=tests,
-                        displayed_reason=displayed_reason,
-                        summary=summary,
-                    ):
-                        raise HarnessError(displayed_reason)
-                    return
-                raise HarnessError(displayed_reason)
-        suite_fixture_options = _build_fixture_options(suite_item.fixtures)
-        context_token = fixtures_impl.push_context(
-            fixtures_impl.FixtureContext(
-                test=primary_test,
-                config=typing.cast(dict[str, Any], primary_config),
-                coverage=self._coverage,
-                env=env,
-                config_args=tuple(config_args),
-                tenzir_binary=TENZIR_BINARY,
-                tenzir_node_binary=TENZIR_NODE_BINARY,
-                fixture_options=suite_fixture_options,
-            )
-        )
-        _log_suite_event(suite_item.suite, event="setup", total=total)
-        interrupted = False
-        try:
-            with fixtures_impl.suite_scope(suite_item.fixtures):
-                if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
-                    interrupted = self._run_suite_parallel(
-                        suite_item=suite_item,
-                        tests=tests,
-                        summary=summary,
-                    )
-                else:
-                    interrupted = self._run_suite_sequential(
-                        suite_item=suite_item,
-                        tests=tests,
-                        summary=summary,
-                    )
-        except fixtures_impl.FixtureUnavailable as exc:
-            if not (
-                isinstance(skip_cfg, SkipConfig)
-                and skip_cfg.allows_condition(SKIP_ON_FIXTURE_UNAVAILABLE)
-            ):
-                raise
-            reason = _compose_skip_reason(skip_cfg.reason, str(exc))
-            displayed_reason = f"fixture unavailable: {reason}"
-            if not self._skip_suite_with_reason(
-                suite_item=suite_item,
-                tests=tests,
-                displayed_reason=displayed_reason,
-                summary=summary,
-            ):
-                raise
-            _CLI_LOGGER.warning(
-                "fixture unavailable for suite '%s': %s",
-                suite_item.suite.name,
-                reason,
-            )
+            finally:
+                _log_suite_event(suite_item.suite, event="teardown", total=total)
+                fixtures_impl.pop_context(context_token)
+                cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
+            if interrupted:
+                _request_interrupt()
         finally:
-            _log_suite_event(suite_item.suite, event="teardown", total=total)
-            fixtures_impl.pop_context(context_token)
-            cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
-        if interrupted:
-            _request_interrupt()
+            release_suite_priority()
 
     def _run_test_item(
         self,
