@@ -34,12 +34,6 @@ for an end-to-end walkthrough of writing tests.
 We also provide a dense [reference](https://docs.tenzir.com/reference/test) that
 explains concepts, configuration, multi-project execution, and CLI details.
 
-## 🤝 Contributing
-
-Want to contribute? We're all-in on agentic coding with [Claude
-Code](https://claude.ai/code)! The repo comes pre-configured with our [custom
-plugins](https://github.com/tenzir/claude-plugins)—just clone and start hacking.
-
 ## 📜 License
 
 `tenzir-test` is available under the Apache License, Version 2.0. See
