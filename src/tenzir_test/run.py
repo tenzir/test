@@ -4291,21 +4291,6 @@ def handle_skip(reason: str, test: Path, update: bool, output_ext: str) -> bool 
         rel_path = _relativize_path(test)
         suite_suffix = _format_suite_suffix()
         print(f"{SKIP} skipped {rel_path}{suite_suffix}: {reason}")
-    ref_path = test.with_suffix(f".{output_ext}")
-    if update:
-        with ref_path.open("wb") as f:
-            f.write(b"")
-    else:
-        if ref_path.exists():
-            expected = ref_path.read_bytes()
-            if expected != b"":
-                report_failure(
-                    test,
-                    format_failure_message(
-                        f'Reference file for skipped test must be empty: "{ref_path}"'
-                    ),
-                )
-                return False
     return "skipped"
 
 
