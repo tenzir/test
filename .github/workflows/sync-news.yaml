@@ -16,18 +16,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
-
       - name: Generate app token
         id: app-token
-        env:
-          APP_ID: ${{ vars.TENZIR_GITHUB_APP_ID }}
-          PRIVATE_KEY: ${{ secrets.TENZIR_GITHUB_APP_PRIVATE_KEY }}
-          TARGET_REPOSITORY: tenzir/news
-        run: |
-          ./.github/scripts/create-app-token.sh \
-            --app-id "$APP_ID" \
-            --repository "$TARGET_REPOSITORY"
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.TENZIR_GITHUB_APP_ID }}
+          private-key: ${{ secrets.TENZIR_GITHUB_APP_PRIVATE_KEY }}
+          owner: tenzir
+          repositories: |
+            news
 
       - name: Trigger sync workflow
         uses: tenzir/news/.github/actions/sync@main
