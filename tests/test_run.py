@@ -383,6 +383,7 @@ def test_handle_skip_uses_skip_glyph(tmp_path, capsys):
         test_path = tmp_path / "tests" / "example.tql"
         test_path.parent.mkdir(parents=True)
         test_path.touch()
+        test_path.with_suffix(".txt").write_text("existing baseline\n", encoding="utf-8")
 
         result = run.handle_skip("slow", test_path, update=False, output_ext="txt")
 
@@ -423,12 +424,37 @@ def test_handle_skip_suppressed_when_verbose_disabled(
         test_path = tmp_path / "tests" / "example.tql"
         test_path.parent.mkdir(parents=True)
         test_path.touch()
+        test_path.with_suffix(".txt").write_text("existing baseline\n", encoding="utf-8")
 
         result = run.handle_skip("slow", test_path, update=False, output_ext="txt")
 
         assert result == "skipped"
         output = capsys.readouterr().out.strip()
         assert output == ""
+    finally:
+        run.ROOT = original_root
+        run.set_verbose_output(original_verbose)
+
+
+def test_handle_skip_preserves_existing_baseline_during_update(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    original_root = run.ROOT
+    original_verbose = run.is_verbose_output()
+    try:
+        run.ROOT = tmp_path
+        run.set_verbose_output(False)
+        test_path = tmp_path / "tests" / "example.tql"
+        test_path.parent.mkdir(parents=True)
+        test_path.touch()
+        ref_path = test_path.with_suffix(".txt")
+        ref_path.write_text("existing baseline\n", encoding="utf-8")
+
+        result = run.handle_skip("slow", test_path, update=True, output_ext="txt")
+
+        assert result == "skipped"
+        assert ref_path.read_text(encoding="utf-8") == "existing baseline\n"
+        assert capsys.readouterr().out.strip() == ""
     finally:
         run.ROOT = original_root
         run.set_verbose_output(original_verbose)
