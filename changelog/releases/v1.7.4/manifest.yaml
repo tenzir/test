@@ -1,0 +1,6 @@
+created: 2026-03-11
+title: Baseline preservation for skipped tests
+intro: >-
+  This release fixes how skipped tests interact with baseline files. Existing baselines
+  now stay untouched when you skip tests, which prevents unrelated baseline churn
+  and avoids false failures when you toggle skip conditions.
