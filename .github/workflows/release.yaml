@@ -41,6 +41,4 @@ jobs:
         uv run mypy
         uv run pytest
         uv build
-      post-create: |
-        uv version --bump ${{ inputs.bump }}
     secrets: inherit
