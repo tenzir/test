@@ -2600,6 +2600,23 @@ _FIXTURE_LOAD_ROOTS: set[Path] = set()
 _RUNNER_LOAD_ROOTS: set[Path] = set()
 
 
+def _format_missing_fixture_dependency_error(
+    *, root: Path, fixture_path: Path, exc: ModuleNotFoundError
+) -> str:
+    module_name = exc.name or "<unknown>"
+    try:
+        display_path = fixture_path.resolve().relative_to(root.resolve())
+    except ValueError:
+        display_path = fixture_path.resolve()
+    return (
+        f"failed to load fixtures from {root.resolve()}: missing Python dependency "
+        f"'{module_name}' while importing {display_path}. "
+        "If your fixtures need extra Python packages, run tenzir-test from a "
+        "project environment (for example: `uv run tenzir-test ...`) or use "
+        "`uvx --with <package> tenzir-test ...` for one-off runs."
+    )
+
+
 def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
     resolved_root = root.resolve()
     if resolved_root in _FIXTURE_LOAD_ROOTS:
@@ -2608,26 +2625,42 @@ def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
     fixtures_package = root / "fixtures"
     fixtures_file = root / "fixtures.py"
 
+    def _import_fixture_module(
+        module_name: str, path: Path, *, package: bool = False
+    ) -> ModuleType:
+        try:
+            return _import_module_from_path(module_name, path, package=package)
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                _format_missing_fixture_dependency_error(
+                    root=resolved_root,
+                    fixture_path=path,
+                    exc=exc,
+                )
+            ) from exc
+
     try:
         alias_target = None
         if fixtures_package.is_dir():
             init_file = fixtures_package / "__init__.py"
             if init_file.exists():
-                alias_target = _import_module_from_path(
+                alias_target = _import_fixture_module(
                     "_tenzir_project_fixtures", init_file, package=True
                 )
             else:
                 for candidate in sorted(fixtures_package.glob("*.py")):
-                    alias_target = _import_module_from_path(
+                    alias_target = _import_fixture_module(
                         f"_tenzir_project_fixture_{candidate.stem}", candidate
                     )
         elif fixtures_file.exists():
-            alias_target = _import_module_from_path("_tenzir_project_fixtures", fixtures_file)
+            alias_target = _import_fixture_module("_tenzir_project_fixtures", fixtures_file)
         if alias_target is not None and expose_namespace:
             if "fixtures" not in sys.modules:
                 sys.modules["fixtures"] = alias_target
     except ValueError as exc:  # registration error (e.g., duplicate fixture)
         raise RuntimeError(f"failed to load fixtures from {resolved_root}: {exc}") from exc
+    except RuntimeError:
+        raise
     except Exception as exc:  # pragma: no cover - defensive logging
         raise RuntimeError(f"failed to load fixtures from {resolved_root}: {exc}") from exc
 

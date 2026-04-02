@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -154,6 +155,33 @@ def test_execute_delegates_to_run_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["update"] is True
     assert captured["run_skipped"] is False
     assert captured["run_skipped_reasons"] == ()
+
+
+def test_load_project_fixtures_reports_missing_python_dependency(tmp_path: Path) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    fixture_dir.mkdir()
+    (fixture_dir / "__init__.py").write_text(
+        "import totally_missing_fixture_dependency\n",
+        encoding="utf-8",
+    )
+
+    try:
+        run._FIXTURE_LOAD_ROOTS.clear()  # type: ignore[attr-defined]
+        with pytest.raises(RuntimeError, match="missing Python dependency") as exc_info:
+            run._load_project_fixtures(tmp_path, expose_namespace=False)  # type: ignore[attr-defined]
+    finally:
+        run._FIXTURE_LOAD_ROOTS.clear()  # type: ignore[attr-defined]
+        sys.modules.pop("fixtures", None)
+        sys.modules.pop("_tenzir_project_fixtures", None)
+        for module_name in list(sys.modules):
+            if module_name.startswith("_tenzir_project_fixture_"):
+                sys.modules.pop(module_name, None)
+
+    message = str(exc_info.value)
+    assert "totally_missing_fixture_dependency" in message
+    assert "fixtures/__init__.py" in message
+    assert "uv run tenzir-test" in message
+    assert "uvx --with <package> tenzir-test" in message
 
 
 def test_format_summary_reports_counts_and_percentages() -> None:
