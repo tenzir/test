@@ -1,0 +1,9 @@
+created: 2026-04-16
+title: Accurate aggregate pass and fail percentages
+intro: >-
+  This release fixes misleading aggregate test summary percentages in the CLI. Runs
+  with a small number of failures now report non-perfect pass and fail rates, so mixed
+  outcomes no longer appear as `100%` passed and `0%` failed.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.7.5
