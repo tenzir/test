@@ -188,7 +188,7 @@ def test_format_summary_reports_counts_and_percentages() -> None:
     summary = run.Summary(failed=1, total=357, skipped=3)
     message = run._format_summary(summary)
     assert message.startswith(f"Test summary: {run.CHECKMARK} Passed 353/357 (99%)")
-    assert f"{run.CROSS} Failed 1 (0%)" in message
+    assert f"{run.CROSS} Failed 1 (1%)" in message
     assert f"{run.SKIP} Skipped 3 (1%)" in message
 
 
@@ -207,6 +207,11 @@ def test_format_summary_includes_assertion_check_counts() -> None:
 def test_format_summary_handles_zero_total() -> None:
     summary = run.Summary(failed=0, total=0, skipped=0)
     assert run._format_summary(summary) == "Test summary: No tests were discovered."
+
+
+def test_percentage_value_does_not_round_imperfect_results_to_100() -> None:
+    assert run._percentage_value(586, 587) == 99
+    assert run._percentage_value(1, 587) == 1
 
 
 def test_print_compact_summary(capsys: pytest.CaptureFixture[str]) -> None:
@@ -264,8 +269,8 @@ def test_print_ascii_summary_outputs_table(capsys):
     assert f"{run.CHECKMARK} Passed" in joined
     assert f"{run.CROSS} Failed" in joined
     assert f"{run.SKIP} Skipped" in joined
-    assert "100%" in joined
-    assert "0%" in joined
+    assert "99%" in joined
+    assert "1%" in joined
     assert "∑ Total" in joined
 
 
@@ -3442,6 +3447,20 @@ def test_print_aggregate_totals(capsys):
         f"{run.INFO} ran 10 tests across 3 projects: "
         f"7 passed ({run.PASS_SPECTRUM[7]}78%{run.RESET_COLOR}) / "
         f"2 failed ({run.FAIL_COLOR}22%{run.RESET_COLOR}) • 1 skipped"
+    )
+    assert output.strip() == expected
+
+
+def test_print_aggregate_totals_avoids_perfect_success_with_failures(capsys) -> None:
+    summary = run.Summary(total=739, failed=1, skipped=152)
+
+    run._print_aggregate_totals(2, summary)
+
+    output = capsys.readouterr().out
+    expected = (
+        f"{run.INFO} ran 739 tests across 2 projects: "
+        f"586 passed ({run.PASS_SPECTRUM[9]}99%{run.RESET_COLOR}) / "
+        f"1 failed ({run.FAIL_COLOR}1%{run.RESET_COLOR}) • 152 skipped"
     )
     assert output.strip() == expected
 

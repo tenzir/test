@@ -3118,9 +3118,12 @@ def _format_percentage(count: int, total: int) -> str:
 
 
 def _percentage_value(count: int, total: int) -> int:
-    if total <= 0:
+    if total <= 0 or count <= 0:
         return 0
-    return int(round((count / total) * 100))
+    if count >= total:
+        return 100
+    percentage = int(round((count / total) * 100))
+    return min(99, max(1, percentage))
 
 
 def _format_summary(summary: Summary) -> str:
