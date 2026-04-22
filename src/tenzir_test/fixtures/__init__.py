@@ -469,9 +469,12 @@ class FixtureHandle:
 class FixtureUnavailable(Exception):
     """Raised by a fixture when it cannot provide its service.
 
-    When a fixture raises this during initialization (before yielding)
-    and the suite has ``skip: {on: fixture-unavailable}`` in its
-    ``test.yaml``, all tests in the suite are marked as skipped.
+    When a fixture raises this during initialization (before yielding), tests
+    can opt in to graceful skipping with ``skip: {on: fixture-unavailable}``.
+    Put the opt-in in test frontmatter for a per-test fixture, or in a
+    directory-level ``test.yaml`` for shared defaults and suite fixtures. If a
+    suite fixture is unavailable and the suite opts in, all tests in the suite
+    are marked as skipped.
 
     Without the opt-in config, the exception propagates normally and
     causes a test failure.

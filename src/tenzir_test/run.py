@@ -69,8 +69,10 @@ class SkipConfig:
     * **Static skip** -- the test is unconditionally skipped with a reason
       string (``skip: "reason"`` in YAML).
     * **Conditional skip** -- the test is skipped when one of the configured
-      suite conditions occurs (e.g. ``fixture-unavailable`` or
-      ``capability-unavailable`` in directory-level ``test.yaml``).
+      conditions occurs. ``fixture-unavailable`` applies at the fixture
+      activation point, so it can be configured in directory defaults or test
+      frontmatter. ``capability-unavailable`` applies to suite-level capability
+      probes and is only valid in directory-level ``test.yaml`` files.
     """
 
     reason: str | None = None
@@ -152,14 +154,6 @@ class SkipConfig:
             return cls(reason=value)
 
         if isinstance(value, dict):
-            if origin != "directory":
-                _raise_config_error(
-                    location,
-                    f"'skip' mapping form (e.g. {{on: {SKIP_ON_FIXTURE_UNAVAILABLE}}}) "
-                    "is only valid in directory-level test.yaml files, "
-                    "not in test frontmatter",
-                    line_number,
-                )
             normalized = cls._normalize_dict_keys(value)
             unknown_keys = set(normalized.keys()) - cls._VALID_DICT_KEYS
             if unknown_keys:
@@ -210,6 +204,14 @@ class SkipConfig:
                     f"'skip.on' must be one of "
                     f"{', '.join(repr(v) for v in sorted(cls._VALID_ON_VALUES))}, "
                     f"got '{invalid_values[0]}'",
+                    line_number,
+                )
+            if origin != "directory" and SKIP_ON_CAPABILITY_UNAVAILABLE in normalized_on_values:
+                _raise_config_error(
+                    location,
+                    f"'skip.on' value '{SKIP_ON_CAPABILITY_UNAVAILABLE}' "
+                    "is only valid in directory-level test.yaml files, "
+                    "not in test frontmatter",
                     line_number,
                 )
             reason = normalized.get("reason")
@@ -2419,6 +2421,14 @@ def _get_directory_defaults(directory: Path) -> TestConfig:
     return dict(config)
 
 
+def _get_suite_directory_config(suite: SuiteInfo, *, coverage: bool) -> TestConfig:
+    config = _get_directory_defaults(suite.directory)
+    if coverage:
+        timeout_value = cast(int, config["timeout"])
+        config["timeout"] = timeout_value * 5
+    return config
+
+
 def _resolve_suite_for_test(test: Path) -> SuiteInfo | None:
     directory_config = _load_directory_config(test.parent)
     suite_value = _suite_config_from_value(directory_config.values.get("suite"))
@@ -4227,6 +4237,8 @@ def run_simple_test(
     except subprocess.CalledProcessError as e:
         report_failure(test, format_failure_message(f"subprocess error: {e}"))
         return False
+    except fixtures_impl.FixtureUnavailable:
+        raise
     except Exception as e:
         report_failure(test, format_failure_message(f"unexpected exception: {e}"))
         return False
@@ -4263,6 +4275,14 @@ def _compose_skip_reason(
     if has_exc:
         return exception_reason  # type: ignore[return-value]
     return fallback
+
+
+def _fixture_unavailable_skip_reason(
+    skip_cfg: "SkipConfig | None",
+    exc: fixtures_impl.FixtureUnavailable,
+) -> str:
+    configured_reason = skip_cfg.reason if isinstance(skip_cfg, SkipConfig) else None
+    return _compose_skip_reason(configured_reason, str(exc))
 
 
 def _run_fixture_assertions_for_test(
@@ -4502,7 +4522,7 @@ class Worker:
                 return 0
             time.sleep(0.01)
 
-    def _record_static_skip(
+    def _record_test_skip(
         self,
         *,
         test_item: TestQueueItem,
@@ -4523,6 +4543,40 @@ class Worker:
             summary.record_fixture_outcome(_fixture_names(fixtures), "skipped")
         summary.skipped += 1
         summary.skipped_paths.append(rel_path)
+
+    def _record_static_skip(
+        self,
+        *,
+        test_item: TestQueueItem,
+        fixtures: tuple[fixtures_impl.FixtureSpec, ...],
+        reason: str,
+        summary: Summary,
+    ) -> None:
+        self._record_test_skip(
+            test_item=test_item,
+            fixtures=fixtures,
+            reason=reason,
+            summary=summary,
+        )
+
+    def _skip_test_with_reason(
+        self,
+        *,
+        test_item: TestQueueItem,
+        fixtures: tuple[fixtures_impl.FixtureSpec, ...],
+        displayed_reason: str,
+        summary: Summary,
+    ) -> bool:
+        if self._run_skipped_selector.should_run_skipped(reason=displayed_reason):
+            self._increment_run_skipped_match_count()
+            return False
+        self._record_test_skip(
+            test_item=test_item,
+            fixtures=fixtures,
+            reason=displayed_reason,
+            summary=summary,
+        )
+        return True
 
     def _skip_suite_with_reason(
         self,
@@ -4826,11 +4880,15 @@ class Worker:
                     )
             primary_test = tests[0].path
             try:
-                primary_config = parse_test_config(primary_test, coverage=self._coverage)
+                parse_test_config(primary_test, coverage=self._coverage)
             except ValueError as exc:
                 raise RuntimeError(
                     f"failed to parse suite config for {primary_test}: {exc}"
                 ) from exc
+            suite_config = _get_suite_directory_config(
+                suite_item.suite,
+                coverage=self._coverage,
+            )
             # Avoid activating suite fixtures when every suite member is statically skipped.
             static_skip_plan = self._suite_static_skip_plan(suite_item)
             if static_skip_plan is not None:
@@ -4842,9 +4900,9 @@ class Worker:
                         summary=summary,
                     )
                 return
-            inputs_override = typing.cast(str | None, primary_config.get("inputs"))
+            inputs_override = typing.cast(str | None, suite_config.get("inputs"))
             env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
-            config_package_dirs = cast(tuple[str, ...], primary_config.get("package_dirs", tuple()))
+            config_package_dirs = cast(tuple[str, ...], suite_config.get("package_dirs", tuple()))
             additional_package_dirs: list[str] = []
             for entry in config_package_dirs:
                 additional_package_dirs.extend(_expand_package_dirs(Path(entry)))
@@ -4867,8 +4925,8 @@ class Worker:
                 merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
                 env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
                 config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
-            skip_cfg = cast(SkipConfig | None, primary_config.get("skip"))
-            requires_cfg = cast(RequiresConfig | None, primary_config.get("requires"))
+            skip_cfg = cast(SkipConfig | None, suite_config.get("skip"))
+            requires_cfg = cast(RequiresConfig | None, suite_config.get("requires"))
             if isinstance(requires_cfg, RequiresConfig) and requires_cfg.has_requirements:
                 missing_requirements = self._evaluate_suite_requirements(
                     suite_item=suite_item,
@@ -4904,7 +4962,7 @@ class Worker:
             context_token = fixtures_impl.push_context(
                 fixtures_impl.FixtureContext(
                     test=primary_test,
-                    config=typing.cast(dict[str, Any], primary_config),
+                    config=typing.cast(dict[str, Any], suite_config),
                     coverage=self._coverage,
                     env=env,
                     config_args=tuple(config_args),
@@ -4937,7 +4995,7 @@ class Worker:
                     and skip_cfg.allows_condition(SKIP_ON_FIXTURE_UNAVAILABLE)
                 ):
                     raise
-                reason = _compose_skip_reason(skip_cfg.reason, str(exc))
+                reason = _fixture_unavailable_skip_reason(skip_cfg, exc)
                 displayed_reason = f"fixture unavailable: {reason}"
                 if not self._skip_suite_with_reason(
                     suite_item=suite_item,
@@ -4981,6 +5039,7 @@ class Worker:
         retry_limit = 1
         config: TestConfig | None = None
         fixture_assertions: dict[str, Any] = {}
+        skip_cfg: SkipConfig | None = None
         parse_error: str | None = None
         try:
             config = parse_test_config(test_path, coverage=self._coverage)
@@ -5023,7 +5082,8 @@ class Worker:
                         summary=summary,
                     )
                     return False
-            # Conditional skips are suite-level — _run_suite handles them.
+            # Capability skips are suite-level. Fixture-unavailable skips can
+            # also apply to per-test fixture activation below.
         if parse_error is not None:
             message = format_failure_message(parse_error)
             report_failure(test_path, message)
@@ -5093,6 +5153,34 @@ class Worker:
                         _request_interrupt()
                         interrupted = True
                         outcome = False
+                    except fixtures_impl.FixtureUnavailable as exc:
+                        if isinstance(skip_cfg, SkipConfig) and skip_cfg.allows_condition(
+                            SKIP_ON_FIXTURE_UNAVAILABLE
+                        ):
+                            reason = _fixture_unavailable_skip_reason(skip_cfg, exc)
+                            displayed_reason = f"fixture unavailable: {reason}"
+                            if self._skip_test_with_reason(
+                                test_item=test_item,
+                                fixtures=fixtures,
+                                displayed_reason=displayed_reason,
+                                summary=summary,
+                            ):
+                                return False
+                            raise
+                        report_failure(
+                            test_path,
+                            format_failure_message(
+                                f"fixture unavailable: {_compose_skip_reason(None, str(exc))}"
+                            ),
+                        )
+                        outcome = False
+                        final_interrupted = False
+                        final_outcome = outcome
+                        summary.record_assertion_checks(
+                            total=assertion_tally.total,
+                            failed=assertion_tally.failed,
+                        )
+                        break
                     except Exception as exc:
                         is_fixture_assertion = str(exc).startswith("fixture assertion failed:")
                         error_message = (
