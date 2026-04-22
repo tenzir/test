@@ -115,7 +115,9 @@ example-project/
   raises `FixtureUnavailable` because it checks for a binary that does not
   exist. The suite's `test.yaml` opts into graceful skipping via
   `skip: {on: fixture-unavailable}`, so the test is reported as skipped rather
-  than failing the run.
+  than failing the run. For fixtures that are selected by individual tests, use
+  the same skip mapping in test frontmatter or inherit it from directory
+  defaults; the skip applies to that test's fixture activation.
 - **Capability requirements** (`tests/capability`): demonstrates suite-level
   capability probes with:
   `requires.operators: [from_gcs]` and

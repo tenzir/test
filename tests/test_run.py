@@ -5562,6 +5562,252 @@ def test_worker_fixture_unavailable_not_skipped_for_capability_only_condition(
         run.apply_settings(original_settings)
 
 
+def test_worker_per_test_fixture_unavailable_skip_from_frontmatter(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir(parents=True)
+    test_path = tests_dir / "frontmatter-fixture.tql"
+    test_path.write_text(
+        """---
+skip:
+  on: fixture-unavailable
+  reason: optional dependency
+fixtures:
+  - per_test_unavailable_fixture
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+
+    activation_count = 0
+    previous_factory = fixture_api._FACTORIES.get("per_test_unavailable_fixture")
+
+    @fixture_api.fixture(name="per_test_unavailable_fixture", replace=True)
+    def per_test_unavailable_fixture():
+        nonlocal activation_count
+        activation_count += 1
+        raise fixture_api.FixtureUnavailable("binary missing")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        assert len(queue) == 1
+        assert isinstance(queue[0], run.TestQueueItem)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 1
+        assert summary.skipped == 1
+        assert summary.failed == 0
+        assert activation_count == 1
+        assert summary.runner_stats["tenzir"].skipped == 1
+        assert summary.fixture_stats["per_test_unavailable_fixture"].skipped == 1
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("per_test_unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["per_test_unavailable_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
+def test_worker_directory_fixture_unavailable_skip_with_per_test_options(
+    tmp_path: Path,
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    tests_dir = tmp_path / "tests" / "parameterized"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "test.yaml").write_text(
+        "skip:\n  on: fixture-unavailable\n  reason: optional service\n",
+        encoding="utf-8",
+    )
+    tests: list[Path] = []
+    for label in ("alpha", "beta"):
+        path = tests_dir / f"{label}.tql"
+        path.write_text(
+            f"""---
+fixtures:
+  - per_test_parameterized_fixture:
+      label: {label}
+---
+
+version
+write_json
+""",
+            encoding="utf-8",
+        )
+        tests.append(path)
+    run._clear_directory_config_cache()
+
+    activation_labels: list[str] = []
+    previous_factory = fixture_api._FACTORIES.get("per_test_parameterized_fixture")
+
+    @fixture_api.fixture(name="per_test_parameterized_fixture", replace=True)
+    def per_test_parameterized_fixture():
+        options = fixture_api.current_options("per_test_parameterized_fixture")
+        label = options.get("label", "missing")
+        activation_labels.append(label)
+        raise fixture_api.FixtureUnavailable(f"{label} service missing")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        assert len(queue) == 2
+        assert all(isinstance(item, run.TestQueueItem) for item in queue)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 2
+        assert summary.skipped == 2
+        assert summary.failed == 0
+        assert sorted(activation_labels) == ["alpha", "beta"]
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("per_test_parameterized_fixture", None)
+        else:
+            fixture_api._FACTORIES["per_test_parameterized_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
+def test_worker_per_test_fixture_unavailable_without_skip_fails(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir(parents=True)
+    test_path = tests_dir / "missing-fixture.tql"
+    test_path.write_text(
+        """---
+fixtures:
+  - per_test_unavailable_fixture
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+
+    previous_factory = fixture_api._FACTORIES.get("per_test_unavailable_fixture")
+
+    @fixture_api.fixture(name="per_test_unavailable_fixture", replace=True)
+    def per_test_unavailable_fixture():
+        raise fixture_api.FixtureUnavailable("binary missing")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 1
+        assert summary.failed == 1
+        assert summary.skipped == 0
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("per_test_unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["per_test_unavailable_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
+def test_worker_run_skipped_matches_per_test_fixture_unavailable_skip(tmp_path: Path) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir(parents=True)
+    test_path = tests_dir / "run-skipped-fixture.tql"
+    test_path.write_text(
+        """---
+skip:
+  on: fixture-unavailable
+fixtures:
+  - per_test_unavailable_fixture
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+
+    previous_factory = fixture_api._FACTORIES.get("per_test_unavailable_fixture")
+
+    @fixture_api.fixture(name="per_test_unavailable_fixture", replace=True)
+    def per_test_unavailable_fixture():
+        raise fixture_api.FixtureUnavailable("binary missing")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        selector = run.RunSkippedSelector.from_cli(reason_patterns=("fixture unavailable*",))
+        worker = run.Worker(queue, update=False, coverage=False, run_skipped_selector=selector)
+        worker.start()
+        with pytest.raises(fixture_api.FixtureUnavailable, match="binary missing"):
+            worker.join()
+        assert worker.run_skipped_match_count == 1
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("per_test_unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["per_test_unavailable_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
 # --- Tests for FixtureUnavailable handling in Worker._run_suite (TST-1, TST-4, TST-6) ---
 
 
@@ -6055,4 +6301,170 @@ def test_worker_suite_fixture_unavailable_skips_tests_with_per_test_config(
             fixture_api._FACTORIES.pop("available_fixture", None)
         else:
             fixture_api._FACTORIES["available_fixture"] = previous_available
+        run.apply_settings(original_settings)
+
+
+def test_worker_suite_fixture_unavailable_ignores_first_member_frontmatter_skip(
+    tmp_path: Path,
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: context\nfixtures:\n  - unavailable_fixture\n",
+        encoding="utf-8",
+    )
+    first_test = suite_dir / "01-test.tql"
+    first_test.write_text(
+        "---\nskip:\n  on: fixture-unavailable\n---\nversion\nwrite_json\n",
+        encoding="utf-8",
+    )
+    second_test = suite_dir / "02-test.tql"
+    second_test.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    previous_factory = fixture_api._FACTORIES.get("unavailable_fixture")
+
+    @fixture_api.fixture(name="unavailable_fixture", replace=True)
+    def unavailable_fixture():
+        raise fixture_api.FixtureUnavailable("docker not found")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths([first_test, second_test], coverage=False)
+        assert len(queue) == 1
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        with pytest.raises(fixture_api.FixtureUnavailable, match="docker not found"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["unavailable_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
+def test_worker_suite_fixture_unavailable_ignores_later_member_frontmatter_skip(
+    tmp_path: Path,
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: context\nfixtures:\n  - unavailable_fixture\n",
+        encoding="utf-8",
+    )
+    first_test = suite_dir / "01-test.tql"
+    first_test.write_text("version\nwrite_json\n", encoding="utf-8")
+    second_test = suite_dir / "02-test.tql"
+    second_test.write_text(
+        "---\nskip:\n  on: fixture-unavailable\n---\nversion\nwrite_json\n",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+
+    previous_factory = fixture_api._FACTORIES.get("unavailable_fixture")
+
+    @fixture_api.fixture(name="unavailable_fixture", replace=True)
+    def unavailable_fixture():
+        raise fixture_api.FixtureUnavailable("docker not found")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths([first_test, second_test], coverage=False)
+        assert len(queue) == 1
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        with pytest.raises(fixture_api.FixtureUnavailable, match="docker not found"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["unavailable_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
+def test_worker_suite_fixture_unavailable_uses_directory_skip_with_member_static_skip(
+    tmp_path: Path,
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: context\n"
+        "skip:\n  on: fixture-unavailable\n  reason: suite dependency\n"
+        "fixtures:\n  - unavailable_fixture\n",
+        encoding="utf-8",
+    )
+    first_test = suite_dir / "01-test.tql"
+    first_test.write_text(
+        "---\nskip: per-test maintenance\n---\nversion\nwrite_json\n",
+        encoding="utf-8",
+    )
+    second_test = suite_dir / "02-test.tql"
+    second_test.write_text("version\nwrite_json\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+
+    previous_factory = fixture_api._FACTORIES.get("unavailable_fixture")
+
+    @fixture_api.fixture(name="unavailable_fixture", replace=True)
+    def unavailable_fixture():
+        raise fixture_api.FixtureUnavailable("docker not found")
+        yield {}  # type: ignore[misc]
+
+    try:
+        queue = run._build_queue_from_paths([first_test, second_test], coverage=False)
+        assert len(queue) == 1
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert summary.total == 2
+        assert summary.skipped == 2
+        assert summary.failed == 0
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("unavailable_fixture", None)
+        else:
+            fixture_api._FACTORIES["unavailable_fixture"] = previous_factory
         run.apply_settings(original_settings)

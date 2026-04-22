@@ -1187,13 +1187,16 @@ def test_skip_dict_rejects_non_string_reason() -> None:
         )
 
 
-def test_skip_dict_rejected_in_frontmatter(tmp_path: Path, configured_root: Path) -> None:
-    """Dict skip format is only valid in directory-level test.yaml, not in frontmatter."""
+def test_skip_dict_fixture_unavailable_accepts_frontmatter(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    """Fixture-unavailable skip conditions are valid for per-test fixtures."""
     test_file = tmp_path / "case.tql"
     test_file.write_text(
         """---
 skip:
   on: fixture-unavailable
+  reason: optional dependency missing
 ---
 
 version
@@ -1202,7 +1205,55 @@ write_json
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="'skip' mapping form.*only valid in directory-level"):
+    config = run.parse_test_config(test_file)
+
+    skip_cfg = config["skip"]
+    assert isinstance(skip_cfg, run.SkipConfig)
+    assert skip_cfg.is_conditional
+    assert skip_cfg.on_fixture_unavailable
+    assert not skip_cfg.on_capability_unavailable
+    assert skip_cfg.reason == "optional dependency missing"
+
+
+def test_skip_dict_capability_unavailable_rejected_in_frontmatter(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    test_file = tmp_path / "case.tql"
+    test_file.write_text(
+        """---
+skip:
+  on: capability-unavailable
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="'skip.on' value 'capability-unavailable'.*directory"):
+        run.parse_test_config(test_file)
+
+
+def test_skip_dict_mixed_capability_condition_rejected_in_frontmatter(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    test_file = tmp_path / "case.tql"
+    test_file.write_text(
+        """---
+skip:
+  on:
+    - fixture-unavailable
+    - capability-unavailable
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="'skip.on' value 'capability-unavailable'.*directory"):
         run.parse_test_config(test_file)
 
 
