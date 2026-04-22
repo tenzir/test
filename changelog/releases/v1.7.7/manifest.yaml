@@ -1,0 +1,9 @@
+created: 2026-04-22
+title: Per-test skips for unavailable fixtures
+intro: >-
+  Tests can now skip only the cases that require an unavailable optional fixture instead
+  of skipping an entire suite. This keeps unrelated tests running and makes parameterized
+  fixture setups more reliable.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.7.6
