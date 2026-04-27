@@ -5724,6 +5724,8 @@ def run_fixture_mode_cli(
     _HOOKS_DISABLED = _hooks_disabled(no_hooks)
     root_path = Path(root or os.environ.get("TENZIR_TEST_ROOT") or Path.cwd()).resolve()
     root_hooks = hooks_impl.HookSet()
+    startup_succeeded = False
+    shutdown_invoked = False
     try:
         if not _HOOKS_DISABLED:
             try:
@@ -5740,6 +5742,7 @@ def run_fixture_mode_cli(
             )
             os.environ.clear()
             os.environ.update(env)
+            startup_succeeded = True
     except hooks_impl.HookInvocationError as exc:
         raise HarnessError(f"error: {exc}") from exc
 
@@ -5794,25 +5797,15 @@ def run_fixture_mode_cli(
             fixture_options=fixture_options,
         )
     )
-    try:
-        with fixtures_impl.activate(fixture_specs) as fixture_env:
-            env.update(fixture_env)
-            _apply_fixture_env(env, fixture_specs)
-            _print_fixture_env_lines(fixture_env)
-            _wait_for_fixture_shutdown()
-    except fixtures_impl.FixtureUnavailable as exc:
-        _raise_fixture_unavailable_harness_error(exc)
-    finally:
-        fixtures_impl.pop_context(context_token)
-        cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
 
-    try:
+    def _invoke_fixture_shutdown(exit_code: int) -> None:
+        nonlocal shutdown_invoked
         _invoke_hooks(
             (root_hooks,),
             "shutdown",
             hooks_impl.ShutdownContext(
                 root=settings.root,
-                exit_code=0,
+                exit_code=exit_code,
                 interrupted=False,
                 summary=hooks_impl.SummaryView(failed=0, total=0, skipped=0),
                 project_results=tuple(),
@@ -5822,6 +5815,27 @@ def run_fixture_mode_cli(
             project_root=settings.root,
             debug=debug_enabled,
         )
+        shutdown_invoked = True
+
+    try:
+        with fixtures_impl.activate(fixture_specs) as fixture_env:
+            env.update(fixture_env)
+            _apply_fixture_env(env, fixture_specs)
+            _print_fixture_env_lines(fixture_env)
+            _wait_for_fixture_shutdown()
+    except fixtures_impl.FixtureUnavailable as exc:
+        if startup_succeeded and not shutdown_invoked:
+            try:
+                _invoke_fixture_shutdown(1)
+            except hooks_impl.HookInvocationError as shutdown_exc:
+                raise HarnessError(f"error: {shutdown_exc}") from exc
+        _raise_fixture_unavailable_harness_error(exc)
+    finally:
+        fixtures_impl.pop_context(context_token)
+        cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
+
+    try:
+        _invoke_fixture_shutdown(0)
     except hooks_impl.HookInvocationError as exc:
         raise HarnessError(f"error: {exc}") from exc
 
@@ -5873,6 +5887,13 @@ def run_cli(
     """
     from tenzir_test.engine import state as engine_state
 
+    debug_enabled = bool(debug or _default_debug_logging)
+    root_path = Path(root or os.environ.get("TENZIR_TEST_ROOT") or Path.cwd()).resolve()
+    root_hooks = hooks_impl.HookSet()
+    settings: Settings | None = None
+    startup_succeeded = False
+    shutdown_invoked = False
+
     try:
         debug_enabled = bool(debug or _default_debug_logging)
         _configure_runtime_logging(debug_enabled=debug_enabled)
@@ -5901,7 +5922,6 @@ def run_cli(
 
         global _HOOKS_DISABLED
         _HOOKS_DISABLED = _hooks_disabled(no_hooks)
-        root_path = Path(root or os.environ.get("TENZIR_TEST_ROOT") or Path.cwd()).resolve()
         try:
             root_hooks = hooks_impl.HookSet() if _HOOKS_DISABLED else _load_project_hooks(root_path)
         except RuntimeError as exc:
@@ -5917,6 +5937,7 @@ def run_cli(
             )
             os.environ.clear()
             os.environ.update(env)
+            startup_succeeded = True
 
         settings = discover_settings(root=root_path)
         apply_settings(settings)
@@ -6027,6 +6048,7 @@ def run_cli(
                 )
                 project_view = _project_view(selection)
                 project_env = os.environ.copy()
+                project_env["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
                 next_selection = next(
                     (
                         candidate
@@ -6056,152 +6078,314 @@ def run_cli(
                 _CURRENT_PROJECT_VIEW = project_view
                 _CURRENT_HOOK_CHAIN = hook_chain
 
-                tests_to_run = selection.selectors if not selection.run_all else [selection.root]
-
-                if purge:
-                    project_summary = Summary()
-                    _invoke_hooks(
-                        hook_chain,
-                        "project_finish",
-                        hooks_impl.ProjectFinishContext(
-                            root=settings.root,
-                            project=project_view,
-                            next_project=_project_view(next_selection) if next_selection else None,
-                            kind=selection.kind,
-                            summary=_summary_view(project_summary),
-                            interrupted=interrupted or interrupt_requested(),
-                            debug=debug_enabled,
-                        ),
-                        reverse=True,
-                        project_root=selection.root,
-                        debug=debug_enabled,
+                project_finish_pending = True
+                project_summary = Summary()
+                try:
+                    tests_to_run = (
+                        selection.selectors if not selection.run_all else [selection.root]
                     )
-                    previous_project_view = project_view
-                    _CURRENT_PROJECT_ENV = None
-                    _CURRENT_PROJECT_VIEW = None
-                    _CURRENT_HOOK_CHAIN = tuple()
-                    continue
 
-                collected_paths: set[Path] = set()
-                for test in tests_to_run:
-                    if test.resolve() == selection.root.resolve():
-                        all_tests = []
-                        for tests_dir in _iter_project_test_directories(selection.root):
-                            all_tests.extend(list(collect_all_tests(tests_dir)))
-                        for test_path in all_tests:
-                            collected_paths.add(test_path.resolve())
+                    if purge:
+                        project_summary = Summary()
+                        _invoke_hooks(
+                            hook_chain,
+                            "project_finish",
+                            hooks_impl.ProjectFinishContext(
+                                root=settings.root,
+                                project=project_view,
+                                next_project=_project_view(next_selection)
+                                if next_selection
+                                else None,
+                                kind=selection.kind,
+                                summary=_summary_view(project_summary),
+                                interrupted=interrupted or interrupt_requested(),
+                                debug=debug_enabled,
+                            ),
+                            reverse=True,
+                            project_root=selection.root,
+                            debug=debug_enabled,
+                        )
+                        project_finish_pending = False
+                        previous_project_view = project_view
+                        _CURRENT_PROJECT_ENV = None
+                        _CURRENT_PROJECT_VIEW = None
+                        _CURRENT_HOOK_CHAIN = tuple()
                         continue
 
-                    resolved = test.resolve()
-                    if not resolved.exists():
-                        raise HarnessError(f"error: test path `{test}` does not exist")
-
-                    if resolved.is_dir():
-                        if _is_inputs_path(resolved):
+                    collected_paths: set[Path] = set()
+                    for test in tests_to_run:
+                        if test.resolve() == selection.root.resolve():
+                            all_tests = []
+                            for tests_dir in _iter_project_test_directories(selection.root):
+                                all_tests.extend(list(collect_all_tests(tests_dir)))
+                            for test_path in all_tests:
+                                collected_paths.add(test_path.resolve())
                             continue
-                        tql_files = list(collect_all_tests(resolved))
-                        if not tql_files:
-                            raise HarnessError(
-                                f"error: no {_allowed_extensions} files found in {resolved}"
-                            )
-                        for file_path in tql_files:
-                            suite_info = _resolve_suite_for_test(file_path)
-                            if suite_info is None:
+
+                        resolved = test.resolve()
+                        if not resolved.exists():
+                            raise HarnessError(f"error: test path `{test}` does not exist")
+
+                        if resolved.is_dir():
+                            if _is_inputs_path(resolved):
                                 continue
-                            suite_dir = suite_info.directory
-                            if resolved == suite_dir:
-                                continue
-                            if _path_is_within(resolved, suite_dir):
-                                rel_target = _relativize_path(resolved)
-                                rel_suite = _relativize_path(suite_dir)
-                                detail = (
-                                    f"cannot select {rel_target} directly because it is inside the suite "
-                                    f"'{suite_info.name}' defined in {rel_suite / _CONFIG_FILE_NAME}."
+                            tql_files = list(collect_all_tests(resolved))
+                            if not tql_files:
+                                raise HarnessError(
+                                    f"error: no {_allowed_extensions} files found in {resolved}"
                                 )
-                                print(f"{CROSS} {detail}", file=sys.stderr)
+                            for file_path in tql_files:
+                                suite_info = _resolve_suite_for_test(file_path)
+                                if suite_info is None:
+                                    continue
+                                suite_dir = suite_info.directory
+                                if resolved == suite_dir:
+                                    continue
+                                if _path_is_within(resolved, suite_dir):
+                                    rel_target = _relativize_path(resolved)
+                                    rel_suite = _relativize_path(suite_dir)
+                                    detail = (
+                                        f"cannot select {rel_target} directly because it is inside the suite "
+                                        f"'{suite_info.name}' defined in {rel_suite / _CONFIG_FILE_NAME}."
+                                    )
+                                    print(f"{CROSS} {detail}", file=sys.stderr)
+                                    print(
+                                        f"{INFO} select the suite directory instead",
+                                        file=sys.stderr,
+                                    )
+                                    raise HarnessError(
+                                        f"invalid partial suite selection at {rel_target}",
+                                        show_message=False,
+                                    )
+                            for file_path in tql_files:
+                                collected_paths.add(file_path.resolve())
+                        elif resolved.is_file():
+                            if _is_inputs_path(resolved):
+                                continue
+                            if resolved.suffix[1:] in _allowed_extensions:
+                                suite_info = _resolve_suite_for_test(resolved)
+                                if suite_info is not None and _path_is_within(
+                                    resolved, suite_info.directory
+                                ):
+                                    rel_file = _relativize_path(resolved)
+                                    rel_suite = _relativize_path(suite_info.directory)
+                                    detail = (
+                                        f"cannot select {rel_file} directly because it belongs to the suite "
+                                        f"'{suite_info.name}' defined in {rel_suite / _CONFIG_FILE_NAME}."
+                                    )
+                                    print(f"{CROSS} {detail}", file=sys.stderr)
+                                    print(
+                                        f"{INFO} select the suite directory instead",
+                                        file=sys.stderr,
+                                    )
+                                    raise HarnessError(
+                                        f"invalid suite selection for {rel_file}",
+                                        show_message=False,
+                                    )
+                                collected_paths.add(resolved.resolve())
+                            else:
+                                raise HarnessError(
+                                    f"error: unsupported file type {resolved.suffix} for {resolved} - only {_allowed_extensions} files are supported"
+                                )
+                        else:
+                            raise HarnessError(f"error: `{test}` is neither a file nor a directory")
+
+                    active_patterns = [p.strip() for p in match_patterns if p and p.strip()]
+                    if active_patterns:
+                        # Filter collected tests to those matching any
+                        # pattern.  This acts as an intersection when path
+                        # args were given (since collected_paths was
+                        # pre-populated above), or filters all discovered
+                        # tests when no paths were specified.
+                        collected_paths = _filter_paths_by_patterns(
+                            collected_paths,
+                            active_patterns,
+                            project_root=selection.root,
+                        )
+                        collected_paths = _expand_suites(collected_paths)
+                        if not collected_paths:
+                            pattern_list = ", ".join(repr(p) for p in active_patterns)
+                            if not selection.run_all:
                                 print(
-                                    f"{INFO} select the suite directory instead",
-                                    file=sys.stderr,
+                                    f"{INFO} no tests matched pattern(s) {pattern_list}"
+                                    f" within the selected paths"
                                 )
-                                raise HarnessError(
-                                    f"invalid partial suite selection at {rel_target}",
-                                    show_message=False,
-                                )
-                        for file_path in tql_files:
-                            collected_paths.add(file_path.resolve())
-                    elif resolved.is_file():
-                        if _is_inputs_path(resolved):
-                            continue
-                        if resolved.suffix[1:] in _allowed_extensions:
-                            suite_info = _resolve_suite_for_test(resolved)
-                            if suite_info is not None and _path_is_within(
-                                resolved, suite_info.directory
-                            ):
-                                rel_file = _relativize_path(resolved)
-                                rel_suite = _relativize_path(suite_info.directory)
-                                detail = (
-                                    f"cannot select {rel_file} directly because it belongs to the suite "
-                                    f"'{suite_info.name}' defined in {rel_suite / _CONFIG_FILE_NAME}."
-                                )
-                                print(f"{CROSS} {detail}", file=sys.stderr)
-                                print(f"{INFO} select the suite directory instead", file=sys.stderr)
-                                raise HarnessError(
-                                    f"invalid suite selection for {rel_file}",
-                                    show_message=False,
-                                )
-                            collected_paths.add(resolved.resolve())
-                        else:
-                            raise HarnessError(
-                                f"error: unsupported file type {resolved.suffix} for {resolved} - only {_allowed_extensions} files are supported"
-                            )
-                    else:
-                        raise HarnessError(f"error: `{test}` is neither a file nor a directory")
+                            else:
+                                print(f"{INFO} no tests matched pattern(s): {pattern_list}")
 
-                active_patterns = [p.strip() for p in match_patterns if p and p.strip()]
-                if active_patterns:
-                    # Filter collected tests to those matching any
-                    # pattern.  This acts as an intersection when path
-                    # args were given (since collected_paths was
-                    # pre-populated above), or filters all discovered
-                    # tests when no paths were specified.
-                    collected_paths = _filter_paths_by_patterns(
-                        collected_paths,
-                        active_patterns,
-                        project_root=selection.root,
+                    if interrupt_requested():
+                        break
+
+                    queue = _build_queue_from_paths(collected_paths, coverage=coverage)
+                    queue.sort(key=_queue_sort_key, reverse=True)
+                    _validate_parallel_suite_min_jobs(queue, jobs=jobs)
+                    _warn_parallel_suite_oversubscription(queue, jobs=jobs)
+                    project_queue_size = _count_queue_tests(queue)
+                    project_summary = Summary()
+                    job_count, enabled_flags, verb = _summarize_harness_configuration(
+                        jobs=jobs,
+                        update=update,
+                        coverage=coverage,
+                        debug=debug_enabled,
+                        show_summary=show_summary,
+                        runner_summary=runner_summary,
+                        fixture_summary=fixture_summary,
+                        passthrough=passthrough_mode,
+                        run_skipped_selector=run_skipped_selector,
                     )
-                    collected_paths = _expand_suites(collected_paths)
-                    if not collected_paths:
-                        pattern_list = ", ".join(repr(p) for p in active_patterns)
-                        if not selection.run_all:
-                            print(
-                                f"{INFO} no tests matched pattern(s) {pattern_list}"
-                                f" within the selected paths"
+
+                    if not project_queue_size:
+                        overall_queue_count += project_queue_size
+                        executed_projects.append(selection)
+                        project_results.append(
+                            ProjectResult(
+                                selection=selection,
+                                summary=project_summary,
+                                queue_size=project_queue_size,
                             )
-                        else:
-                            print(f"{INFO} no tests matched pattern(s): {pattern_list}")
+                        )
+                        _invoke_hooks(
+                            hook_chain,
+                            "project_finish",
+                            hooks_impl.ProjectFinishContext(
+                                root=settings.root,
+                                project=project_view,
+                                next_project=_project_view(next_selection)
+                                if next_selection
+                                else None,
+                                kind=selection.kind,
+                                summary=_summary_view(project_summary),
+                                interrupted=interrupted or interrupt_requested(),
+                                debug=debug_enabled,
+                            ),
+                            reverse=True,
+                            project_root=selection.root,
+                            debug=debug_enabled,
+                        )
+                        project_finish_pending = False
+                        previous_project_view = project_view
+                        _CURRENT_PROJECT_ENV = None
+                        _CURRENT_PROJECT_VIEW = None
+                        _CURRENT_HOOK_CHAIN = tuple()
+                        continue
 
-                if interrupt_requested():
-                    break
+                    os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
+                    if not TENZIR_BINARY:
+                        raise HarnessError(
+                            f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`"
+                        )
+                    try:
+                        tenzir_version = get_version()
+                    except FileNotFoundError:
+                        raise HarnessError(
+                            f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`"
+                        )
+                    except subprocess.CalledProcessError as exc:
+                        if _is_interrupt_exit(exc.returncode) or interrupt_requested():
+                            _request_interrupt()
+                            interrupted = True
+                            break
+                        raise
 
-                queue = _build_queue_from_paths(collected_paths, coverage=coverage)
-                queue.sort(key=_queue_sort_key, reverse=True)
-                _validate_parallel_suite_min_jobs(queue, jobs=jobs)
-                _warn_parallel_suite_oversubscription(queue, jobs=jobs)
-                project_queue_size = _count_queue_tests(queue)
-                project_summary = Summary()
-                job_count, enabled_flags, verb = _summarize_harness_configuration(
-                    jobs=jobs,
-                    update=update,
-                    coverage=coverage,
-                    debug=debug_enabled,
-                    show_summary=show_summary,
-                    runner_summary=runner_summary,
-                    fixture_summary=fixture_summary,
-                    passthrough=passthrough_mode,
-                    run_skipped_selector=run_skipped_selector,
-                )
+                    runner_versions = _collect_runner_versions(queue, tenzir_version=tenzir_version)
+                    runner_breakdown = _runner_breakdown(
+                        queue,
+                        tenzir_version=tenzir_version,
+                        runner_versions=runner_versions,
+                    )
 
-                if not project_queue_size:
+                    _print_project_start(
+                        selection=selection,
+                        display_base=display_base,
+                        queue_size=project_queue_size,
+                        job_count=job_count,
+                        enabled_flags=enabled_flags,
+                        verb=verb,
+                    )
+                    count_width = max(
+                        (len(str(count)) for _, count, _ in runner_breakdown), default=1
+                    )
+                    for name, count, version in runner_breakdown:
+                        version_segment = f" (v{version})" if version else ""
+                        print(f"{INFO}   {count:>{count_width}}× {name}{version_segment}")
+                    printed_projects += 1
+
+                    test_slots = threading.BoundedSemaphore(max(1, jobs))
+                    slot_lock = threading.Lock()
+                    queue_lock = threading.Lock()
+                    suite_queue_state = SuiteQueueState(
+                        pending_items=_count_suite_queue_items(queue)
+                    )
+                    workers = [
+                        Worker(
+                            queue,
+                            update=update,
+                            coverage=coverage,
+                            runner_versions=runner_versions,
+                            debug=debug_enabled,
+                            run_skipped_selector=run_skipped_selector,
+                            jobs=jobs,
+                            test_slots=test_slots,
+                            slot_lock=slot_lock,
+                            queue_lock=queue_lock,
+                            suite_queue_state=suite_queue_state,
+                            hook_chain=hook_chain,
+                            project_view=project_view,
+                        )
+                        for _ in range(jobs)
+                    ]
+                    for worker in workers:
+                        worker.start()
+                    skip_filter_matches = 0
+                    try:
+                        for worker in workers:
+                            project_summary += worker.join()
+                            skip_filter_matches += worker.run_skipped_match_count
+                    except KeyboardInterrupt:  # pragma: no cover - defensive guard
+                        _request_interrupt()
+                        for worker in workers:
+                            worker.join()
+                        interrupted = True
+                        break
+                    except fixtures_impl.FixtureUnavailable as exc:
+                        _raise_fixture_unavailable_harness_error(exc)
+                    except Exception as exc:
+                        if not (_exception_is_interrupt(exc) or interrupt_requested()):
+                            raise
+                        _request_interrupt()
+                        for remaining_worker in workers:
+                            try:
+                                remaining_worker.join()
+                            except Exception as join_exc:
+                                if not (_exception_is_interrupt(join_exc) or interrupt_requested()):
+                                    raise
+                        interrupted = True
+                        break
+                    if run_skipped_selector.has_reason_filters and skip_filter_matches == 0:
+                        print(f"{INFO} no skipped tests matched run-skipped filters")
+
+                    _print_compact_summary(project_summary)
+                    summary_enabled = show_summary or runner_summary or fixture_summary
+                    if summary_enabled:
+                        if is_verbose_output():
+                            _print_detailed_summary(project_summary)
+                        _print_ascii_summary(
+                            project_summary,
+                            include_runner=runner_summary,
+                            include_fixture=fixture_summary,
+                        )
+
+                    if coverage:
+                        coverage_dir = os.environ.get(
+                            "CMAKE_COVERAGE_OUTPUT_DIRECTORY", os.path.join(os.getcwd(), "coverage")
+                        )
+                        source_dir = (
+                            str(coverage_source_dir) if coverage_source_dir else os.getcwd()
+                        )
+                        print(f"{INFO} Code coverage data collected in {coverage_dir}")
+                        print(f"{INFO} Source directory for coverage mapping: {source_dir}")
+
+                    overall_summary += project_summary
                     overall_queue_count += project_queue_size
                     executed_projects.append(selection)
                     project_results.append(
@@ -6227,161 +6411,45 @@ def run_cli(
                         project_root=selection.root,
                         debug=debug_enabled,
                     )
+                    project_finish_pending = False
                     previous_project_view = project_view
                     _CURRENT_PROJECT_ENV = None
                     _CURRENT_PROJECT_VIEW = None
                     _CURRENT_HOOK_CHAIN = tuple()
-                    continue
 
-                os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
-                if not TENZIR_BINARY:
-                    raise HarnessError(
-                        f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`"
-                    )
-                try:
-                    tenzir_version = get_version()
-                except FileNotFoundError:
-                    raise HarnessError(
-                        f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`"
-                    )
-                except subprocess.CalledProcessError as exc:
-                    if _is_interrupt_exit(exc.returncode) or interrupt_requested():
-                        _request_interrupt()
-                        interrupted = True
+                    if interrupt_requested():
                         break
-                    raise
 
-                runner_versions = _collect_runner_versions(queue, tenzir_version=tenzir_version)
-                runner_breakdown = _runner_breakdown(
-                    queue,
-                    tenzir_version=tenzir_version,
-                    runner_versions=runner_versions,
-                )
-
-                _print_project_start(
-                    selection=selection,
-                    display_base=display_base,
-                    queue_size=project_queue_size,
-                    job_count=job_count,
-                    enabled_flags=enabled_flags,
-                    verb=verb,
-                )
-                count_width = max((len(str(count)) for _, count, _ in runner_breakdown), default=1)
-                for name, count, version in runner_breakdown:
-                    version_segment = f" (v{version})" if version else ""
-                    print(f"{INFO}   {count:>{count_width}}× {name}{version_segment}")
-                printed_projects += 1
-
-                test_slots = threading.BoundedSemaphore(max(1, jobs))
-                slot_lock = threading.Lock()
-                queue_lock = threading.Lock()
-                suite_queue_state = SuiteQueueState(pending_items=_count_suite_queue_items(queue))
-                workers = [
-                    Worker(
-                        queue,
-                        update=update,
-                        coverage=coverage,
-                        runner_versions=runner_versions,
-                        debug=debug_enabled,
-                        run_skipped_selector=run_skipped_selector,
-                        jobs=jobs,
-                        test_slots=test_slots,
-                        slot_lock=slot_lock,
-                        queue_lock=queue_lock,
-                        suite_queue_state=suite_queue_state,
-                        hook_chain=hook_chain,
-                        project_view=project_view,
-                    )
-                    for _ in range(jobs)
-                ]
-                for worker in workers:
-                    worker.start()
-                skip_filter_matches = 0
-                try:
-                    for worker in workers:
-                        project_summary += worker.join()
-                        skip_filter_matches += worker.run_skipped_match_count
-                except KeyboardInterrupt:  # pragma: no cover - defensive guard
-                    _request_interrupt()
-                    for worker in workers:
-                        worker.join()
-                    interrupted = True
-                    break
-                except fixtures_impl.FixtureUnavailable as exc:
-                    _raise_fixture_unavailable_harness_error(exc)
-                except Exception as exc:
-                    if not (_exception_is_interrupt(exc) or interrupt_requested()):
-                        raise
-                    _request_interrupt()
-                    for remaining_worker in workers:
-                        try:
-                            remaining_worker.join()
-                        except Exception as join_exc:
-                            if not (_exception_is_interrupt(join_exc) or interrupt_requested()):
-                                raise
-                    interrupted = True
-                    break
-                if run_skipped_selector.has_reason_filters and skip_filter_matches == 0:
-                    print(f"{INFO} no skipped tests matched run-skipped filters")
-
-                _print_compact_summary(project_summary)
-                summary_enabled = show_summary or runner_summary or fixture_summary
-                if summary_enabled:
-                    if is_verbose_output():
-                        _print_detailed_summary(project_summary)
-                    _print_ascii_summary(
-                        project_summary,
-                        include_runner=runner_summary,
-                        include_fixture=fixture_summary,
-                    )
-
-                if coverage:
-                    coverage_dir = os.environ.get(
-                        "CMAKE_COVERAGE_OUTPUT_DIRECTORY", os.path.join(os.getcwd(), "coverage")
-                    )
-                    source_dir = str(coverage_source_dir) if coverage_source_dir else os.getcwd()
-                    print(f"{INFO} Code coverage data collected in {coverage_dir}")
-                    print(f"{INFO} Source directory for coverage mapping: {source_dir}")
-
-                overall_summary += project_summary
-                overall_queue_count += project_queue_size
-                executed_projects.append(selection)
-                project_results.append(
-                    ProjectResult(
-                        selection=selection,
-                        summary=project_summary,
-                        queue_size=project_queue_size,
-                    )
-                )
-                _invoke_hooks(
-                    hook_chain,
-                    "project_finish",
-                    hooks_impl.ProjectFinishContext(
-                        root=settings.root,
-                        project=project_view,
-                        next_project=_project_view(next_selection) if next_selection else None,
-                        kind=selection.kind,
-                        summary=_summary_view(project_summary),
-                        interrupted=interrupted or interrupt_requested(),
-                        debug=debug_enabled,
-                    ),
-                    reverse=True,
-                    project_root=selection.root,
-                    debug=debug_enabled,
-                )
-                previous_project_view = project_view
-                _CURRENT_PROJECT_ENV = None
-                _CURRENT_PROJECT_VIEW = None
-                _CURRENT_HOOK_CHAIN = tuple()
-
-                if interrupt_requested():
-                    break
-
+                finally:
+                    if project_finish_pending:
+                        _invoke_hooks(
+                            hook_chain,
+                            "project_finish",
+                            hooks_impl.ProjectFinishContext(
+                                root=settings.root,
+                                project=project_view,
+                                next_project=_project_view(next_selection)
+                                if next_selection
+                                else None,
+                                kind=selection.kind,
+                                summary=_summary_view(project_summary),
+                                interrupted=interrupted or interrupt_requested(),
+                                debug=debug_enabled,
+                            ),
+                            reverse=True,
+                            project_root=selection.root,
+                            debug=debug_enabled,
+                        )
+                    previous_project_view = project_view
+                    _CURRENT_PROJECT_ENV = None
+                    _CURRENT_PROJECT_VIEW = None
+                    _CURRENT_HOOK_CHAIN = tuple()
             # Restore root project context for subsequent operations.
             _set_project_root(settings.root)
             engine_state.refresh()
 
             def _finish_result(result: ExecutionResult) -> ExecutionResult:
+                nonlocal shutdown_invoked
                 _invoke_hooks(
                     (root_hooks,),
                     "shutdown",
@@ -6399,6 +6467,7 @@ def run_cli(
                     project_root=settings.root,
                     debug=debug_enabled,
                 )
+                shutdown_invoked = True
                 return result
 
             interrupted = interrupted or interrupt_requested()
@@ -6452,8 +6521,32 @@ def run_cli(
                 )
             )
 
-    except hooks_impl.HookInvocationError as exc:
-        raise HarnessError(f"error: {exc}") from exc
+    except Exception as exc:
+        if startup_succeeded and not shutdown_invoked:
+            shutdown_root = settings.root if settings is not None else root_path
+            try:
+                _invoke_hooks(
+                    (root_hooks,),
+                    "shutdown",
+                    hooks_impl.ShutdownContext(
+                        root=shutdown_root,
+                        exit_code=130 if interrupt_requested() else 1,
+                        interrupted=interrupt_requested(),
+                        summary=hooks_impl.SummaryView(failed=0, total=0, skipped=0),
+                        project_results=tuple(),
+                        debug=debug_enabled,
+                    ),
+                    reverse=True,
+                    project_root=shutdown_root,
+                    debug=debug_enabled,
+                )
+            except hooks_impl.HookInvocationError as shutdown_exc:
+                if isinstance(exc, hooks_impl.HookInvocationError):
+                    raise HarnessError(f"error: {exc}; additionally, {shutdown_exc}") from exc
+                raise HarnessError(f"error: {shutdown_exc}") from exc
+        if isinstance(exc, hooks_impl.HookInvocationError):
+            raise HarnessError(f"error: {exc}") from exc
+        raise
     finally:
         _cleanup_all_tmp_dirs()
         _CURRENT_PROJECT_ENV = None
