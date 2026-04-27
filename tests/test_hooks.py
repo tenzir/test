@@ -424,3 +424,89 @@ def test_fixture_mode_invokes_shutdown_hooks_after_runtime_failure(
         _restore_runtime(original_settings, original_root)
 
     assert log_path.read_text(encoding="utf-8") == "1"
+
+
+def test_satellite_test_hooks_keep_invocation_root(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "tests").mkdir()
+    hooks_dir = root / "hooks"
+    hooks_dir.mkdir()
+    log_path = root / "hook-root.log"
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.test_finish\n"
+        "def finish(ctx):\n"
+        f"    open({str(log_path)!r}, 'w').write(str(ctx.root))\n",
+        encoding="utf-8",
+    )
+    satellite = root / "satellite"
+    tests_dir = satellite / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "skip.tql").write_text(
+        "---\nskip: static\n---\nversion\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
+    monkeypatch.chdir(root)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        result = run.execute(root=root, tests=[Path("satellite")])
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+    assert result.exit_code == 0
+    assert log_path.read_text(encoding="utf-8") == str(root.resolve())
+
+
+def test_shutdown_after_late_failure_receives_accumulated_summary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    root = tmp_path / "root"
+    tests_dir = root / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "skip.tql").write_text(
+        "---\nskip: static\n---\nversion\n",
+        encoding="utf-8",
+    )
+    log_path = root / "shutdown-summary.log"
+    hooks_dir = root / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.shutdown\n"
+        "def shutdown(ctx):\n"
+        f"    open({str(log_path)!r}, 'w').write(str(ctx.summary.total))\n",
+        encoding="utf-8",
+    )
+    satellite = root / "satellite"
+    (satellite / "tests").mkdir(parents=True)
+    satellite_hooks = satellite / "hooks"
+    satellite_hooks.mkdir()
+    (satellite_hooks / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.project_start\n"
+        "def fail(ctx):\n"
+        "    raise RuntimeError('late failure')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
+    monkeypatch.chdir(root)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(run.HarnessError, match="late failure"):
+            run.execute(root=root, tests=[Path("satellite")], all_projects=True)
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+    assert log_path.read_text(encoding="utf-8") == "1"

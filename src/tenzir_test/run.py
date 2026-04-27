@@ -4527,6 +4527,7 @@ class Worker:
         suite_queue_state: SuiteQueueState | None = None,
         hook_chain: Sequence[hooks_impl.HookSet] = (),
         project_view: hooks_impl.ProjectView | None = None,
+        hook_root: Path | None = None,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -4548,7 +4549,10 @@ class Worker:
         self._run_skipped_match_count = 0
         self._run_skipped_match_count_lock = threading.Lock()
         self._hook_chain = tuple(hook_chain)
-        self._project_view = project_view or hooks_impl.ProjectView(root=ROOT, kind="root")
+        self._hook_root = hook_root or ROOT
+        self._project_view = project_view or hooks_impl.ProjectView(
+            root=self._hook_root, kind="root"
+        )
         self._thread = threading.Thread(target=self._work)
 
     def __del__(self) -> None:
@@ -4676,7 +4680,7 @@ class Worker:
             self._hook_chain,
             "test_finish",
             hooks_impl.TestFinishContext(
-                root=ROOT,
+                root=self._hook_root,
                 project=self._project_view,
                 test=test_item.path,
                 runner=test_item.runner.name,
@@ -4691,7 +4695,7 @@ class Worker:
                 coverage=self._coverage,
             ),
             reverse=True,
-            project_root=ROOT,
+            project_root=self._hook_root,
             test_path=test_item.path,
             debug=self._debug,
         )
@@ -4762,7 +4766,7 @@ class Worker:
                 self._hook_chain,
                 "test_finish",
                 hooks_impl.TestFinishContext(
-                    root=ROOT,
+                    root=self._hook_root,
                     project=self._project_view,
                     test=test_item.path,
                     runner=test_item.runner.name,
@@ -4780,7 +4784,7 @@ class Worker:
                     coverage=self._coverage,
                 ),
                 reverse=True,
-                project_root=ROOT,
+                project_root=self._hook_root,
                 test_path=test_item.path,
                 debug=self._debug,
             )
@@ -5273,7 +5277,7 @@ class Worker:
             summary.failed += 1
             summary.failed_paths.append(rel_path)
             finish_ctx = hooks_impl.TestFinishContext(
-                root=ROOT,
+                root=self._hook_root,
                 project=self._project_view,
                 test=test_path,
                 runner=runner.name,
@@ -5292,7 +5296,7 @@ class Worker:
                 "test_finish",
                 finish_ctx,
                 reverse=True,
-                project_root=ROOT,
+                project_root=self._hook_root,
                 test_path=test_path,
                 debug=self._debug,
             )
@@ -5314,7 +5318,7 @@ class Worker:
                     coverage=finish_ctx.coverage,
                 ),
                 reverse=True,
-                project_root=ROOT,
+                project_root=self._hook_root,
                 test_path=test_path,
                 debug=self._debug,
             )
@@ -5341,7 +5345,7 @@ class Worker:
             self._hook_chain,
             "test_start",
             hooks_impl.TestStartContext(
-                root=ROOT,
+                root=self._hook_root,
                 project=self._project_view,
                 test=test_path,
                 runner=runner.name,
@@ -5351,7 +5355,7 @@ class Worker:
                 coverage=self._coverage,
                 attempt_limit=max_attempts,
             ),
-            project_root=ROOT,
+            project_root=self._hook_root,
             test_path=test_path,
             debug=self._debug,
         )
@@ -5493,7 +5497,7 @@ class Worker:
             outcome_name = "failed"
         finish_reason: str | None = _INTERRUPTED_NOTICE if final_interrupted else None
         finish_ctx = hooks_impl.TestFinishContext(
-            root=ROOT,
+            root=self._hook_root,
             project=self._project_view,
             test=test_path,
             runner=runner.name,
@@ -5512,7 +5516,7 @@ class Worker:
             "test_finish",
             finish_ctx,
             reverse=True,
-            project_root=ROOT,
+            project_root=self._hook_root,
             test_path=test_path,
             debug=self._debug,
         )
@@ -5535,7 +5539,7 @@ class Worker:
                     coverage=finish_ctx.coverage,
                 ),
                 reverse=True,
-                project_root=ROOT,
+                project_root=self._hook_root,
                 test_path=test_path,
                 debug=self._debug,
             )
@@ -5911,6 +5915,10 @@ def run_cli(
     settings: Settings | None = None
     startup_succeeded = False
     shutdown_invoked = False
+    overall_summary = Summary()
+    overall_queue_count = 0
+    executed_projects: list[ProjectSelection] = []
+    project_results: list[ProjectResult] = []
 
     try:
         debug_enabled = bool(debug or _default_debug_logging)
@@ -6026,8 +6034,8 @@ def run_cli(
 
             overall_summary = Summary()
             overall_queue_count = 0
-            executed_projects: list[ProjectSelection] = []
-            project_results: list[ProjectResult] = []
+            executed_projects = []
+            project_results = []
             printed_projects = 0
             interrupted = False
             plan_projects = list(plan.projects())
@@ -6359,6 +6367,7 @@ def run_cli(
                             suite_queue_state=suite_queue_state,
                             hook_chain=hook_chain,
                             project_view=project_view,
+                            hook_root=settings.root,
                         )
                         for _ in range(jobs)
                     ]
@@ -6560,8 +6569,10 @@ def run_cli(
                         root=shutdown_root,
                         exit_code=130 if interrupt_requested() else 1,
                         interrupted=interrupt_requested(),
-                        summary=hooks_impl.SummaryView(failed=0, total=0, skipped=0),
-                        project_results=tuple(),
+                        summary=_summary_view(overall_summary),
+                        project_results=tuple(
+                            _project_result_view(item) for item in project_results
+                        ),
                         debug=debug_enabled,
                     ),
                     reverse=True,
