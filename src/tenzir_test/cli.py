@@ -191,6 +191,11 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     help="Run the root project alongside any selected satellites.",
 )
 @click.option(
+    "--no-hooks",
+    is_flag=True,
+    help="Disable project hook loading and invocation.",
+)
+@click.option(
     "-m",
     "--match",
     "match_patterns",
@@ -233,6 +238,7 @@ def cli(
     run_skipped: bool,
     run_skipped_reasons: tuple[str, ...],
     all_projects: bool,
+    no_hooks: bool,
 ) -> int:
     """Execute test scenarios and compare output against baselines.
 
@@ -280,6 +286,7 @@ def cli(
                 fixtures=list(fixtures),
                 debug=debug,
                 keep_tmp_dirs=keep_tmp_dirs,
+                no_hooks=no_hooks,
             )
 
         result = runtime.run_cli(
@@ -305,6 +312,7 @@ def cli(
             jobs_overridden=jobs_overridden,
             all_projects=all_projects,
             match_patterns=list(match_patterns),
+            no_hooks=no_hooks,
         )
     except runtime.HarnessError as exc:
         if exc.show_message and exc.args:

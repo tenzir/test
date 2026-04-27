@@ -33,6 +33,7 @@ from typing import Any, Literal, TypeVar, cast, overload
 import yaml
 
 import tenzir_test.fixtures as fixtures_impl
+from . import hooks as hooks_impl
 from . import packages
 from .config import Settings, discover_settings
 from .runners import (
@@ -1105,6 +1106,17 @@ def set_keep_tmp_dirs(enabled: bool) -> None:
 
 
 def cleanup_test_tmp_dir(path: str | os.PathLike[str] | None) -> None:
+    if not path:
+        return
+    tmp_path = Path(path)
+    deferred = _DEFER_TMP_CLEANUP.get()
+    if deferred is not None:
+        deferred.append(tmp_path)
+        return
+    _cleanup_test_tmp_dir_now(tmp_path)
+
+
+def _cleanup_test_tmp_dir_now(path: str | os.PathLike[str] | None) -> None:
     if not path:
         return
     tmp_path = Path(path)
@@ -2491,7 +2503,7 @@ def _iter_project_test_directories(root: Path) -> Iterator[Path]:
     for dir_path in root.iterdir():
         if not dir_path.is_dir() or dir_path.name.startswith("."):
             continue
-        if dir_path.name in {"fixtures", "runners"}:
+        if dir_path.name in {"fixtures", "runners", "hooks"}:
             continue
         if _is_inputs_path(dir_path):
             continue
@@ -2606,8 +2618,112 @@ def _import_module_from_path(module_name: str, path: Path, *, package: bool = Fa
     return module
 
 
+def _hooks_disabled(no_hooks: bool = False) -> bool:
+    return no_hooks or bool(os.environ.get("TENZIR_TEST_DISABLE_HOOKS"))
+
+
+def _load_project_hooks(root: Path) -> hooks_impl.HookSet:
+    if _HOOKS_DISABLED:
+        return hooks_impl.HookSet()
+    resolved_root = root.resolve()
+    cached = _HOOK_LOAD_CACHE.get(resolved_root)
+    if cached is not None:
+        return cached
+
+    hook_set = hooks_impl.HookSet()
+    hooks_package = resolved_root / "hooks"
+    hooks_file = resolved_root / "hooks.py"
+    module_base = f"_tenzir_project_hooks_{abs(hash(str(resolved_root)))}"
+    try:
+        with hooks_impl.loading() as loading_set:
+            if hooks_package.is_dir() and (hooks_package / "__init__.py").exists():
+                path = hooks_package / "__init__.py"
+                _CLI_LOGGER.debug("loading hooks from %s", path)
+                _import_module_from_path(module_base, path, package=True)
+            elif hooks_file.exists():
+                _CLI_LOGGER.debug("loading hooks from %s", hooks_file)
+                _import_module_from_path(module_base, hooks_file)
+            hook_set = loading_set
+    except Exception as exc:
+        raise RuntimeError(f"failed to load hooks from {resolved_root}: {exc}") from exc
+    _HOOK_LOAD_CACHE[resolved_root] = hook_set
+    return hook_set
+
+
+def _summary_view(summary: Summary) -> hooks_impl.SummaryView:
+    return hooks_impl.SummaryView(
+        failed=summary.failed,
+        total=summary.total,
+        skipped=summary.skipped,
+    )
+
+
+def _project_view(selection: ProjectSelection) -> hooks_impl.ProjectView:
+    return hooks_impl.ProjectView(root=selection.root, kind=selection.kind)
+
+
+def _project_result_view(result: ProjectResult) -> hooks_impl.ProjectResultView:
+    return hooks_impl.ProjectResultView(
+        project=_project_view(result.selection),
+        summary=_summary_view(result.summary),
+        queue_size=result.queue_size,
+    )
+
+
+def _fixture_views(
+    specs: tuple[fixtures_impl.FixtureSpec, ...],
+) -> tuple[hooks_impl.FixtureSpecView, ...]:
+    return tuple(
+        hooks_impl.FixtureSpecView(name=spec.name, options=getattr(spec, "options", None))
+        for spec in specs
+    )
+
+
+def _suite_view(
+    suite_progress: tuple[str, int, int] | None,
+    test_path: Path,
+) -> hooks_impl.SuiteView | None:
+    if suite_progress is None:
+        return None
+    info = _resolve_suite_for_test(test_path)
+    if info is None:
+        return None
+    return hooks_impl.SuiteView(name=info.name, directory=info.directory)
+
+
+def _invoke_hooks(
+    hook_chain: Sequence[hooks_impl.HookSet],
+    event: hooks_impl.HookEvent,
+    context: object,
+    *,
+    reverse: bool = False,
+    project_root: Path | None = None,
+    test_path: Path | None = None,
+    debug: bool = False,
+) -> None:
+    if _HOOKS_DISABLED:
+        return
+    hooks_impl.invoke(
+        hook_chain,
+        event,
+        context,
+        reverse=reverse,
+        project_root=project_root,
+        test_path=test_path,
+        debug=debug,
+    )
+
+
 _FIXTURE_LOAD_ROOTS: set[Path] = set()
 _RUNNER_LOAD_ROOTS: set[Path] = set()
+_HOOK_LOAD_CACHE: dict[Path, hooks_impl.HookSet] = {}
+_CURRENT_PROJECT_ENV: dict[str, str] | None = None
+_CURRENT_PROJECT_VIEW: hooks_impl.ProjectView | None = None
+_CURRENT_HOOK_CHAIN: tuple[hooks_impl.HookSet, ...] = tuple()
+_HOOKS_DISABLED = False
+_DEFER_TMP_CLEANUP: contextvars.ContextVar[list[Path] | None] = contextvars.ContextVar(
+    "tenzir_test_defer_tmp_cleanup", default=None
+)
 
 
 def _format_missing_fixture_dependency_error(
@@ -2718,7 +2834,7 @@ def get_test_env_and_config_args(
     config_file = test.parent / "tenzir.yaml"
     node_config_file = test.parent / "tenzir-node.yaml"
     config_args = [f"--config={config_file}"] if config_file.exists() else []
-    env = os.environ.copy()
+    env = (_CURRENT_PROJECT_ENV or os.environ).copy()
     if inputs is None:
         # Try nearest inputs/ directory first, fall back to project-level
         nearest = _find_nearest_inputs_dir(test, ROOT)
@@ -4400,6 +4516,8 @@ class Worker:
         slot_lock: threading.Lock | None = None,
         queue_lock: threading.Lock | None = None,
         suite_queue_state: SuiteQueueState | None = None,
+        hook_chain: Sequence[hooks_impl.HookSet] = (),
+        project_view: hooks_impl.ProjectView | None = None,
     ) -> None:
         self._queue = queue
         self._result: Summary | None = None
@@ -4420,6 +4538,8 @@ class Worker:
             self._suite_queue_state = suite_queue_state
         self._run_skipped_match_count = 0
         self._run_skipped_match_count_lock = threading.Lock()
+        self._hook_chain = tuple(hook_chain)
+        self._project_view = project_view or hooks_impl.ProjectView(root=ROOT, kind="root")
         self._thread = threading.Thread(target=self._work)
 
     def __del__(self) -> None:
@@ -4543,6 +4663,29 @@ class Worker:
             summary.record_fixture_outcome(_fixture_names(fixtures), "skipped")
         summary.skipped += 1
         summary.skipped_paths.append(rel_path)
+        _invoke_hooks(
+            self._hook_chain,
+            "test_finish",
+            hooks_impl.TestFinishContext(
+                root=ROOT,
+                project=self._project_view,
+                test=test_item.path,
+                runner=test_item.runner.name,
+                outcome="skipped",
+                reason=reason,
+                attempts=0,
+                duration=0.0,
+                fixtures=_fixture_views(fixtures),
+                suite=None,
+                tmp_dir=None,
+                update=self._update,
+                coverage=self._coverage,
+            ),
+            reverse=True,
+            project_root=ROOT,
+            test_path=test_item.path,
+            debug=self._debug,
+        )
 
     def _record_static_skip(
         self,
@@ -4606,6 +4749,32 @@ class Worker:
             summary.skipped_paths.append(rel_path)
             summary.record_runner_outcome(test_item.runner.name, "skipped")
             summary.record_fixture_outcome(_fixture_names(suite_item.fixtures), "skipped")
+            _invoke_hooks(
+                self._hook_chain,
+                "test_finish",
+                hooks_impl.TestFinishContext(
+                    root=ROOT,
+                    project=self._project_view,
+                    test=test_item.path,
+                    runner=test_item.runner.name,
+                    outcome="skipped",
+                    reason=displayed_reason,
+                    attempts=0,
+                    duration=0.0,
+                    fixtures=_fixture_views(suite_item.fixtures),
+                    suite=hooks_impl.SuiteView(
+                        name=suite_item.suite.name,
+                        directory=suite_item.suite.directory,
+                    ),
+                    tmp_dir=None,
+                    update=self._update,
+                    coverage=self._coverage,
+                ),
+                reverse=True,
+                project_root=ROOT,
+                test_path=test_item.path,
+                debug=self._debug,
+            )
         return True
 
     def _evaluate_suite_requirements(
@@ -5084,6 +5253,7 @@ class Worker:
                     return False
             # Capability skips are suite-level. Fixture-unavailable skips can
             # also apply to per-test fixture activation below.
+        suite_view = _suite_view(suite_progress, test_path)
         if parse_error is not None:
             message = format_failure_message(parse_error)
             report_failure(test_path, message)
@@ -5093,6 +5263,52 @@ class Worker:
                 summary.record_fixture_outcome(_fixture_names(fixtures), False)
             summary.failed += 1
             summary.failed_paths.append(rel_path)
+            finish_ctx = hooks_impl.TestFinishContext(
+                root=ROOT,
+                project=self._project_view,
+                test=test_path,
+                runner=runner.name,
+                outcome="failed",
+                reason=parse_error,
+                attempts=0,
+                duration=0.0,
+                fixtures=_fixture_views(fixtures),
+                suite=suite_view,
+                tmp_dir=None,
+                update=self._update,
+                coverage=self._coverage,
+            )
+            _invoke_hooks(
+                self._hook_chain,
+                "test_finish",
+                finish_ctx,
+                reverse=True,
+                project_root=ROOT,
+                test_path=test_path,
+                debug=self._debug,
+            )
+            _invoke_hooks(
+                self._hook_chain,
+                "test_failure",
+                hooks_impl.TestFailureContext(
+                    root=finish_ctx.root,
+                    project=finish_ctx.project,
+                    test=finish_ctx.test,
+                    runner=finish_ctx.runner,
+                    reason=finish_ctx.reason,
+                    attempts=finish_ctx.attempts,
+                    duration=finish_ctx.duration,
+                    fixtures=finish_ctx.fixtures,
+                    suite=finish_ctx.suite,
+                    tmp_dir=finish_ctx.tmp_dir,
+                    update=finish_ctx.update,
+                    coverage=finish_ctx.coverage,
+                ),
+                reverse=True,
+                project_root=ROOT,
+                test_path=test_path,
+                debug=self._debug,
+            )
             return False
         detail_bits = [f"runner={runner.name}"]
         if fixtures:
@@ -5110,6 +5326,27 @@ class Worker:
         attempts = 0
         final_outcome: bool | str = False
         final_interrupted = False
+        started_at = time.monotonic()
+        deferred_tmp_dirs: list[Path] = []
+        _invoke_hooks(
+            self._hook_chain,
+            "test_start",
+            hooks_impl.TestStartContext(
+                root=ROOT,
+                project=self._project_view,
+                test=test_path,
+                runner=runner.name,
+                fixtures=_fixture_views(fixtures),
+                suite=suite_view,
+                update=self._update,
+                coverage=self._coverage,
+                attempt_limit=max_attempts,
+            ),
+            project_root=ROOT,
+            test_path=test_path,
+            debug=self._debug,
+        )
+        cleanup_token = _DEFER_TMP_CLEANUP.set(deferred_tmp_dirs)
         while attempts < max_attempts:
             if interrupt_requested():
                 final_interrupted = True
@@ -5165,6 +5402,9 @@ class Worker:
                                 displayed_reason=displayed_reason,
                                 summary=summary,
                             ):
+                                _DEFER_TMP_CLEANUP.reset(cleanup_token)
+                                for path in deferred_tmp_dirs:
+                                    _cleanup_test_tmp_dir_now(path)
                                 return False
                             raise
                         report_failure(
@@ -5218,6 +5458,9 @@ class Worker:
                     break
                 if attempts < max_attempts:
                     continue
+        _DEFER_TMP_CLEANUP.reset(cleanup_token)
+        tmp_dir = deferred_tmp_dirs[-1] if deferred_tmp_dirs else None
+        duration = time.monotonic() - started_at
         if attempts == 0 and final_interrupted:
             # The test never started an execution attempt (for example, work
             # was cancelled after an interrupt), so do not count it as failed.
@@ -5233,6 +5476,62 @@ class Worker:
         elif not final_outcome:
             summary.failed += 1
             summary.failed_paths.append(rel_path)
+        if final_outcome == "skipped":
+            outcome_name: Literal["passed", "failed", "skipped"] = "skipped"
+        elif final_outcome:
+            outcome_name = "passed"
+        else:
+            outcome_name = "failed"
+        finish_reason: str | None = _INTERRUPTED_NOTICE if final_interrupted else None
+        finish_ctx = hooks_impl.TestFinishContext(
+            root=ROOT,
+            project=self._project_view,
+            test=test_path,
+            runner=runner.name,
+            outcome=outcome_name,
+            reason=finish_reason,
+            attempts=attempts,
+            duration=duration,
+            fixtures=_fixture_views(fixtures),
+            suite=suite_view,
+            tmp_dir=tmp_dir,
+            update=self._update,
+            coverage=self._coverage,
+        )
+        _invoke_hooks(
+            self._hook_chain,
+            "test_finish",
+            finish_ctx,
+            reverse=True,
+            project_root=ROOT,
+            test_path=test_path,
+            debug=self._debug,
+        )
+        if outcome_name == "failed":
+            _invoke_hooks(
+                self._hook_chain,
+                "test_failure",
+                hooks_impl.TestFailureContext(
+                    root=finish_ctx.root,
+                    project=finish_ctx.project,
+                    test=finish_ctx.test,
+                    runner=finish_ctx.runner,
+                    reason=finish_ctx.reason,
+                    attempts=finish_ctx.attempts,
+                    duration=finish_ctx.duration,
+                    fixtures=finish_ctx.fixtures,
+                    suite=finish_ctx.suite,
+                    tmp_dir=finish_ctx.tmp_dir,
+                    update=finish_ctx.update,
+                    coverage=finish_ctx.coverage,
+                ),
+                reverse=True,
+                project_root=ROOT,
+                test_path=test_path,
+                debug=self._debug,
+            )
+        for path in deferred_tmp_dirs:
+            _cleanup_test_tmp_dir_now(path)
         return final_interrupted or interrupt_requested()
 
 
@@ -5242,7 +5541,7 @@ def get_runner_for_test(test_path: Path) -> Runner:
 
 
 def collect_all_tests(directory: Path) -> Iterator[Path]:
-    if directory.name in {"fixtures", "runners"}:
+    if directory.name in {"fixtures", "runners", "hooks"}:
         return
     extensions = _allowed_extensions or {
         ext
@@ -5411,6 +5710,7 @@ def run_fixture_mode_cli(
     fixtures: Sequence[str],
     debug: bool,
     keep_tmp_dirs: bool,
+    no_hooks: bool = False,
 ) -> int:
     """Activate requested fixtures in foreground mode until interrupted."""
 
@@ -5420,8 +5720,26 @@ def run_fixture_mode_cli(
     debug_enabled = bool(debug or _default_debug_logging)
     _configure_runtime_logging(debug_enabled=debug_enabled)
     set_keep_tmp_dirs(bool(os.environ.get(_TMP_KEEP_ENV_VAR)) or keep_tmp_dirs)
+    global _HOOKS_DISABLED
+    _HOOKS_DISABLED = _hooks_disabled(no_hooks)
+    root_path = Path(root or os.environ.get("TENZIR_TEST_ROOT") or Path.cwd()).resolve()
+    if not _HOOKS_DISABLED:
+        try:
+            root_hooks = _load_project_hooks(root_path)
+        except RuntimeError as exc:
+            raise HarnessError(f"error: {exc}") from exc
+        env = os.environ.copy()
+        _invoke_hooks(
+            (root_hooks,),
+            "startup",
+            hooks_impl.StartupContext(root=root_path, env=env, debug=debug_enabled),
+            project_root=root_path,
+            debug=debug_enabled,
+        )
+        os.environ.clear()
+        os.environ.update(env)
 
-    settings = discover_settings(root=root)
+    settings = discover_settings(root=root_path)
     apply_settings(settings)
     _set_cli_packages(list(package_dirs or []))
 
@@ -5511,6 +5829,7 @@ def run_cli(
     jobs_overridden: bool = False,
     all_projects: bool = False,
     match_patterns: Sequence[str] = (),
+    no_hooks: bool = False,
 ) -> ExecutionResult:
     """Execute the harness and return a structured result for library consumers.
 
@@ -5557,7 +5876,26 @@ def run_cli(
             print(f"{INFO} ignoring --update in passthrough mode")
             update = False
 
-        settings = discover_settings(root=root)
+        global _HOOKS_DISABLED
+        _HOOKS_DISABLED = _hooks_disabled(no_hooks)
+        root_path = Path(root or os.environ.get("TENZIR_TEST_ROOT") or Path.cwd()).resolve()
+        try:
+            root_hooks = hooks_impl.HookSet() if _HOOKS_DISABLED else _load_project_hooks(root_path)
+        except RuntimeError as exc:
+            raise HarnessError(f"error: {exc}") from exc
+        if not _HOOKS_DISABLED:
+            env = os.environ.copy()
+            _invoke_hooks(
+                (root_hooks,),
+                "startup",
+                hooks_impl.StartupContext(root=root_path, env=env, debug=debug_enabled),
+                project_root=root_path,
+                debug=debug_enabled,
+            )
+            os.environ.clear()
+            os.environ.update(env)
+
+        settings = discover_settings(root=root_path)
         apply_settings(settings)
         _set_cli_packages(list(package_dirs or []))
         selected_tests = list(tests)
@@ -5623,8 +5961,10 @@ def run_cli(
             project_results: list[ProjectResult] = []
             printed_projects = 0
             interrupted = False
+            plan_projects = list(plan.projects())
+            previous_project_view: hooks_impl.ProjectView | None = None
 
-            for selection in plan.projects():
+            for project_index, selection in enumerate(plan_projects):
                 if interrupt_requested():
                     break
                 if not selection.should_run():
@@ -5653,10 +5993,50 @@ def run_cli(
                 except RuntimeError as exc:
                     raise HarnessError(f"error: {exc}") from exc
                 refresh_runner_metadata()
+                project_hooks = root_hooks
+                if selection.root.resolve() != settings.root.resolve() and not _HOOKS_DISABLED:
+                    try:
+                        project_hooks = _load_project_hooks(selection.root)
+                    except RuntimeError as exc:
+                        raise HarnessError(f"error: {exc}") from exc
+                hook_chain = (
+                    (root_hooks,) if selection.kind == "root" else (root_hooks, project_hooks)
+                )
+                project_view = _project_view(selection)
+                project_env = os.environ.copy()
+                next_selection = next(
+                    (
+                        candidate
+                        for candidate in plan_projects[project_index + 1 :]
+                        if candidate.should_run()
+                    ),
+                    None,
+                )
+                _invoke_hooks(
+                    hook_chain,
+                    "project_start",
+                    hooks_impl.ProjectStartContext(
+                        root=settings.root,
+                        project=project_view,
+                        previous_project=previous_project_view,
+                        kind=selection.kind,
+                        env=project_env,
+                        debug=debug_enabled,
+                        update=update,
+                        coverage=coverage,
+                    ),
+                    project_root=selection.root,
+                    debug=debug_enabled,
+                )
+                global _CURRENT_PROJECT_ENV, _CURRENT_PROJECT_VIEW, _CURRENT_HOOK_CHAIN
+                _CURRENT_PROJECT_ENV = project_env
+                _CURRENT_PROJECT_VIEW = project_view
+                _CURRENT_HOOK_CHAIN = hook_chain
 
                 tests_to_run = selection.selectors if not selection.run_all else [selection.root]
 
                 if purge:
+                    previous_project_view = project_view
                     continue
 
                 collected_paths: set[Path] = set()
@@ -5788,6 +6168,26 @@ def run_cli(
                             queue_size=project_queue_size,
                         )
                     )
+                    _invoke_hooks(
+                        hook_chain,
+                        "project_finish",
+                        hooks_impl.ProjectFinishContext(
+                            root=settings.root,
+                            project=project_view,
+                            next_project=_project_view(next_selection) if next_selection else None,
+                            kind=selection.kind,
+                            summary=_summary_view(project_summary),
+                            interrupted=interrupted or interrupt_requested(),
+                            debug=debug_enabled,
+                        ),
+                        reverse=True,
+                        project_root=selection.root,
+                        debug=debug_enabled,
+                    )
+                    previous_project_view = project_view
+                    _CURRENT_PROJECT_ENV = None
+                    _CURRENT_PROJECT_VIEW = None
+                    _CURRENT_HOOK_CHAIN = tuple()
                     continue
 
                 os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
@@ -5846,6 +6246,8 @@ def run_cli(
                         slot_lock=slot_lock,
                         queue_lock=queue_lock,
                         suite_queue_state=suite_queue_state,
+                        hook_chain=hook_chain,
+                        project_view=project_view,
                     )
                     for _ in range(jobs)
                 ]
@@ -5908,6 +6310,26 @@ def run_cli(
                         queue_size=project_queue_size,
                     )
                 )
+                _invoke_hooks(
+                    hook_chain,
+                    "project_finish",
+                    hooks_impl.ProjectFinishContext(
+                        root=settings.root,
+                        project=project_view,
+                        next_project=_project_view(next_selection) if next_selection else None,
+                        kind=selection.kind,
+                        summary=_summary_view(project_summary),
+                        interrupted=interrupted or interrupt_requested(),
+                        debug=debug_enabled,
+                    ),
+                    reverse=True,
+                    project_root=selection.root,
+                    debug=debug_enabled,
+                )
+                previous_project_view = project_view
+                _CURRENT_PROJECT_ENV = None
+                _CURRENT_PROJECT_VIEW = None
+                _CURRENT_HOOK_CHAIN = tuple()
 
                 if interrupt_requested():
                     break
@@ -5916,51 +6338,85 @@ def run_cli(
             _set_project_root(settings.root)
             engine_state.refresh()
 
+            def _finish_result(result: ExecutionResult) -> ExecutionResult:
+                _invoke_hooks(
+                    (root_hooks,),
+                    "shutdown",
+                    hooks_impl.ShutdownContext(
+                        root=settings.root,
+                        exit_code=result.exit_code,
+                        interrupted=result.interrupted,
+                        summary=_summary_view(result.summary),
+                        project_results=tuple(
+                            _project_result_view(item) for item in result.project_results
+                        ),
+                        debug=debug_enabled,
+                    ),
+                    reverse=True,
+                    project_root=settings.root,
+                    debug=debug_enabled,
+                )
+                return result
+
             interrupted = interrupted or interrupt_requested()
             if interrupted:
-                return ExecutionResult(
-                    summary=overall_summary,
-                    project_results=tuple(project_results),
-                    queue_size=overall_queue_count,
-                    exit_code=130,
-                    interrupted=True,
+                return _finish_result(
+                    ExecutionResult(
+                        summary=overall_summary,
+                        project_results=tuple(project_results),
+                        queue_size=overall_queue_count,
+                        exit_code=130,
+                        interrupted=True,
+                    )
                 )
 
             if purge:
                 for runner in runners_iter_runners():
                     runner.purge()
-                return ExecutionResult(
-                    summary=overall_summary,
-                    project_results=tuple(project_results),
-                    queue_size=overall_queue_count,
-                    exit_code=0,
-                    interrupted=interrupted,
+                return _finish_result(
+                    ExecutionResult(
+                        summary=overall_summary,
+                        project_results=tuple(project_results),
+                        queue_size=overall_queue_count,
+                        exit_code=0,
+                        interrupted=interrupted,
+                    )
                 )
 
             if overall_queue_count == 0:
                 print(f"{INFO} no tests selected")
-                return ExecutionResult(
-                    summary=overall_summary,
-                    project_results=tuple(project_results),
-                    queue_size=overall_queue_count,
-                    exit_code=0,
-                    interrupted=interrupted,
+                return _finish_result(
+                    ExecutionResult(
+                        summary=overall_summary,
+                        project_results=tuple(project_results),
+                        queue_size=overall_queue_count,
+                        exit_code=0,
+                        interrupted=interrupted,
+                    )
                 )
 
             if len(executed_projects) > 1:
                 _print_aggregate_totals(len(executed_projects), overall_summary)
 
             exit_code = 1 if overall_summary.failed > 0 else 0
-            return ExecutionResult(
-                summary=overall_summary,
-                project_results=tuple(project_results),
-                queue_size=overall_queue_count,
-                exit_code=exit_code,
-                interrupted=False,
+            return _finish_result(
+                ExecutionResult(
+                    summary=overall_summary,
+                    project_results=tuple(project_results),
+                    queue_size=overall_queue_count,
+                    exit_code=exit_code,
+                    interrupted=False,
+                )
             )
 
+    except hooks_impl.HookInvocationError as exc:
+        raise HarnessError(f"error: {exc}") from exc
     finally:
         _cleanup_all_tmp_dirs()
+        _CURRENT_PROJECT_ENV = None
+        _CURRENT_PROJECT_VIEW = None
+        _CURRENT_HOOK_CHAIN = tuple()
+        _HOOKS_DISABLED = _hooks_disabled(False)
 
 
 def execute(
@@ -5986,6 +6442,7 @@ def execute(
     jobs_overridden: bool = False,
     all_projects: bool = False,
     match_patterns: Sequence[str] = (),
+    no_hooks: bool = False,
 ) -> ExecutionResult:
     """Library-oriented wrapper around `run_cli` with defaulted parameters.
 
@@ -6027,6 +6484,7 @@ def execute(
         jobs_overridden=jobs_overridden,
         all_projects=all_projects,
         match_patterns=match_patterns,
+        no_hooks=no_hooks,
     )
 
 
