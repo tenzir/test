@@ -510,3 +510,37 @@ def test_shutdown_after_late_failure_receives_accumulated_summary(
         _restore_runtime(original_settings, original_root)
 
     assert log_path.read_text(encoding="utf-8") == "1"
+
+
+def test_fixture_mode_invokes_shutdown_hooks_after_pre_activation_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    log_path = tmp_path / "shutdown.log"
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.shutdown\n"
+        "def shutdown(ctx):\n"
+        f"    open({str(log_path)!r}, 'w').write(str(ctx.exit_code))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run, "_wait_for_fixture_shutdown", lambda: None)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(run.HarnessError, match="is not registered"):
+            run.run_fixture_mode_cli(
+                root=tmp_path,
+                package_dirs=(),
+                fixtures=("unknown_fixture",),
+                debug=False,
+                keep_tmp_dirs=False,
+            )
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+    assert log_path.read_text(encoding="utf-8") == "1"

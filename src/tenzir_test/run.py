@@ -5768,55 +5768,6 @@ def run_fixture_mode_cli(
 
     settings = discover_settings(root=root_path)
     apply_settings(settings)
-    _set_cli_packages(list(package_dirs or []))
-
-    try:
-        _load_project_fixtures(ROOT, expose_namespace=True)
-    except RuntimeError as exc:
-        raise HarnessError(f"error: {exc}") from exc
-
-    try:
-        fixture_specs = _normalize_cli_fixture_specs(fixtures)
-    except ValueError as exc:
-        raise HarnessError(f"error: {exc}") from exc
-
-    fixture_test = ROOT / ".fixture-mode"
-    env, config_args = get_test_env_and_config_args(fixture_test)
-
-    package_dir_candidates: list[str] = []
-    package_root = packages.find_package_root(fixture_test)
-    if package_root is not None:
-        env["TENZIR_PACKAGE_ROOT"] = str(package_root)
-        package_dir_candidates.append(str(package_root))
-    for cli_path in _get_cli_packages():
-        package_dir_candidates.extend(_expand_package_dirs(cli_path))
-    if package_dir_candidates:
-        merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
-        env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
-        config_args.append(f"--package-dirs={','.join(merged_dirs)}")
-
-    for spec in fixture_specs:
-        try:
-            fixtures_impl.acquire_fixture(spec.name)
-        except ValueError as exc:
-            raise HarnessError(f"error: {exc}") from exc
-
-    try:
-        fixture_options = _build_fixture_options(fixture_specs)
-    except ValueError as exc:
-        raise HarnessError(f"error: {exc}") from exc
-    context_token = fixtures_impl.push_context(
-        fixtures_impl.FixtureContext(
-            test=fixture_test,
-            config={"fixtures": fixture_specs},
-            coverage=False,
-            env=env,
-            config_args=tuple(config_args),
-            tenzir_binary=TENZIR_BINARY,
-            tenzir_node_binary=TENZIR_NODE_BINARY,
-            fixture_options=fixture_options,
-        )
-    )
 
     def _invoke_fixture_shutdown(exit_code: int) -> None:
         nonlocal shutdown_invoked
@@ -5838,11 +5789,67 @@ def run_fixture_mode_cli(
         shutdown_invoked = True
 
     try:
-        with fixtures_impl.activate(fixture_specs) as fixture_env:
-            env.update(fixture_env)
-            _apply_fixture_env(env, fixture_specs)
-            _print_fixture_env_lines(fixture_env)
-            _wait_for_fixture_shutdown()
+        _set_cli_packages(list(package_dirs or []))
+
+        try:
+            _load_project_fixtures(ROOT, expose_namespace=True)
+        except RuntimeError as exc:
+            raise HarnessError(f"error: {exc}") from exc
+
+        try:
+            fixture_specs = _normalize_cli_fixture_specs(fixtures)
+        except ValueError as exc:
+            raise HarnessError(f"error: {exc}") from exc
+
+        fixture_test = ROOT / ".fixture-mode"
+        env, config_args = get_test_env_and_config_args(fixture_test)
+
+        package_dir_candidates: list[str] = []
+        package_root = packages.find_package_root(fixture_test)
+        if package_root is not None:
+            env["TENZIR_PACKAGE_ROOT"] = str(package_root)
+            package_dir_candidates.append(str(package_root))
+        for cli_path in _get_cli_packages():
+            package_dir_candidates.extend(_expand_package_dirs(cli_path))
+        if package_dir_candidates:
+            merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
+            env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
+            config_args.append(f"--package-dirs={','.join(merged_dirs)}")
+
+        for spec in fixture_specs:
+            try:
+                fixtures_impl.acquire_fixture(spec.name)
+            except ValueError as exc:
+                raise HarnessError(f"error: {exc}") from exc
+
+        try:
+            fixture_options = _build_fixture_options(fixture_specs)
+        except ValueError as exc:
+            raise HarnessError(f"error: {exc}") from exc
+        context_token = fixtures_impl.push_context(
+            fixtures_impl.FixtureContext(
+                test=fixture_test,
+                config={"fixtures": fixture_specs},
+                coverage=False,
+                env=env,
+                config_args=tuple(config_args),
+                tenzir_binary=TENZIR_BINARY,
+                tenzir_node_binary=TENZIR_NODE_BINARY,
+                fixture_options=fixture_options,
+            )
+        )
+        try:
+            with fixtures_impl.activate(fixture_specs) as fixture_env:
+                env.update(fixture_env)
+                _apply_fixture_env(env, fixture_specs)
+                _print_fixture_env_lines(fixture_env)
+                _wait_for_fixture_shutdown()
+        finally:
+            fixtures_impl.pop_context(context_token)
+            cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
+
+        _invoke_fixture_shutdown(0)
+        return 0
     except BaseException as exc:
         if startup_succeeded and not shutdown_invoked:
             try:
@@ -5851,17 +5858,9 @@ def run_fixture_mode_cli(
                 raise HarnessError(f"error: {shutdown_exc}") from exc
         if isinstance(exc, fixtures_impl.FixtureUnavailable):
             _raise_fixture_unavailable_harness_error(exc)
+        if isinstance(exc, hooks_impl.HookInvocationError):
+            raise HarnessError(f"error: {exc}") from exc
         raise
-    finally:
-        fixtures_impl.pop_context(context_token)
-        cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
-
-    try:
-        _invoke_fixture_shutdown(0)
-    except hooks_impl.HookInvocationError as exc:
-        raise HarnessError(f"error: {exc}") from exc
-
-    return 0
 
 
 def run_cli(
