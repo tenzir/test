@@ -5,10 +5,9 @@ from __future__ import annotations
 import contextvars
 import dataclasses
 import os
-import subprocess
-from collections.abc import Callable, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, MutableMapping, Sequence
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import Literal, TypeVar, cast
 
 HookEvent = Literal[
     "startup",
@@ -58,6 +57,41 @@ HOOK_EVENTS: tuple[HookEvent, ...] = (
 _loading_hooks: contextvars.ContextVar[HookSet | None] = contextvars.ContextVar(
     "tenzir_test_loading_hooks", default=None
 )
+
+
+class HookEnvironment(MutableMapping[str, str]):
+    """Mutable hook environment with PATH managed through a separate list."""
+
+    def __init__(self, env: MutableMapping[str, str], path: list[str]) -> None:
+        self._env = env
+        self._path = path
+
+    def __getitem__(self, key: str) -> str:
+        if key == "PATH":
+            return os.pathsep.join(self._path)
+        return self._env[key]
+
+    def __setitem__(self, key: str, value: str) -> None:
+        if key == "PATH":
+            raise RuntimeError("modify ctx.path instead of ctx.env['PATH']")
+        self._env[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        if key == "PATH":
+            raise RuntimeError("modify ctx.path instead of ctx.env['PATH']")
+        del self._env[key]
+
+    def __iter__(self) -> Iterator[str]:
+        yielded_path = False
+        for key in self._env:
+            if key == "PATH":
+                yielded_path = True
+            yield key
+        if not yielded_path and self._path:
+            yield "PATH"
+
+    def __len__(self) -> int:
+        return len(self._env) + (0 if "PATH" in self._env or not self._path else 1)
 
 
 def _register(event: HookEvent, func: T) -> T:
@@ -153,20 +187,8 @@ class SuiteView:
 class StartupContext:
     root: Path
     env: MutableMapping[str, str]
+    path: list[str]
     debug: bool
-
-    def prepend_path(self, path: str | Path) -> None:
-        self.env["PATH"] = os.pathsep.join([str(path), self.env.get("PATH", "")])
-
-    def append_path(self, path: str | Path) -> None:
-        current = self.env.get("PATH", "")
-        self.env["PATH"] = os.pathsep.join([current, str(path)]) if current else str(path)
-
-    def check_output(self, args: Sequence[str | Path], **kwargs: Any) -> str:
-        return cast(
-            str,
-            subprocess.check_output([str(arg) for arg in args], text=True, env=self.env, **kwargs),
-        )
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -186,6 +208,7 @@ class ProjectStartContext:
     previous_project: ProjectView | None
     kind: Literal["root", "satellite"]
     env: MutableMapping[str, str]
+    path: list[str]
     debug: bool
     update: bool
     coverage: bool

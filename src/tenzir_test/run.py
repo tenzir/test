@@ -25,7 +25,7 @@ import tempfile
 import threading
 import time
 import typing
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal, TypeVar, cast, overload
@@ -2668,6 +2668,15 @@ def _project_result_view(result: ProjectResult) -> hooks_impl.ProjectResultView:
         summary=_summary_view(result.summary),
         queue_size=result.queue_size,
     )
+
+
+def _env_path(env: Mapping[str, str]) -> list[str]:
+    value = env.get("PATH", "")
+    return value.split(os.pathsep) if value else []
+
+
+def _apply_env_path(env: MutableMapping[str, str], path: Sequence[str | os.PathLike[str]]) -> None:
+    env["PATH"] = os.pathsep.join(os.fspath(entry) for entry in path)
 
 
 def _fixture_views(
@@ -5733,13 +5742,20 @@ def run_fixture_mode_cli(
             except RuntimeError as exc:
                 raise HarnessError(f"error: {exc}") from exc
             env = os.environ.copy()
+            path = _env_path(env)
             _invoke_hooks(
                 (root_hooks,),
                 "startup",
-                hooks_impl.StartupContext(root=root_path, env=env, debug=debug_enabled),
+                hooks_impl.StartupContext(
+                    root=root_path,
+                    env=hooks_impl.HookEnvironment(env, path),
+                    path=path,
+                    debug=debug_enabled,
+                ),
                 project_root=root_path,
                 debug=debug_enabled,
             )
+            _apply_env_path(env, path)
             os.environ.clear()
             os.environ.update(env)
             startup_succeeded = True
@@ -5928,13 +5944,20 @@ def run_cli(
             raise HarnessError(f"error: {exc}") from exc
         if not _HOOKS_DISABLED:
             env = os.environ.copy()
+            path = _env_path(env)
             _invoke_hooks(
                 (root_hooks,),
                 "startup",
-                hooks_impl.StartupContext(root=root_path, env=env, debug=debug_enabled),
+                hooks_impl.StartupContext(
+                    root=root_path,
+                    env=hooks_impl.HookEnvironment(env, path),
+                    path=path,
+                    debug=debug_enabled,
+                ),
                 project_root=root_path,
                 debug=debug_enabled,
             )
+            _apply_env_path(env, path)
             os.environ.clear()
             os.environ.update(env)
             startup_succeeded = True
@@ -6049,6 +6072,7 @@ def run_cli(
                 project_view = _project_view(selection)
                 project_env = os.environ.copy()
                 project_env["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
+                project_path = _env_path(project_env)
                 next_selection = next(
                     (
                         candidate
@@ -6065,7 +6089,8 @@ def run_cli(
                         project=project_view,
                         previous_project=previous_project_view,
                         kind=selection.kind,
-                        env=project_env,
+                        env=hooks_impl.HookEnvironment(project_env, project_path),
+                        path=project_path,
                         debug=debug_enabled,
                         update=update,
                         coverage=coverage,
@@ -6073,6 +6098,7 @@ def run_cli(
                     project_root=selection.root,
                     debug=debug_enabled,
                 )
+                _apply_env_path(project_env, project_path)
                 global _CURRENT_PROJECT_ENV, _CURRENT_PROJECT_VIEW, _CURRENT_HOOK_CHAIN
                 _CURRENT_PROJECT_ENV = project_env
                 _CURRENT_PROJECT_VIEW = project_view

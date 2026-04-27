@@ -53,6 +53,70 @@ def test_startup_hook_can_set_binary_before_settings_discovery(tmp_path: Path, m
     assert tenzir_node_binary == ("/usr/bin/true",)
 
 
+def test_startup_hook_path_updates_binary_discovery(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    original_env = dict(os.environ)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "tenzir").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (bin_dir / "tenzir-node").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (bin_dir / "tenzir").chmod(0o755)
+    (bin_dir / "tenzir-node").chmod(0o755)
+    (tmp_path / "tests").mkdir()
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.startup\n"
+        "def configure(ctx):\n"
+        f"    ctx.path.insert(0, {str(bin_dir)!r})\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("TENZIR_BINARY", raising=False)
+    monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.chdir(tmp_path)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        result = run.execute(root=tmp_path, tests=[])
+        tenzir_binary = run.TENZIR_BINARY
+        tenzir_node_binary = run.TENZIR_NODE_BINARY
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        os.environ.clear()
+        os.environ.update(original_env)
+        _restore_runtime(original_settings, original_root)
+
+    assert result.exit_code == 0
+    assert tenzir_binary == (str(bin_dir / "tenzir"),)
+    assert tenzir_node_binary == (str(bin_dir / "tenzir-node"),)
+
+
+def test_startup_hook_rejects_env_path_mutation(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    (tmp_path / "tests").mkdir()
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.startup\n"
+        "def configure(ctx):\n"
+        "    ctx.env['PATH'] = '/tmp/bin'\n",
+        encoding="utf-8",
+    )
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(run.HarnessError, match="modify ctx.path"):
+            run.execute(root=tmp_path, tests=[])
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+
 def test_no_hooks_disables_startup_hook(tmp_path: Path, monkeypatch) -> None:
     original_settings = run._settings  # type: ignore[attr-defined]
     original_root = run.ROOT
