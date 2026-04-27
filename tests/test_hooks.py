@@ -361,3 +361,66 @@ def test_project_env_keeps_diagnostics_flag(tmp_path: Path, monkeypatch) -> None
         _restore_runtime(original_settings, original_root)
 
     assert result.exit_code == 0
+
+
+def test_project_env_can_be_intentionally_empty(tmp_path: Path) -> None:
+    original_project_env = run._CURRENT_PROJECT_ENV  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    test_path = tmp_path / "tests" / "sample.tql"
+    test_path.parent.mkdir(parents=True)
+    test_path.write_text("version\n", encoding="utf-8")
+
+    try:
+        run._set_project_root(tmp_path)  # type: ignore[attr-defined]
+        run._CURRENT_PROJECT_ENV = {}  # type: ignore[attr-defined]
+        env, _config_args = run.get_test_env_and_config_args(test_path)
+    finally:
+        run.cleanup_test_tmp_dir(env.get(run.TEST_TMP_ENV_VAR) if "env" in locals() else None)
+        run._CURRENT_PROJECT_ENV = original_project_env  # type: ignore[attr-defined]
+        run._set_project_root(original_root)  # type: ignore[attr-defined]
+
+    assert "PATH" not in env
+    assert "HOME" not in env
+    assert env["TENZIR_TEST_ROOT"] == str(tmp_path)
+
+
+def test_fixture_mode_invokes_shutdown_hooks_after_runtime_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    (tmp_path / "fixtures.py").write_text(
+        "from tenzir_test.fixtures import fixture\n"
+        "@fixture(name='demo_failure', replace=True)\n"
+        "def demo_failure():\n"
+        "    raise RuntimeError('fixture exploded')\n"
+        "    yield {}\n",
+        encoding="utf-8",
+    )
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    log_path = tmp_path / "shutdown.log"
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.shutdown\n"
+        "def shutdown(ctx):\n"
+        f"    open({str(log_path)!r}, 'w').write(str(ctx.exit_code))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run, "_wait_for_fixture_shutdown", lambda: None)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(RuntimeError, match="fixture exploded"):
+            run.run_fixture_mode_cli(
+                root=tmp_path,
+                package_dirs=(),
+                fixtures=("demo_failure",),
+                debug=False,
+                keep_tmp_dirs=False,
+            )
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+    assert log_path.read_text(encoding="utf-8") == "1"

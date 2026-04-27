@@ -2843,7 +2843,7 @@ def get_test_env_and_config_args(
     config_file = test.parent / "tenzir.yaml"
     node_config_file = test.parent / "tenzir-node.yaml"
     config_args = [f"--config={config_file}"] if config_file.exists() else []
-    env = (_CURRENT_PROJECT_ENV or os.environ).copy()
+    env = (os.environ if _CURRENT_PROJECT_ENV is None else _CURRENT_PROJECT_ENV).copy()
     if inputs is None:
         # Try nearest inputs/ directory first, fall back to project-level
         nearest = _find_nearest_inputs_dir(test, ROOT)
@@ -5839,13 +5839,15 @@ def run_fixture_mode_cli(
             _apply_fixture_env(env, fixture_specs)
             _print_fixture_env_lines(fixture_env)
             _wait_for_fixture_shutdown()
-    except fixtures_impl.FixtureUnavailable as exc:
+    except BaseException as exc:
         if startup_succeeded and not shutdown_invoked:
             try:
                 _invoke_fixture_shutdown(1)
             except hooks_impl.HookInvocationError as shutdown_exc:
                 raise HarnessError(f"error: {shutdown_exc}") from exc
-        _raise_fixture_unavailable_harness_error(exc)
+        if isinstance(exc, fixtures_impl.FixtureUnavailable):
+            _raise_fixture_unavailable_harness_error(exc)
+        raise
     finally:
         fixtures_impl.pop_context(context_token)
         cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
