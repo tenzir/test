@@ -81,3 +81,103 @@ def test_no_hooks_disables_startup_hook(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert tenzir_binary == ("/usr/bin/true",)
+
+
+def test_purge_balances_project_hooks(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    (tmp_path / "tests").mkdir()
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    log_path = tmp_path / "hook.log"
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.project_start\n"
+        "def start(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('start\\n')\n"
+        "@hooks.project_finish\n"
+        "def finish(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('finish\\n')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        result = run.execute(root=tmp_path, tests=[], purge=True)
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+    assert result.exit_code == 0
+    assert log_path.read_text(encoding="utf-8").splitlines() == ["start", "finish"]
+
+
+def test_fixture_mode_invokes_shutdown_hooks(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    (tmp_path / "fixtures.py").write_text(
+        "from tenzir_test.fixtures import fixture\n"
+        "@fixture(name='demo_shutdown', replace=True)\n"
+        "def demo_shutdown():\n"
+        "    yield {'DEMO_SHUTDOWN': '1'}\n",
+        encoding="utf-8",
+    )
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    log_path = tmp_path / "shutdown.log"
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.shutdown\n"
+        "def shutdown(ctx):\n"
+        f"    open({str(log_path)!r}, 'w').write(str(ctx.exit_code))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run, "_wait_for_fixture_shutdown", lambda: None)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        exit_code = run.run_fixture_mode_cli(
+            root=tmp_path,
+            package_dirs=(),
+            fixtures=("demo_shutdown",),
+            debug=False,
+            keep_tmp_dirs=False,
+        )
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+    assert exit_code == 0
+    assert log_path.read_text(encoding="utf-8") == "0"
+
+
+def test_fixture_mode_wraps_startup_hook_failures(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.startup\n"
+        "def explode(ctx):\n"
+        "    raise RuntimeError('boom')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run, "_wait_for_fixture_shutdown", lambda: None)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(run.HarnessError, match="hook startup explode failed"):
+            run.run_fixture_mode_cli(
+                root=tmp_path,
+                package_dirs=(),
+                fixtures=("missing",),
+                debug=False,
+                keep_tmp_dirs=False,
+            )
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)

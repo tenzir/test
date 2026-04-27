@@ -5723,21 +5723,25 @@ def run_fixture_mode_cli(
     global _HOOKS_DISABLED
     _HOOKS_DISABLED = _hooks_disabled(no_hooks)
     root_path = Path(root or os.environ.get("TENZIR_TEST_ROOT") or Path.cwd()).resolve()
-    if not _HOOKS_DISABLED:
-        try:
-            root_hooks = _load_project_hooks(root_path)
-        except RuntimeError as exc:
-            raise HarnessError(f"error: {exc}") from exc
-        env = os.environ.copy()
-        _invoke_hooks(
-            (root_hooks,),
-            "startup",
-            hooks_impl.StartupContext(root=root_path, env=env, debug=debug_enabled),
-            project_root=root_path,
-            debug=debug_enabled,
-        )
-        os.environ.clear()
-        os.environ.update(env)
+    root_hooks = hooks_impl.HookSet()
+    try:
+        if not _HOOKS_DISABLED:
+            try:
+                root_hooks = _load_project_hooks(root_path)
+            except RuntimeError as exc:
+                raise HarnessError(f"error: {exc}") from exc
+            env = os.environ.copy()
+            _invoke_hooks(
+                (root_hooks,),
+                "startup",
+                hooks_impl.StartupContext(root=root_path, env=env, debug=debug_enabled),
+                project_root=root_path,
+                debug=debug_enabled,
+            )
+            os.environ.clear()
+            os.environ.update(env)
+    except hooks_impl.HookInvocationError as exc:
+        raise HarnessError(f"error: {exc}") from exc
 
     settings = discover_settings(root=root_path)
     apply_settings(settings)
@@ -5801,6 +5805,25 @@ def run_fixture_mode_cli(
     finally:
         fixtures_impl.pop_context(context_token)
         cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
+
+    try:
+        _invoke_hooks(
+            (root_hooks,),
+            "shutdown",
+            hooks_impl.ShutdownContext(
+                root=settings.root,
+                exit_code=0,
+                interrupted=False,
+                summary=hooks_impl.SummaryView(failed=0, total=0, skipped=0),
+                project_results=tuple(),
+                debug=debug_enabled,
+            ),
+            reverse=True,
+            project_root=settings.root,
+            debug=debug_enabled,
+        )
+    except hooks_impl.HookInvocationError as exc:
+        raise HarnessError(f"error: {exc}") from exc
 
     return 0
 
@@ -6036,7 +6059,27 @@ def run_cli(
                 tests_to_run = selection.selectors if not selection.run_all else [selection.root]
 
                 if purge:
+                    project_summary = Summary()
+                    _invoke_hooks(
+                        hook_chain,
+                        "project_finish",
+                        hooks_impl.ProjectFinishContext(
+                            root=settings.root,
+                            project=project_view,
+                            next_project=_project_view(next_selection) if next_selection else None,
+                            kind=selection.kind,
+                            summary=_summary_view(project_summary),
+                            interrupted=interrupted or interrupt_requested(),
+                            debug=debug_enabled,
+                        ),
+                        reverse=True,
+                        project_root=selection.root,
+                        debug=debug_enabled,
+                    )
                     previous_project_view = project_view
+                    _CURRENT_PROJECT_ENV = None
+                    _CURRENT_PROJECT_VIEW = None
+                    _CURRENT_HOOK_CHAIN = tuple()
                     continue
 
                 collected_paths: set[Path] = set()
