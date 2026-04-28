@@ -747,6 +747,9 @@ def _exception_is_interrupt(exc: BaseException) -> bool:
         if isinstance(returncode, int) and _is_interrupt_exit(returncode):
             return True
 
+        wrapped_cause = getattr(current, "cause", None)
+        if isinstance(wrapped_cause, BaseException):
+            pending.append(wrapped_cause)
         cause = current.__cause__
         if isinstance(cause, BaseException):
             pending.append(cause)
@@ -756,12 +759,29 @@ def _exception_is_interrupt(exc: BaseException) -> bool:
     return False
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class ExitInfo:
+    exit_code: int
+    interrupted: bool
+
+
+class ExceptionClassifier:
+    def is_interrupt(self, exc: BaseException) -> bool:
+        return _exception_is_interrupt(exc) or interrupt_requested()
+
+    def classify(self, exc: BaseException) -> ExitInfo:
+        if self.is_interrupt(exc):
+            return ExitInfo(exit_code=130, interrupted=True)
+        if isinstance(exc, SystemExit) and isinstance(exc.code, int):
+            return ExitInfo(exit_code=exc.code, interrupted=False)
+        return ExitInfo(exit_code=1, interrupted=False)
+
+
+_EXCEPTION_CLASSIFIER = ExceptionClassifier()
+
+
 def _exception_exit_code(exc: BaseException) -> int:
-    if _exception_is_interrupt(exc) or interrupt_requested():
-        return 130
-    if isinstance(exc, SystemExit) and isinstance(exc.code, int):
-        return exc.code
-    return 1
+    return _EXCEPTION_CLASSIFIER.classify(exc).exit_code
 
 
 _CURRENT_RETRY_CONTEXT = threading.local()
@@ -1140,6 +1160,37 @@ def _cleanup_test_tmp_dir_now(path: str | os.PathLike[str] | None) -> None:
         if tmp_path.exists():
             shutil.rmtree(tmp_path, ignore_errors=True)
         _cleanup_tmp_base_dirs()
+
+
+def _cleanup_deferred_tmp_dirs(paths: Iterable[Path]) -> None:
+    for path in paths:
+        _cleanup_test_tmp_dir_now(path)
+
+
+@dataclasses.dataclass(slots=True)
+class TmpDirDeferral:
+    paths: list[Path] = dataclasses.field(default_factory=list)
+    _token: contextvars.Token[list[Path] | None] | None = None
+
+    def __enter__(self) -> TmpDirDeferral:
+        self._token = _DEFER_TMP_CLEANUP.set(self.paths)
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if self._token is not None:
+            _DEFER_TMP_CLEANUP.reset(self._token)
+            self._token = None
+        _cleanup_deferred_tmp_dirs(self.paths)
+
+    @property
+    def last(self) -> Path | None:
+        return self.paths[-1] if self.paths else None
+
+    def close_without_cleanup(self) -> list[Path]:
+        if self._token is not None:
+            _DEFER_TMP_CLEANUP.reset(self._token)
+            self._token = None
+        return self.paths
 
 
 def _cleanup_remaining_tmp_dirs() -> None:
@@ -2630,32 +2681,46 @@ def _hooks_disabled(no_hooks: bool = False) -> bool:
     return no_hooks or bool(os.environ.get("TENZIR_TEST_DISABLE_HOOKS"))
 
 
-def _load_project_hooks(root: Path) -> hooks_impl.HookSet:
-    if _HOOKS_DISABLED:
-        return hooks_impl.HookSet()
-    resolved_root = root.resolve()
-    cached = _HOOK_LOAD_CACHE.get(resolved_root)
-    if cached is not None:
-        return cached
+@dataclasses.dataclass(slots=True)
+class HookLoadError(RuntimeError):
+    root: Path
+    cause: BaseException
 
-    hook_set = hooks_impl.HookSet()
-    hooks_package = resolved_root / "hooks"
-    hooks_file = resolved_root / "hooks.py"
-    module_base = f"_tenzir_project_hooks_{abs(hash(str(resolved_root)))}"
-    try:
-        with hooks_impl.loading() as loading_set:
-            if hooks_package.is_dir() and (hooks_package / "__init__.py").exists():
-                path = hooks_package / "__init__.py"
-                _CLI_LOGGER.debug("loading hooks from %s", path)
-                _import_module_from_path(module_base, path, package=True)
-            elif hooks_file.exists():
-                _CLI_LOGGER.debug("loading hooks from %s", hooks_file)
-                _import_module_from_path(module_base, hooks_file)
-            hook_set = loading_set
-    except BaseException as exc:
-        raise RuntimeError(f"failed to load hooks from {resolved_root}: {exc}") from exc
-    _HOOK_LOAD_CACHE[resolved_root] = hook_set
-    return hook_set
+    def __str__(self) -> str:
+        return f"failed to load hooks from {self.root}: {self.cause}"
+
+
+class HookLoader:
+    def load(self, root: Path) -> hooks_impl.HookSet:
+        if _HOOKS_DISABLED:
+            return hooks_impl.HookSet()
+        try:
+            resolved_root = root.resolve()
+            cached = _HOOK_LOAD_CACHE.get(resolved_root)
+            if cached is not None:
+                return cached
+
+            hook_set = hooks_impl.HookSet()
+            hooks_package = resolved_root / "hooks"
+            hooks_file = resolved_root / "hooks.py"
+            module_base = f"_tenzir_project_hooks_{abs(hash(str(resolved_root)))}"
+            with hooks_impl.loading() as loading_set:
+                if hooks_package.is_dir() and (hooks_package / "__init__.py").exists():
+                    path = hooks_package / "__init__.py"
+                    _CLI_LOGGER.debug("loading hooks from %s", path)
+                    _import_module_from_path(module_base, path, package=True)
+                elif hooks_file.exists():
+                    _CLI_LOGGER.debug("loading hooks from %s", hooks_file)
+                    _import_module_from_path(module_base, hooks_file)
+                hook_set = loading_set
+        except BaseException as exc:
+            raise HookLoadError(root=root, cause=exc) from exc
+        _HOOK_LOAD_CACHE[resolved_root] = hook_set
+        return hook_set
+
+
+def _load_project_hooks(root: Path) -> hooks_impl.HookSet:
+    return HookLoader().load(root)
 
 
 def _summary_view(summary: Summary) -> hooks_impl.SummaryView:
@@ -2675,6 +2740,25 @@ def _project_result_view(result: ProjectResult) -> hooks_impl.ProjectResultView:
         project=_project_view(result.selection),
         summary=_summary_view(result.summary),
         queue_size=result.queue_size,
+    )
+
+
+def _finish_context_to_failure_context(
+    finish_ctx: hooks_impl.TestFinishContext,
+) -> hooks_impl.TestFailureContext:
+    return hooks_impl.TestFailureContext(
+        root=finish_ctx.root,
+        project=finish_ctx.project,
+        test=finish_ctx.test,
+        runner=finish_ctx.runner,
+        reason=finish_ctx.reason,
+        attempts=finish_ctx.attempts,
+        duration=finish_ctx.duration,
+        fixtures=finish_ctx.fixtures,
+        suite=finish_ctx.suite,
+        tmp_dir=finish_ctx.tmp_dir,
+        update=finish_ctx.update,
+        coverage=finish_ctx.coverage,
     )
 
 
@@ -2711,6 +2795,34 @@ def _suite_view(
     return hooks_impl.SuiteView(name=info.name, directory=info.directory)
 
 
+class HookInvoker:
+    def invoke(
+        self,
+        hook_chain: Sequence[hooks_impl.HookSet],
+        event: hooks_impl.HookEvent,
+        context: object,
+        *,
+        reverse: bool = False,
+        project_root: Path | None = None,
+        test_path: Path | None = None,
+        debug: bool = False,
+    ) -> None:
+        if _HOOKS_DISABLED:
+            return
+        hooks_impl.invoke(
+            hook_chain,
+            event,
+            context,
+            reverse=reverse,
+            project_root=project_root,
+            test_path=test_path,
+            debug=debug,
+        )
+
+
+_HOOK_INVOKER = HookInvoker()
+
+
 def _invoke_hooks(
     hook_chain: Sequence[hooks_impl.HookSet],
     event: hooks_impl.HookEvent,
@@ -2721,9 +2833,7 @@ def _invoke_hooks(
     test_path: Path | None = None,
     debug: bool = False,
 ) -> None:
-    if _HOOKS_DISABLED:
-        return
-    hooks_impl.invoke(
+    _HOOK_INVOKER.invoke(
         hook_chain,
         event,
         context,
@@ -2762,11 +2872,166 @@ class _HookInvocationOnce:
         _invoke_hooks(
             hook_chain,
             event,
-            context,
+            context=context,
             reverse=reverse,
             project_root=project_root,
             test_path=test_path,
             debug=debug,
+        )
+
+
+@dataclasses.dataclass(slots=True)
+class TestState:
+    started_at: float = 0.0
+    attempts: int = 0
+    outcome: Literal["passed", "failed", "skipped"] | None = None
+    reason: str | None = None
+    interrupted: bool = False
+
+
+class TestScope:
+    def __init__(
+        self,
+        *,
+        hook_chain: Sequence[hooks_impl.HookSet],
+        hook_root: Path,
+        project_view: hooks_impl.ProjectView,
+        test_path: Path,
+        runner_name: str,
+        fixtures: tuple[fixtures_impl.FixtureSpec, ...],
+        suite: hooks_impl.SuiteView | None,
+        update: bool,
+        coverage: bool,
+        attempt_limit: int,
+        debug: bool,
+    ) -> None:
+        self.state = TestState()
+        self._hook_chain = tuple(hook_chain)
+        self._hook_root = hook_root
+        self._project_view = project_view
+        self._test_path = test_path
+        self._runner_name = runner_name
+        self._fixtures = fixtures
+        self._suite = suite
+        self._update = update
+        self._coverage = coverage
+        self._attempt_limit = attempt_limit
+        self._debug = debug
+        self._tmp_deferral = TmpDirDeferral()
+        self._hook_started = False
+        self._finish_suppressed = False
+
+    def __enter__(self) -> TestScope:
+        self.state.started_at = time.monotonic()
+        try:
+            _invoke_hooks(
+                self._hook_chain,
+                "test_start",
+                hooks_impl.TestStartContext(
+                    root=self._hook_root,
+                    project=self._project_view,
+                    test=self._test_path,
+                    runner=self._runner_name,
+                    fixtures=_fixture_views(self._fixtures),
+                    suite=self._suite,
+                    update=self._update,
+                    coverage=self._coverage,
+                    attempt_limit=self._attempt_limit,
+                ),
+                project_root=self._hook_root,
+                test_path=self._test_path,
+                debug=self._debug,
+            )
+        except hooks_impl.HookInvocationError:
+            self.state.outcome = "failed"
+            self.state.reason = "test_start hook failed"
+            _invoke_hooks(
+                self._hook_chain,
+                "test_finish",
+                self.finish_context(),
+                reverse=True,
+                project_root=self._hook_root,
+                test_path=self._test_path,
+                debug=self._debug,
+            )
+            raise
+        self._hook_started = True
+        self._tmp_deferral.__enter__()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> Literal[False]:
+        try:
+            if self._hook_started and not self._finish_suppressed:
+                if isinstance(exc, BaseException) and self.state.outcome is None:
+                    self.record_outcome("failed", reason=str(exc))
+                finish_ctx = self.finish_context()
+                _invoke_hooks(
+                    self._hook_chain,
+                    "test_finish",
+                    finish_ctx,
+                    reverse=True,
+                    project_root=self._hook_root,
+                    test_path=self._test_path,
+                    debug=self._debug,
+                )
+                if finish_ctx.outcome == "failed":
+                    _invoke_hooks(
+                        self._hook_chain,
+                        "test_failure",
+                        _finish_context_to_failure_context(finish_ctx),
+                        reverse=True,
+                        project_root=self._hook_root,
+                        test_path=self._test_path,
+                        debug=self._debug,
+                    )
+        finally:
+            self._tmp_deferral.__exit__(None, None, None)
+        return False
+
+    @property
+    def attempts(self) -> int:
+        return self.state.attempts
+
+    @property
+    def tmp_dir(self) -> Path | None:
+        return self._tmp_deferral.last
+
+    def record_attempt(self) -> int:
+        self.state.attempts += 1
+        return self.state.attempts
+
+    def record_outcome(
+        self,
+        outcome: Literal["passed", "failed", "skipped"],
+        *,
+        reason: str | None = None,
+        interrupted: bool = False,
+    ) -> None:
+        self.state.outcome = outcome
+        self.state.reason = reason
+        self.state.interrupted = interrupted
+
+    def mark_interrupted(self, *, reason: str = _INTERRUPTED_NOTICE) -> None:
+        self.record_outcome("failed", reason=reason, interrupted=True)
+
+    def suppress_finish_hooks(self) -> None:
+        self._finish_suppressed = True
+
+    def finish_context(self) -> hooks_impl.TestFinishContext:
+        return hooks_impl.TestFinishContext(
+            root=self._hook_root,
+            project=self._project_view,
+            test=self._test_path,
+            runner=self._runner_name,
+            outcome=self.state.outcome or "failed",
+            reason=self.state.reason,
+            attempts=self.state.attempts,
+            duration=time.monotonic() - self.state.started_at,
+            fixtures=_fixture_views(self._fixtures),
+            suite=self._suite,
+            tmp_dir=self._tmp_deferral.last,
+            update=self._update,
+            coverage=self._coverage,
         )
 
 
@@ -5370,20 +5635,7 @@ class Worker:
             _invoke_hooks(
                 self._hook_chain,
                 "test_failure",
-                hooks_impl.TestFailureContext(
-                    root=finish_ctx.root,
-                    project=finish_ctx.project,
-                    test=finish_ctx.test,
-                    runner=finish_ctx.runner,
-                    reason=finish_ctx.reason,
-                    attempts=finish_ctx.attempts,
-                    duration=finish_ctx.duration,
-                    fixtures=finish_ctx.fixtures,
-                    suite=finish_ctx.suite,
-                    tmp_dir=finish_ctx.tmp_dir,
-                    update=finish_ctx.update,
-                    coverage=finish_ctx.coverage,
-                ),
+                _finish_context_to_failure_context(finish_ctx),
                 reverse=True,
                 project_root=self._hook_root,
                 test_path=test_path,
@@ -5403,294 +5655,164 @@ class Worker:
         elif self._debug:
             _CLI_LOGGER.debug("running %s%s", rel_path, detail_segment)
         max_attempts = retry_limit
-        attempts = 0
         final_outcome: bool | str = False
         final_interrupted = False
-        started_at = time.monotonic()
-        deferred_tmp_dirs: list[Path] = []
-        try:
-            _invoke_hooks(
-                self._hook_chain,
-                "test_start",
-                hooks_impl.TestStartContext(
-                    root=self._hook_root,
-                    project=self._project_view,
-                    test=test_path,
-                    runner=runner.name,
-                    fixtures=_fixture_views(fixtures),
-                    suite=suite_view,
-                    update=self._update,
-                    coverage=self._coverage,
-                    attempt_limit=max_attempts,
-                ),
-                project_root=self._hook_root,
-                test_path=test_path,
-                debug=self._debug,
-            )
-        except hooks_impl.HookInvocationError:
-            _invoke_hooks(
-                self._hook_chain,
-                "test_finish",
-                hooks_impl.TestFinishContext(
-                    root=self._hook_root,
-                    project=self._project_view,
-                    test=test_path,
-                    runner=runner.name,
-                    outcome="failed",
-                    reason="test_start hook failed",
-                    attempts=0,
-                    duration=time.monotonic() - started_at,
-                    fixtures=_fixture_views(fixtures),
-                    suite=suite_view,
-                    tmp_dir=None,
-                    update=self._update,
-                    coverage=self._coverage,
-                ),
-                reverse=True,
-                project_root=self._hook_root,
-                test_path=test_path,
-                debug=self._debug,
-            )
-            raise
-        cleanup_token = _DEFER_TMP_CLEANUP.set(deferred_tmp_dirs)
-        while attempts < max_attempts:
-            if interrupt_requested():
-                final_interrupted = True
-                break
-            attempts += 1
-            with _push_retry_context(attempt=attempts, max_attempts=max_attempts):
-                with _push_assertion_check_context() as assertion_tally:
-                    attempt_context = contextlib.ExitStack()
-                    if suite_progress is not None:
-                        name, index, total = suite_progress
-                        attempt_context.enter_context(
-                            _push_suite_context(name=name, index=index, total=total)
-                        )
-                    if suite_fixtures is not None and config is not None:
-                        attempt_context.enter_context(
-                            _push_fixture_test_context(
-                                test=test_path,
-                                config=config,
-                                fixture_assertions=fixture_assertions,
+        with TestScope(
+            hook_chain=self._hook_chain,
+            hook_root=self._hook_root,
+            project_view=self._project_view,
+            test_path=test_path,
+            runner_name=runner.name,
+            fixtures=fixtures,
+            suite=suite_view,
+            update=self._update,
+            coverage=self._coverage,
+            attempt_limit=max_attempts,
+            debug=self._debug,
+        ) as test_scope:
+            while test_scope.attempts < max_attempts:
+                if interrupt_requested():
+                    final_interrupted = True
+                    break
+                attempts = test_scope.record_attempt()
+                with _push_retry_context(attempt=attempts, max_attempts=max_attempts):
+                    with _push_assertion_check_context() as assertion_tally:
+                        attempt_context = contextlib.ExitStack()
+                        if suite_progress is not None:
+                            name, index, total = suite_progress
+                            attempt_context.enter_context(
+                                _push_suite_context(name=name, index=index, total=total)
                             )
-                        )
-                    interrupted = False
-                    try:
-                        with attempt_context:
-                            outcome = runner.run(test_path, self._update, self._coverage)
-                            if outcome and outcome != "skipped" and suite_fixtures is not None:
-                                if suite_assertion_lock is None:
-                                    _run_fixture_assertions_for_test(
-                                        test=test_path,
-                                        fixture_specs=suite_fixtures,
-                                        fixture_assertions=fixture_assertions,
-                                    )
-                                else:
-                                    with suite_assertion_lock:
+                        if suite_fixtures is not None and config is not None:
+                            attempt_context.enter_context(
+                                _push_fixture_test_context(
+                                    test=test_path,
+                                    config=config,
+                                    fixture_assertions=fixture_assertions,
+                                )
+                            )
+                        interrupted = False
+                        try:
+                            with attempt_context:
+                                outcome = runner.run(test_path, self._update, self._coverage)
+                                if outcome and outcome != "skipped" and suite_fixtures is not None:
+                                    if suite_assertion_lock is None:
                                         _run_fixture_assertions_for_test(
                                             test=test_path,
                                             fixture_specs=suite_fixtures,
                                             fixture_assertions=fixture_assertions,
                                         )
-                    except KeyboardInterrupt:  # pragma: no cover - defensive guard
-                        _request_interrupt()
-                        interrupted = True
-                        outcome = False
-                    except fixtures_impl.FixtureUnavailable as exc:
-                        if isinstance(skip_cfg, SkipConfig) and skip_cfg.allows_condition(
-                            SKIP_ON_FIXTURE_UNAVAILABLE
-                        ):
-                            reason = _fixture_unavailable_skip_reason(skip_cfg, exc)
-                            displayed_reason = f"fixture unavailable: {reason}"
-                            if self._skip_test_with_reason(
-                                test_item=test_item,
-                                fixtures=fixtures,
-                                displayed_reason=displayed_reason,
-                                summary=summary,
+                                    else:
+                                        with suite_assertion_lock:
+                                            _run_fixture_assertions_for_test(
+                                                test=test_path,
+                                                fixture_specs=suite_fixtures,
+                                                fixture_assertions=fixture_assertions,
+                                            )
+                        except KeyboardInterrupt:  # pragma: no cover - defensive guard
+                            _request_interrupt()
+                            interrupted = True
+                            outcome = False
+                        except fixtures_impl.FixtureUnavailable as exc:
+                            if isinstance(skip_cfg, SkipConfig) and skip_cfg.allows_condition(
+                                SKIP_ON_FIXTURE_UNAVAILABLE
                             ):
-                                _DEFER_TMP_CLEANUP.reset(cleanup_token)
-                                for path in deferred_tmp_dirs:
-                                    _cleanup_test_tmp_dir_now(path)
+                                reason = _fixture_unavailable_skip_reason(skip_cfg, exc)
+                                displayed_reason = f"fixture unavailable: {reason}"
+                                if self._run_skipped_selector.should_run_skipped(
+                                    reason=displayed_reason
+                                ):
+                                    self._increment_run_skipped_match_count()
+                                    raise
+                                test_scope.suppress_finish_hooks()
+                                self._record_test_skip(
+                                    test_item=test_item,
+                                    fixtures=fixtures,
+                                    reason=displayed_reason,
+                                    summary=summary,
+                                    suite=suite_view,
+                                )
                                 return False
-                            raise
-                        report_failure(
-                            test_path,
-                            format_failure_message(
-                                f"fixture unavailable: {_compose_skip_reason(None, str(exc))}"
-                            ),
-                        )
-                        outcome = False
-                        final_interrupted = False
-                        final_outcome = outcome
-                        summary.record_assertion_checks(
-                            total=assertion_tally.total,
-                            failed=assertion_tally.failed,
-                        )
-                        break
-                    except Exception as exc:
-                        is_fixture_assertion = str(exc).startswith("fixture assertion failed:")
-                        error_message = (
-                            _fixture_assertion_failure_message(exc)
-                            if is_fixture_assertion
-                            else format_failure_message(str(exc))
-                        )
-                        report_failure(test_path, error_message)
-                        outcome = False
-                        final_interrupted = False
-                        final_outcome = outcome
-                        if is_fixture_assertion and attempts < max_attempts:
+                            report_failure(
+                                test_path,
+                                format_failure_message(
+                                    f"fixture unavailable: {_compose_skip_reason(None, str(exc))}"
+                                ),
+                            )
+                            outcome = False
+                            final_interrupted = False
+                            final_outcome = outcome
                             summary.record_assertion_checks(
                                 total=assertion_tally.total,
                                 failed=assertion_tally.failed,
                             )
-                            continue
+                            break
+                        except Exception as exc:
+                            is_fixture_assertion = str(exc).startswith("fixture assertion failed:")
+                            error_message = (
+                                _fixture_assertion_failure_message(exc)
+                                if is_fixture_assertion
+                                else format_failure_message(str(exc))
+                            )
+                            report_failure(test_path, error_message)
+                            outcome = False
+                            final_interrupted = False
+                            final_outcome = outcome
+                            if is_fixture_assertion and attempts < max_attempts:
+                                summary.record_assertion_checks(
+                                    total=assertion_tally.total,
+                                    failed=assertion_tally.failed,
+                                )
+                                continue
+                            summary.record_assertion_checks(
+                                total=assertion_tally.total,
+                                failed=assertion_tally.failed,
+                            )
+                            break
                         summary.record_assertion_checks(
                             total=assertion_tally.total,
                             failed=assertion_tally.failed,
                         )
+
+                    if interrupted:
+                        report_failure(test_path, _INTERRUPTED_NOTICE)
+                        final_interrupted = True
+                    final_outcome = outcome
+                    if final_interrupted or interrupt_requested():
                         break
-                    summary.record_assertion_checks(
-                        total=assertion_tally.total,
-                        failed=assertion_tally.failed,
-                    )
+                    if outcome == "skipped" or outcome:
+                        break
+                    if attempts < max_attempts:
+                        continue
 
-                if interrupted:
-                    report_failure(test_path, _INTERRUPTED_NOTICE)
-                    final_interrupted = True
-                final_outcome = outcome
-                if final_interrupted or interrupt_requested():
-                    break
-                if outcome == "skipped" or outcome:
-                    break
-                if attempts < max_attempts:
-                    continue
-        _DEFER_TMP_CLEANUP.reset(cleanup_token)
-        tmp_dir = deferred_tmp_dirs[-1] if deferred_tmp_dirs else None
-        duration = time.monotonic() - started_at
-        if attempts == 0 and final_interrupted:
-            # The test never started an execution attempt (for example, work
-            # was cancelled after an interrupt), so do not count it as failed.
-            # Still balance the hook lifecycle because test_start already ran.
-            finish_ctx = hooks_impl.TestFinishContext(
-                root=self._hook_root,
-                project=self._project_view,
-                test=test_path,
-                runner=runner.name,
-                outcome="failed",
-                reason=_INTERRUPTED_NOTICE,
-                attempts=0,
-                duration=duration,
-                fixtures=_fixture_views(fixtures),
-                suite=suite_view,
-                tmp_dir=tmp_dir,
-                update=self._update,
-                coverage=self._coverage,
-            )
-            try:
-                _invoke_hooks(
-                    self._hook_chain,
-                    "test_finish",
-                    finish_ctx,
-                    reverse=True,
-                    project_root=self._hook_root,
-                    test_path=test_path,
-                    debug=self._debug,
-                )
-                _invoke_hooks(
-                    self._hook_chain,
-                    "test_failure",
-                    hooks_impl.TestFailureContext(
-                        root=finish_ctx.root,
-                        project=finish_ctx.project,
-                        test=finish_ctx.test,
-                        runner=finish_ctx.runner,
-                        reason=finish_ctx.reason,
-                        attempts=finish_ctx.attempts,
-                        duration=finish_ctx.duration,
-                        fixtures=finish_ctx.fixtures,
-                        suite=finish_ctx.suite,
-                        tmp_dir=finish_ctx.tmp_dir,
-                        update=finish_ctx.update,
-                        coverage=finish_ctx.coverage,
-                    ),
-                    reverse=True,
-                    project_root=self._hook_root,
-                    test_path=test_path,
-                    debug=self._debug,
-                )
-            finally:
-                for path in deferred_tmp_dirs:
-                    _cleanup_test_tmp_dir_now(path)
-            return True
+            if test_scope.attempts == 0 and final_interrupted:
+                # The test never started an execution attempt (for example, work
+                # was cancelled after an interrupt), so do not count it as failed.
+                # Still balance the hook lifecycle because test_start already ran.
+                test_scope.mark_interrupted()
+                return True
 
-        summary.total += 1
-        summary.record_runner_outcome(runner.name, final_outcome)
-        if fixtures:
-            summary.record_fixture_outcome(_fixture_names(fixtures), final_outcome)
-        if final_outcome == "skipped":
-            summary.skipped += 1
-            summary.skipped_paths.append(rel_path)
-        elif not final_outcome:
-            summary.failed += 1
-            summary.failed_paths.append(rel_path)
-        if final_outcome == "skipped":
-            outcome_name: Literal["passed", "failed", "skipped"] = "skipped"
-        elif final_outcome:
-            outcome_name = "passed"
-        else:
-            outcome_name = "failed"
-        finish_reason: str | None = _INTERRUPTED_NOTICE if final_interrupted else None
-        finish_ctx = hooks_impl.TestFinishContext(
-            root=self._hook_root,
-            project=self._project_view,
-            test=test_path,
-            runner=runner.name,
-            outcome=outcome_name,
-            reason=finish_reason,
-            attempts=attempts,
-            duration=duration,
-            fixtures=_fixture_views(fixtures),
-            suite=suite_view,
-            tmp_dir=tmp_dir,
-            update=self._update,
-            coverage=self._coverage,
-        )
-        try:
-            _invoke_hooks(
-                self._hook_chain,
-                "test_finish",
-                finish_ctx,
-                reverse=True,
-                project_root=self._hook_root,
-                test_path=test_path,
-                debug=self._debug,
+            summary.total += 1
+            summary.record_runner_outcome(runner.name, final_outcome)
+            if fixtures:
+                summary.record_fixture_outcome(_fixture_names(fixtures), final_outcome)
+            if final_outcome == "skipped":
+                summary.skipped += 1
+                summary.skipped_paths.append(rel_path)
+            elif not final_outcome:
+                summary.failed += 1
+                summary.failed_paths.append(rel_path)
+            if final_outcome == "skipped":
+                outcome_name: Literal["passed", "failed", "skipped"] = "skipped"
+            elif final_outcome:
+                outcome_name = "passed"
+            else:
+                outcome_name = "failed"
+            test_scope.record_outcome(
+                outcome_name,
+                reason=_INTERRUPTED_NOTICE if final_interrupted else None,
+                interrupted=final_interrupted,
             )
-            if outcome_name == "failed":
-                _invoke_hooks(
-                    self._hook_chain,
-                    "test_failure",
-                    hooks_impl.TestFailureContext(
-                        root=finish_ctx.root,
-                        project=finish_ctx.project,
-                        test=finish_ctx.test,
-                        runner=finish_ctx.runner,
-                        reason=finish_ctx.reason,
-                        attempts=finish_ctx.attempts,
-                        duration=finish_ctx.duration,
-                        fixtures=finish_ctx.fixtures,
-                        suite=finish_ctx.suite,
-                        tmp_dir=finish_ctx.tmp_dir,
-                        update=finish_ctx.update,
-                        coverage=finish_ctx.coverage,
-                    ),
-                    reverse=True,
-                    project_root=self._hook_root,
-                    test_path=test_path,
-                    debug=self._debug,
-                )
-        finally:
-            for path in deferred_tmp_dirs:
-                _cleanup_test_tmp_dir_now(path)
         return final_interrupted or interrupt_requested()
 
 
@@ -5900,7 +6022,7 @@ def run_fixture_mode_cli(
         if not _HOOKS_DISABLED:
             try:
                 root_hooks = _load_project_hooks(root_path)
-            except RuntimeError as exc:
+            except HookLoadError as exc:
                 raise HarnessError(f"error: {exc}") from exc
             env = os.environ.copy()
             path = _env_path(env)
@@ -6142,7 +6264,7 @@ def run_cli(
         _HOOKS_DISABLED = _hooks_disabled(no_hooks)
         try:
             root_hooks = hooks_impl.HookSet() if _HOOKS_DISABLED else _load_project_hooks(root_path)
-        except RuntimeError as exc:
+        except HookLoadError as exc:
             raise HarnessError(f"error: {exc}") from exc
         if not _HOOKS_DISABLED:
             env = os.environ.copy()
@@ -6266,7 +6388,7 @@ def run_cli(
                 if selection.root.resolve() != settings.root.resolve() and not _HOOKS_DISABLED:
                     try:
                         project_hooks = _load_project_hooks(selection.root)
-                    except RuntimeError as exc:
+                    except HookLoadError as exc:
                         raise HarnessError(f"error: {exc}") from exc
                 hook_chain = (
                     (root_hooks,) if selection.kind == "root" else (root_hooks, project_hooks)
@@ -6557,11 +6679,13 @@ def run_cli(
                     skip_filter_matches = 0
                     joined_workers: set[Worker] = set()
                     try:
-                        worker_exception: Exception | None = None
+                        worker_exception: BaseException | None = None
                         for worker in workers:
                             try:
                                 worker_summary = worker.join()
-                            except Exception as exc:
+                            except KeyboardInterrupt:
+                                raise
+                            except BaseException as exc:
                                 _merge_summary_inplace(
                                     project_summary, _worker_partial_summary(worker)
                                 )
@@ -6580,7 +6704,9 @@ def run_cli(
                                 continue
                             try:
                                 worker_summary = worker.join()
-                            except Exception:
+                            except KeyboardInterrupt:
+                                raise
+                            except BaseException:
                                 worker_summary = _worker_partial_summary(worker)
                             _merge_summary_inplace(project_summary, worker_summary)
                             skip_filter_matches += worker.run_skipped_match_count
@@ -6590,7 +6716,7 @@ def run_cli(
                     except fixtures_impl.FixtureUnavailable as exc:
                         _record_project_result_once()
                         _raise_fixture_unavailable_harness_error(exc)
-                    except Exception as exc:
+                    except BaseException as exc:
                         if not (_exception_is_interrupt(exc) or interrupt_requested()):
                             _record_project_result_once()
                             raise
@@ -6600,7 +6726,9 @@ def run_cli(
                                 continue
                             try:
                                 worker_summary = remaining_worker.join()
-                            except Exception as join_exc:
+                            except KeyboardInterrupt:
+                                raise
+                            except BaseException as join_exc:
                                 worker_summary = _worker_partial_summary(remaining_worker)
                                 if not (_exception_is_interrupt(join_exc) or interrupt_requested()):
                                     _merge_summary_inplace(project_summary, worker_summary)
