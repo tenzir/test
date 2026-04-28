@@ -304,7 +304,7 @@ def invoke(
                 print(f"debug: invoking hook {event} {module}.{name}")
             try:
                 cast(Callable[[object], None], func)(context)
-            except Exception as exc:
+            except BaseException as exc:
                 name = getattr(func, "__qualname__", getattr(func, "__name__", repr(func)))
                 module = getattr(func, "__module__", "<unknown>")
                 parts = [f"hook {event} {name} failed"]

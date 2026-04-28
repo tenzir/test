@@ -756,6 +756,14 @@ def _exception_is_interrupt(exc: BaseException) -> bool:
     return False
 
 
+def _exception_exit_code(exc: BaseException) -> int:
+    if _exception_is_interrupt(exc) or interrupt_requested():
+        return 130
+    if isinstance(exc, SystemExit) and isinstance(exc.code, int):
+        return exc.code
+    return 1
+
+
 _CURRENT_RETRY_CONTEXT = threading.local()
 _CURRENT_SUITE_CONTEXT = threading.local()
 _CURRENT_ASSERTION_CHECK_CONTEXT = threading.local()
@@ -2644,7 +2652,7 @@ def _load_project_hooks(root: Path) -> hooks_impl.HookSet:
                 _CLI_LOGGER.debug("loading hooks from %s", hooks_file)
                 _import_module_from_path(module_base, hooks_file)
             hook_set = loading_set
-    except Exception as exc:
+    except BaseException as exc:
         raise RuntimeError(f"failed to load hooks from {resolved_root}: {exc}") from exc
     _HOOK_LOAD_CACHE[resolved_root] = hook_set
     return hook_set
@@ -2913,9 +2921,15 @@ def get_test_env_and_config_args(
     if node_config_file.exists():
         env["TENZIR_NODE_CONFIG"] = str(node_config_file)
     if TENZIR_BINARY:
-        env["TENZIR_BINARY"] = shlex.join(TENZIR_BINARY)
+        if _CURRENT_PROJECT_ENV is None:
+            env["TENZIR_BINARY"] = shlex.join(TENZIR_BINARY)
+        else:
+            env.setdefault("TENZIR_BINARY", shlex.join(TENZIR_BINARY))
     if TENZIR_NODE_BINARY:
-        env["TENZIR_NODE_BINARY"] = shlex.join(TENZIR_NODE_BINARY)
+        if _CURRENT_PROJECT_ENV is None:
+            env["TENZIR_NODE_BINARY"] = shlex.join(TENZIR_NODE_BINARY)
+        else:
+            env.setdefault("TENZIR_NODE_BINARY", shlex.join(TENZIR_NODE_BINARY))
     env["TENZIR_TEST_ROOT"] = str(ROOT)
     tmp_dir = _create_test_tmp_dir(test)
     env[TEST_TMP_ENV_VAR] = str(tmp_dir)
@@ -4920,7 +4934,7 @@ class Worker:
                 if interrupt_requested():
                     break
             return result
-        except Exception as exc:  # pragma: no cover - defensive logging
+        except BaseException as exc:  # pragma: no cover - defensive logging
             self._exception = exc
             if self._result is None:
                 self._result = Summary()
@@ -5572,39 +5586,41 @@ class Worker:
                 update=self._update,
                 coverage=self._coverage,
             )
-            _invoke_hooks(
-                self._hook_chain,
-                "test_finish",
-                finish_ctx,
-                reverse=True,
-                project_root=self._hook_root,
-                test_path=test_path,
-                debug=self._debug,
-            )
-            _invoke_hooks(
-                self._hook_chain,
-                "test_failure",
-                hooks_impl.TestFailureContext(
-                    root=finish_ctx.root,
-                    project=finish_ctx.project,
-                    test=finish_ctx.test,
-                    runner=finish_ctx.runner,
-                    reason=finish_ctx.reason,
-                    attempts=finish_ctx.attempts,
-                    duration=finish_ctx.duration,
-                    fixtures=finish_ctx.fixtures,
-                    suite=finish_ctx.suite,
-                    tmp_dir=finish_ctx.tmp_dir,
-                    update=finish_ctx.update,
-                    coverage=finish_ctx.coverage,
-                ),
-                reverse=True,
-                project_root=self._hook_root,
-                test_path=test_path,
-                debug=self._debug,
-            )
-            for path in deferred_tmp_dirs:
-                _cleanup_test_tmp_dir_now(path)
+            try:
+                _invoke_hooks(
+                    self._hook_chain,
+                    "test_finish",
+                    finish_ctx,
+                    reverse=True,
+                    project_root=self._hook_root,
+                    test_path=test_path,
+                    debug=self._debug,
+                )
+                _invoke_hooks(
+                    self._hook_chain,
+                    "test_failure",
+                    hooks_impl.TestFailureContext(
+                        root=finish_ctx.root,
+                        project=finish_ctx.project,
+                        test=finish_ctx.test,
+                        runner=finish_ctx.runner,
+                        reason=finish_ctx.reason,
+                        attempts=finish_ctx.attempts,
+                        duration=finish_ctx.duration,
+                        fixtures=finish_ctx.fixtures,
+                        suite=finish_ctx.suite,
+                        tmp_dir=finish_ctx.tmp_dir,
+                        update=finish_ctx.update,
+                        coverage=finish_ctx.coverage,
+                    ),
+                    reverse=True,
+                    project_root=self._hook_root,
+                    test_path=test_path,
+                    debug=self._debug,
+                )
+            finally:
+                for path in deferred_tmp_dirs:
+                    _cleanup_test_tmp_dir_now(path)
             return True
 
         summary.total += 1
@@ -5639,40 +5655,42 @@ class Worker:
             update=self._update,
             coverage=self._coverage,
         )
-        _invoke_hooks(
-            self._hook_chain,
-            "test_finish",
-            finish_ctx,
-            reverse=True,
-            project_root=self._hook_root,
-            test_path=test_path,
-            debug=self._debug,
-        )
-        if outcome_name == "failed":
+        try:
             _invoke_hooks(
                 self._hook_chain,
-                "test_failure",
-                hooks_impl.TestFailureContext(
-                    root=finish_ctx.root,
-                    project=finish_ctx.project,
-                    test=finish_ctx.test,
-                    runner=finish_ctx.runner,
-                    reason=finish_ctx.reason,
-                    attempts=finish_ctx.attempts,
-                    duration=finish_ctx.duration,
-                    fixtures=finish_ctx.fixtures,
-                    suite=finish_ctx.suite,
-                    tmp_dir=finish_ctx.tmp_dir,
-                    update=finish_ctx.update,
-                    coverage=finish_ctx.coverage,
-                ),
+                "test_finish",
+                finish_ctx,
                 reverse=True,
                 project_root=self._hook_root,
                 test_path=test_path,
                 debug=self._debug,
             )
-        for path in deferred_tmp_dirs:
-            _cleanup_test_tmp_dir_now(path)
+            if outcome_name == "failed":
+                _invoke_hooks(
+                    self._hook_chain,
+                    "test_failure",
+                    hooks_impl.TestFailureContext(
+                        root=finish_ctx.root,
+                        project=finish_ctx.project,
+                        test=finish_ctx.test,
+                        runner=finish_ctx.runner,
+                        reason=finish_ctx.reason,
+                        attempts=finish_ctx.attempts,
+                        duration=finish_ctx.duration,
+                        fixtures=finish_ctx.fixtures,
+                        suite=finish_ctx.suite,
+                        tmp_dir=finish_ctx.tmp_dir,
+                        update=finish_ctx.update,
+                        coverage=finish_ctx.coverage,
+                    ),
+                    reverse=True,
+                    project_root=self._hook_root,
+                    test_path=test_path,
+                    debug=self._debug,
+                )
+        finally:
+            for path in deferred_tmp_dirs:
+                _cleanup_test_tmp_dir_now(path)
         return final_interrupted or interrupt_requested()
 
 
@@ -5820,8 +5838,8 @@ def _print_fixture_env_lines(env: Mapping[str, str]) -> None:
         print(f"{INFO} fixture environment is active; press Ctrl+C to stop")
 
 
-def _wait_for_fixture_shutdown() -> None:
-    """Block until SIGINT/SIGTERM is received, then return."""
+def _wait_for_fixture_shutdown() -> bool:
+    """Block until SIGINT/SIGTERM is received and return whether interrupted."""
 
     stop_event = threading.Event()
     previous = {
@@ -5838,8 +5856,9 @@ def _wait_for_fixture_shutdown() -> None:
     try:
         while not stop_event.wait(0.25):
             continue
+        return True
     except KeyboardInterrupt:  # pragma: no cover - defensive fallback
-        pass
+        return True
     finally:
         signal.signal(signal.SIGINT, previous[signal.SIGINT])
         signal.signal(signal.SIGTERM, previous[signal.SIGTERM])
@@ -5901,7 +5920,7 @@ def run_fixture_mode_cli(
             _apply_env_path(env, path)
             os.environ.clear()
             os.environ.update(env)
-    except hooks_impl.HookInvocationError as exc:
+    except BaseException as exc:
         if startup_succeeded and not shutdown_once.attempted:
             try:
                 shutdown_once.invoke(
@@ -5909,8 +5928,8 @@ def run_fixture_mode_cli(
                     "shutdown",
                     hooks_impl.ShutdownContext(
                         root=root_path,
-                        exit_code=1,
-                        interrupted=False,
+                        exit_code=_exception_exit_code(exc),
+                        interrupted=_exception_is_interrupt(exc) or interrupt_requested(),
                         summary=hooks_impl.SummaryView(failed=0, total=0, skipped=0),
                         project_results=tuple(),
                         debug=debug_enabled,
@@ -5920,19 +5939,28 @@ def run_fixture_mode_cli(
                     debug=debug_enabled,
                 )
             except hooks_impl.HookInvocationError as shutdown_exc:
-                raise HarnessError(f"error: {exc}; additionally, {shutdown_exc}") from exc
-        raise HarnessError(f"error: {exc}") from exc
+                if isinstance(exc, hooks_impl.HookInvocationError):
+                    raise HarnessError(f"error: {exc}; additionally, {shutdown_exc}") from exc
+                raise HarnessError(f"error: {shutdown_exc}") from exc
+        if isinstance(exc, hooks_impl.HookInvocationError):
+            raise HarnessError(f"error: {exc}") from exc
+        raise
 
     settings: Settings | None = None
 
-    def _invoke_fixture_shutdown(exit_code: int, *, shutdown_root: Path) -> None:
+    def _invoke_fixture_shutdown(
+        exit_code: int,
+        *,
+        shutdown_root: Path,
+        interrupted: bool = False,
+    ) -> None:
         shutdown_once.invoke(
             (root_hooks,),
             "shutdown",
             hooks_impl.ShutdownContext(
                 root=shutdown_root,
                 exit_code=exit_code,
-                interrupted=False,
+                interrupted=interrupted,
                 summary=hooks_impl.SummaryView(failed=0, total=0, skipped=0),
                 project_results=tuple(),
                 debug=debug_enabled,
@@ -5999,18 +6027,26 @@ def run_fixture_mode_cli(
                 env.update(fixture_env)
                 _apply_fixture_env(env, fixture_specs)
                 _print_fixture_env_lines(fixture_env)
-                _wait_for_fixture_shutdown()
+                fixture_interrupted = bool(_wait_for_fixture_shutdown())
         finally:
             fixtures_impl.pop_context(context_token)
             cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
 
-        _invoke_fixture_shutdown(0, shutdown_root=settings.root)
+        _invoke_fixture_shutdown(
+            0,
+            shutdown_root=settings.root,
+            interrupted=fixture_interrupted,
+        )
         return 0
     except BaseException as exc:
         if startup_succeeded and not shutdown_once.attempted:
             try:
                 shutdown_root = settings.root if settings is not None else root_path
-                _invoke_fixture_shutdown(1, shutdown_root=shutdown_root)
+                _invoke_fixture_shutdown(
+                    _exception_exit_code(exc),
+                    shutdown_root=shutdown_root,
+                    interrupted=_exception_is_interrupt(exc) or interrupt_requested(),
+                )
             except hooks_impl.HookInvocationError as shutdown_exc:
                 raise HarnessError(f"error: {shutdown_exc}") from exc
         if isinstance(exc, fixtures_impl.FixtureUnavailable):
@@ -6687,7 +6723,7 @@ def run_cli(
                 )
             )
 
-    except Exception as exc:
+    except BaseException as exc:
         if startup_succeeded and not shutdown_once.attempted:
             shutdown_root = settings.root if settings is not None else root_path
             try:
@@ -6696,8 +6732,8 @@ def run_cli(
                     "shutdown",
                     hooks_impl.ShutdownContext(
                         root=shutdown_root,
-                        exit_code=130 if interrupt_requested() else 1,
-                        interrupted=interrupt_requested(),
+                        exit_code=_exception_exit_code(exc),
+                        interrupted=_exception_is_interrupt(exc) or interrupt_requested(),
                         summary=_summary_view(overall_summary),
                         project_results=tuple(
                             _project_result_view(item) for item in project_results
