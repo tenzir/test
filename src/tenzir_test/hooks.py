@@ -275,8 +275,18 @@ class TestFailureContext:
     coverage: bool
 
 
+@dataclasses.dataclass(slots=True)
 class HookInvocationError(RuntimeError):
-    pass
+    event: HookEvent
+    hook_name: str
+    module: str
+    project_root: Path | None
+    test_path: Path | None
+    cause: BaseException
+    message: str
+
+    def __str__(self) -> str:
+        return self.message
 
 
 _TEARDOWN_EVENTS: frozenset[HookEvent] = frozenset({"shutdown", "project_finish", "test_finish"})
@@ -313,7 +323,15 @@ def invoke(
                 if project_root is not None:
                     parts.append(f"in {project_root}")
                 parts.append(f"({module}): {exc}")
-                error = HookInvocationError(" ".join(parts))
+                error = HookInvocationError(
+                    event=event,
+                    hook_name=name,
+                    module=module,
+                    project_root=project_root,
+                    test_path=test_path,
+                    cause=exc,
+                    message=" ".join(parts),
+                )
                 if event in _TEARDOWN_EVENTS:
                     errors.append(error)
                     continue

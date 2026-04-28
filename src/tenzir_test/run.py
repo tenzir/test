@@ -747,6 +747,9 @@ def _exception_is_interrupt(exc: BaseException) -> bool:
         if isinstance(returncode, int) and _is_interrupt_exit(returncode):
             return True
 
+        wrapped_cause = getattr(current, "cause", None)
+        if isinstance(wrapped_cause, BaseException):
+            pending.append(wrapped_cause)
         cause = current.__cause__
         if isinstance(cause, BaseException):
             pending.append(cause)
@@ -756,12 +759,29 @@ def _exception_is_interrupt(exc: BaseException) -> bool:
     return False
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class ExitInfo:
+    exit_code: int
+    interrupted: bool
+
+
+class ExceptionClassifier:
+    def is_interrupt(self, exc: BaseException) -> bool:
+        return _exception_is_interrupt(exc) or interrupt_requested()
+
+    def classify(self, exc: BaseException) -> ExitInfo:
+        if self.is_interrupt(exc):
+            return ExitInfo(exit_code=130, interrupted=True)
+        if isinstance(exc, SystemExit) and isinstance(exc.code, int):
+            return ExitInfo(exit_code=exc.code, interrupted=False)
+        return ExitInfo(exit_code=1, interrupted=False)
+
+
+_EXCEPTION_CLASSIFIER = ExceptionClassifier()
+
+
 def _exception_exit_code(exc: BaseException) -> int:
-    if _exception_is_interrupt(exc) or interrupt_requested():
-        return 130
-    if isinstance(exc, SystemExit) and isinstance(exc.code, int):
-        return exc.code
-    return 1
+    return _EXCEPTION_CLASSIFIER.classify(exc).exit_code
 
 
 _CURRENT_RETRY_CONTEXT = threading.local()
@@ -1140,6 +1160,37 @@ def _cleanup_test_tmp_dir_now(path: str | os.PathLike[str] | None) -> None:
         if tmp_path.exists():
             shutil.rmtree(tmp_path, ignore_errors=True)
         _cleanup_tmp_base_dirs()
+
+
+def _cleanup_deferred_tmp_dirs(paths: Iterable[Path]) -> None:
+    for path in paths:
+        _cleanup_test_tmp_dir_now(path)
+
+
+@dataclasses.dataclass(slots=True)
+class TmpDirDeferral:
+    paths: list[Path] = dataclasses.field(default_factory=list)
+    _token: contextvars.Token[list[Path] | None] | None = None
+
+    def __enter__(self) -> TmpDirDeferral:
+        self._token = _DEFER_TMP_CLEANUP.set(self.paths)
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if self._token is not None:
+            _DEFER_TMP_CLEANUP.reset(self._token)
+            self._token = None
+        _cleanup_deferred_tmp_dirs(self.paths)
+
+    @property
+    def last(self) -> Path | None:
+        return self.paths[-1] if self.paths else None
+
+    def close_without_cleanup(self) -> list[Path]:
+        if self._token is not None:
+            _DEFER_TMP_CLEANUP.reset(self._token)
+            self._token = None
+        return self.paths
 
 
 def _cleanup_remaining_tmp_dirs() -> None:
@@ -2630,32 +2681,46 @@ def _hooks_disabled(no_hooks: bool = False) -> bool:
     return no_hooks or bool(os.environ.get("TENZIR_TEST_DISABLE_HOOKS"))
 
 
-def _load_project_hooks(root: Path) -> hooks_impl.HookSet:
-    if _HOOKS_DISABLED:
-        return hooks_impl.HookSet()
-    resolved_root = root.resolve()
-    cached = _HOOK_LOAD_CACHE.get(resolved_root)
-    if cached is not None:
-        return cached
+@dataclasses.dataclass(slots=True)
+class HookLoadError(RuntimeError):
+    root: Path
+    cause: BaseException
 
-    hook_set = hooks_impl.HookSet()
-    hooks_package = resolved_root / "hooks"
-    hooks_file = resolved_root / "hooks.py"
-    module_base = f"_tenzir_project_hooks_{abs(hash(str(resolved_root)))}"
-    try:
-        with hooks_impl.loading() as loading_set:
-            if hooks_package.is_dir() and (hooks_package / "__init__.py").exists():
-                path = hooks_package / "__init__.py"
-                _CLI_LOGGER.debug("loading hooks from %s", path)
-                _import_module_from_path(module_base, path, package=True)
-            elif hooks_file.exists():
-                _CLI_LOGGER.debug("loading hooks from %s", hooks_file)
-                _import_module_from_path(module_base, hooks_file)
-            hook_set = loading_set
-    except BaseException as exc:
-        raise RuntimeError(f"failed to load hooks from {resolved_root}: {exc}") from exc
-    _HOOK_LOAD_CACHE[resolved_root] = hook_set
-    return hook_set
+    def __str__(self) -> str:
+        return f"failed to load hooks from {self.root}: {self.cause}"
+
+
+class HookLoader:
+    def load(self, root: Path) -> hooks_impl.HookSet:
+        if _HOOKS_DISABLED:
+            return hooks_impl.HookSet()
+        try:
+            resolved_root = root.resolve()
+            cached = _HOOK_LOAD_CACHE.get(resolved_root)
+            if cached is not None:
+                return cached
+
+            hook_set = hooks_impl.HookSet()
+            hooks_package = resolved_root / "hooks"
+            hooks_file = resolved_root / "hooks.py"
+            module_base = f"_tenzir_project_hooks_{abs(hash(str(resolved_root)))}"
+            with hooks_impl.loading() as loading_set:
+                if hooks_package.is_dir() and (hooks_package / "__init__.py").exists():
+                    path = hooks_package / "__init__.py"
+                    _CLI_LOGGER.debug("loading hooks from %s", path)
+                    _import_module_from_path(module_base, path, package=True)
+                elif hooks_file.exists():
+                    _CLI_LOGGER.debug("loading hooks from %s", hooks_file)
+                    _import_module_from_path(module_base, hooks_file)
+                hook_set = loading_set
+        except BaseException as exc:
+            raise HookLoadError(root=root, cause=exc) from exc
+        _HOOK_LOAD_CACHE[resolved_root] = hook_set
+        return hook_set
+
+
+def _load_project_hooks(root: Path) -> hooks_impl.HookSet:
+    return HookLoader().load(root)
 
 
 def _summary_view(summary: Summary) -> hooks_impl.SummaryView:
@@ -2675,6 +2740,25 @@ def _project_result_view(result: ProjectResult) -> hooks_impl.ProjectResultView:
         project=_project_view(result.selection),
         summary=_summary_view(result.summary),
         queue_size=result.queue_size,
+    )
+
+
+def _finish_context_to_failure_context(
+    finish_ctx: hooks_impl.TestFinishContext,
+) -> hooks_impl.TestFailureContext:
+    return hooks_impl.TestFailureContext(
+        root=finish_ctx.root,
+        project=finish_ctx.project,
+        test=finish_ctx.test,
+        runner=finish_ctx.runner,
+        reason=finish_ctx.reason,
+        attempts=finish_ctx.attempts,
+        duration=finish_ctx.duration,
+        fixtures=finish_ctx.fixtures,
+        suite=finish_ctx.suite,
+        tmp_dir=finish_ctx.tmp_dir,
+        update=finish_ctx.update,
+        coverage=finish_ctx.coverage,
     )
 
 
@@ -2711,6 +2795,34 @@ def _suite_view(
     return hooks_impl.SuiteView(name=info.name, directory=info.directory)
 
 
+class HookInvoker:
+    def invoke(
+        self,
+        hook_chain: Sequence[hooks_impl.HookSet],
+        event: hooks_impl.HookEvent,
+        context: object,
+        *,
+        reverse: bool = False,
+        project_root: Path | None = None,
+        test_path: Path | None = None,
+        debug: bool = False,
+    ) -> None:
+        if _HOOKS_DISABLED:
+            return
+        hooks_impl.invoke(
+            hook_chain,
+            event,
+            context,
+            reverse=reverse,
+            project_root=project_root,
+            test_path=test_path,
+            debug=debug,
+        )
+
+
+_HOOK_INVOKER = HookInvoker()
+
+
 def _invoke_hooks(
     hook_chain: Sequence[hooks_impl.HookSet],
     event: hooks_impl.HookEvent,
@@ -2721,9 +2833,7 @@ def _invoke_hooks(
     test_path: Path | None = None,
     debug: bool = False,
 ) -> None:
-    if _HOOKS_DISABLED:
-        return
-    hooks_impl.invoke(
+    _HOOK_INVOKER.invoke(
         hook_chain,
         event,
         context,
@@ -5370,20 +5480,7 @@ class Worker:
             _invoke_hooks(
                 self._hook_chain,
                 "test_failure",
-                hooks_impl.TestFailureContext(
-                    root=finish_ctx.root,
-                    project=finish_ctx.project,
-                    test=finish_ctx.test,
-                    runner=finish_ctx.runner,
-                    reason=finish_ctx.reason,
-                    attempts=finish_ctx.attempts,
-                    duration=finish_ctx.duration,
-                    fixtures=finish_ctx.fixtures,
-                    suite=finish_ctx.suite,
-                    tmp_dir=finish_ctx.tmp_dir,
-                    update=finish_ctx.update,
-                    coverage=finish_ctx.coverage,
-                ),
+                _finish_context_to_failure_context(finish_ctx),
                 reverse=True,
                 project_root=self._hook_root,
                 test_path=test_path,
@@ -5407,7 +5504,7 @@ class Worker:
         final_outcome: bool | str = False
         final_interrupted = False
         started_at = time.monotonic()
-        deferred_tmp_dirs: list[Path] = []
+        tmp_deferral = TmpDirDeferral()
         try:
             _invoke_hooks(
                 self._hook_chain,
@@ -5452,7 +5549,7 @@ class Worker:
                 debug=self._debug,
             )
             raise
-        cleanup_token = _DEFER_TMP_CLEANUP.set(deferred_tmp_dirs)
+        tmp_deferral.__enter__()
         while attempts < max_attempts:
             if interrupt_requested():
                 final_interrupted = True
@@ -5508,9 +5605,7 @@ class Worker:
                                 displayed_reason=displayed_reason,
                                 summary=summary,
                             ):
-                                _DEFER_TMP_CLEANUP.reset(cleanup_token)
-                                for path in deferred_tmp_dirs:
-                                    _cleanup_test_tmp_dir_now(path)
+                                tmp_deferral.__exit__(None, None, None)
                                 return False
                             raise
                         report_failure(
@@ -5564,8 +5659,8 @@ class Worker:
                     break
                 if attempts < max_attempts:
                     continue
-        _DEFER_TMP_CLEANUP.reset(cleanup_token)
-        tmp_dir = deferred_tmp_dirs[-1] if deferred_tmp_dirs else None
+        tmp_deferral.close_without_cleanup()
+        tmp_dir = tmp_deferral.last
         duration = time.monotonic() - started_at
         if attempts == 0 and final_interrupted:
             # The test never started an execution attempt (for example, work
@@ -5599,28 +5694,14 @@ class Worker:
                 _invoke_hooks(
                     self._hook_chain,
                     "test_failure",
-                    hooks_impl.TestFailureContext(
-                        root=finish_ctx.root,
-                        project=finish_ctx.project,
-                        test=finish_ctx.test,
-                        runner=finish_ctx.runner,
-                        reason=finish_ctx.reason,
-                        attempts=finish_ctx.attempts,
-                        duration=finish_ctx.duration,
-                        fixtures=finish_ctx.fixtures,
-                        suite=finish_ctx.suite,
-                        tmp_dir=finish_ctx.tmp_dir,
-                        update=finish_ctx.update,
-                        coverage=finish_ctx.coverage,
-                    ),
+                    _finish_context_to_failure_context(finish_ctx),
                     reverse=True,
                     project_root=self._hook_root,
                     test_path=test_path,
                     debug=self._debug,
                 )
             finally:
-                for path in deferred_tmp_dirs:
-                    _cleanup_test_tmp_dir_now(path)
+                _cleanup_deferred_tmp_dirs(tmp_deferral.paths)
             return True
 
         summary.total += 1
@@ -5669,28 +5750,14 @@ class Worker:
                 _invoke_hooks(
                     self._hook_chain,
                     "test_failure",
-                    hooks_impl.TestFailureContext(
-                        root=finish_ctx.root,
-                        project=finish_ctx.project,
-                        test=finish_ctx.test,
-                        runner=finish_ctx.runner,
-                        reason=finish_ctx.reason,
-                        attempts=finish_ctx.attempts,
-                        duration=finish_ctx.duration,
-                        fixtures=finish_ctx.fixtures,
-                        suite=finish_ctx.suite,
-                        tmp_dir=finish_ctx.tmp_dir,
-                        update=finish_ctx.update,
-                        coverage=finish_ctx.coverage,
-                    ),
+                    _finish_context_to_failure_context(finish_ctx),
                     reverse=True,
                     project_root=self._hook_root,
                     test_path=test_path,
                     debug=self._debug,
                 )
         finally:
-            for path in deferred_tmp_dirs:
-                _cleanup_test_tmp_dir_now(path)
+            _cleanup_deferred_tmp_dirs(tmp_deferral.paths)
         return final_interrupted or interrupt_requested()
 
 
@@ -5900,7 +5967,7 @@ def run_fixture_mode_cli(
         if not _HOOKS_DISABLED:
             try:
                 root_hooks = _load_project_hooks(root_path)
-            except RuntimeError as exc:
+            except HookLoadError as exc:
                 raise HarnessError(f"error: {exc}") from exc
             env = os.environ.copy()
             path = _env_path(env)
@@ -6142,7 +6209,7 @@ def run_cli(
         _HOOKS_DISABLED = _hooks_disabled(no_hooks)
         try:
             root_hooks = hooks_impl.HookSet() if _HOOKS_DISABLED else _load_project_hooks(root_path)
-        except RuntimeError as exc:
+        except HookLoadError as exc:
             raise HarnessError(f"error: {exc}") from exc
         if not _HOOKS_DISABLED:
             env = os.environ.copy()
@@ -6266,7 +6333,7 @@ def run_cli(
                 if selection.root.resolve() != settings.root.resolve() and not _HOOKS_DISABLED:
                     try:
                         project_hooks = _load_project_hooks(selection.root)
-                    except RuntimeError as exc:
+                    except HookLoadError as exc:
                         raise HarnessError(f"error: {exc}") from exc
                 hook_chain = (
                     (root_hooks,) if selection.kind == "root" else (root_hooks, project_hooks)
@@ -6557,11 +6624,11 @@ def run_cli(
                     skip_filter_matches = 0
                     joined_workers: set[Worker] = set()
                     try:
-                        worker_exception: Exception | None = None
+                        worker_exception: BaseException | None = None
                         for worker in workers:
                             try:
                                 worker_summary = worker.join()
-                            except Exception as exc:
+                            except BaseException as exc:
                                 _merge_summary_inplace(
                                     project_summary, _worker_partial_summary(worker)
                                 )
@@ -6580,7 +6647,7 @@ def run_cli(
                                 continue
                             try:
                                 worker_summary = worker.join()
-                            except Exception:
+                            except BaseException:
                                 worker_summary = _worker_partial_summary(worker)
                             _merge_summary_inplace(project_summary, worker_summary)
                             skip_filter_matches += worker.run_skipped_match_count
@@ -6590,7 +6657,7 @@ def run_cli(
                     except fixtures_impl.FixtureUnavailable as exc:
                         _record_project_result_once()
                         _raise_fixture_unavailable_harness_error(exc)
-                    except Exception as exc:
+                    except BaseException as exc:
                         if not (_exception_is_interrupt(exc) or interrupt_requested()):
                             _record_project_result_once()
                             raise
@@ -6600,7 +6667,7 @@ def run_cli(
                                 continue
                             try:
                                 worker_summary = remaining_worker.join()
-                            except Exception as join_exc:
+                            except BaseException as join_exc:
                                 worker_summary = _worker_partial_summary(remaining_worker)
                                 if not (_exception_is_interrupt(join_exc) or interrupt_requested()):
                                     _merge_summary_inplace(project_summary, worker_summary)
