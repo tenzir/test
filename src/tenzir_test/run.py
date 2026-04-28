@@ -4611,6 +4611,12 @@ class Worker:
         return self._result
 
     @property
+    def partial_summary(self) -> Summary:
+        """Return the summary accumulated before worker termination."""
+
+        return self._result or Summary()
+
+    @property
     def run_skipped_match_count(self) -> int:
         return self._run_skipped_match_count
 
@@ -5670,6 +5676,16 @@ class Worker:
         return final_interrupted or interrupt_requested()
 
 
+def _worker_partial_summary(worker: object) -> Summary:
+    summary = getattr(worker, "partial_summary", None)
+    if isinstance(summary, Summary):
+        return summary
+    result = getattr(worker, "_result", None)
+    if isinstance(result, Summary):
+        return result
+    return Summary()
+
+
 def get_runner_for_test(test_path: Path) -> Runner:
     """Determine the appropriate runner for a test based on its configuration."""
     return runners_get_runner(test_path)
@@ -6233,6 +6249,24 @@ def run_cli(
                 )
                 project_finish_once = _HookInvocationOnce()
                 project_summary = Summary()
+                project_queue_size = 0
+                project_result_recorded = False
+
+                def _record_project_result_once() -> None:
+                    nonlocal overall_queue_count, project_result_recorded
+                    if project_result_recorded:
+                        return
+                    _merge_summary_inplace(overall_summary, project_summary)
+                    overall_queue_count += project_queue_size
+                    executed_projects.append(selection)
+                    project_results.append(
+                        ProjectResult(
+                            selection=selection,
+                            summary=project_summary,
+                            queue_size=project_queue_size,
+                        )
+                    )
+                    project_result_recorded = True
 
                 def _invoke_project_finish() -> None:
                     project_finish_once.invoke(
@@ -6412,15 +6446,7 @@ def run_cli(
                     )
 
                     if not project_queue_size:
-                        overall_queue_count += project_queue_size
-                        executed_projects.append(selection)
-                        project_results.append(
-                            ProjectResult(
-                                selection=selection,
-                                summary=project_summary,
-                                queue_size=project_queue_size,
-                            )
-                        )
+                        _record_project_result_once()
                         _invoke_project_finish()
                         continue
 
@@ -6493,28 +6519,61 @@ def run_cli(
                     for worker in workers:
                         worker.start()
                     skip_filter_matches = 0
+                    joined_workers: set[Worker] = set()
                     try:
+                        worker_exception: Exception | None = None
                         for worker in workers:
-                            project_summary += worker.join()
+                            try:
+                                worker_summary = worker.join()
+                            except Exception as exc:
+                                _merge_summary_inplace(
+                                    project_summary, _worker_partial_summary(worker)
+                                )
+                                if worker_exception is None:
+                                    worker_exception = exc
+                            else:
+                                _merge_summary_inplace(project_summary, worker_summary)
+                            joined_workers.add(worker)
                             skip_filter_matches += worker.run_skipped_match_count
+                        if worker_exception is not None:
+                            raise worker_exception
                     except KeyboardInterrupt:  # pragma: no cover - defensive guard
                         _request_interrupt()
                         for worker in workers:
-                            worker.join()
+                            if worker in joined_workers:
+                                continue
+                            try:
+                                worker_summary = worker.join()
+                            except Exception:
+                                worker_summary = _worker_partial_summary(worker)
+                            _merge_summary_inplace(project_summary, worker_summary)
+                            skip_filter_matches += worker.run_skipped_match_count
+                        _record_project_result_once()
                         interrupted = True
                         break
                     except fixtures_impl.FixtureUnavailable as exc:
+                        _record_project_result_once()
                         _raise_fixture_unavailable_harness_error(exc)
                     except Exception as exc:
                         if not (_exception_is_interrupt(exc) or interrupt_requested()):
+                            _record_project_result_once()
                             raise
                         _request_interrupt()
                         for remaining_worker in workers:
+                            if remaining_worker in joined_workers:
+                                continue
                             try:
-                                remaining_worker.join()
+                                worker_summary = remaining_worker.join()
                             except Exception as join_exc:
+                                worker_summary = _worker_partial_summary(remaining_worker)
                                 if not (_exception_is_interrupt(join_exc) or interrupt_requested()):
+                                    _merge_summary_inplace(project_summary, worker_summary)
+                                    skip_filter_matches += remaining_worker.run_skipped_match_count
+                                    _record_project_result_once()
                                     raise
+                            _merge_summary_inplace(project_summary, worker_summary)
+                            skip_filter_matches += remaining_worker.run_skipped_match_count
+                        _record_project_result_once()
                         interrupted = True
                         break
                     if run_skipped_selector.has_reason_filters and skip_filter_matches == 0:
@@ -6541,16 +6600,7 @@ def run_cli(
                         print(f"{INFO} Code coverage data collected in {coverage_dir}")
                         print(f"{INFO} Source directory for coverage mapping: {source_dir}")
 
-                    overall_summary += project_summary
-                    overall_queue_count += project_queue_size
-                    executed_projects.append(selection)
-                    project_results.append(
-                        ProjectResult(
-                            selection=selection,
-                            summary=project_summary,
-                            queue_size=project_queue_size,
-                        )
-                    )
+                    _record_project_result_once()
                     _invoke_project_finish()
 
                     if interrupt_requested():

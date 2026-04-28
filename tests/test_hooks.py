@@ -779,6 +779,52 @@ def test_interrupted_test_before_first_attempt_balances_test_hooks(
     ]
 
 
+def test_worker_hook_failure_preserves_partial_summary_for_teardown(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    original_env = dict(os.environ)
+    log_path = tmp_path / "partial-summary.log"
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.test_finish\n"
+        "def fail_finish(ctx):\n"
+        "    raise RuntimeError('finish boom')\n"
+        "@hooks.project_finish\n"
+        "def project_finish(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('project:' + str(ctx.summary.total) + '\\n')\n"
+        "@hooks.shutdown\n"
+        "def shutdown(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('shutdown:' + str(ctx.summary.total) + '\\n')\n",
+        encoding="utf-8",
+    )
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "ok.sh").write_text("true\n", encoding="utf-8")
+    (tests_dir / "ok.txt").write_text("", encoding="utf-8")
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
+    monkeypatch.chdir(tmp_path)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(run.HarnessError, match="finish boom"):
+            run.execute(root=tmp_path, tests=[], jobs=1)
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        os.environ.clear()
+        os.environ.update(original_env)
+        _restore_runtime(original_settings, original_root)
+
+    assert log_path.read_text(encoding="utf-8").splitlines() == [
+        "project:1",
+        "shutdown:1",
+    ]
+
+
 def test_suite_static_skip_finish_hook_keeps_suite_context(tmp_path: Path, monkeypatch) -> None:
     original_settings = run._settings  # type: ignore[attr-defined]
     original_root = run.ROOT
