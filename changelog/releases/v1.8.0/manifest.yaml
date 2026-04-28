@@ -1,0 +1,9 @@
+created: 2026-04-28
+title: Project lifecycle hooks
+intro: >-
+  This release adds project lifecycle hooks that let projects prepare their environment
+  before tests run. Use hooks to select local Tenzir binaries, configure project-scoped
+  environment variables, and collect diagnostics without custom wrapper scripts.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.7.7
