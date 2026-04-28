@@ -720,6 +720,53 @@ def test_cleared_hook_path_removes_path_from_environment(tmp_path: Path, monkeyp
     assert not path_present
 
 
+def test_interrupted_test_before_first_attempt_balances_test_hooks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    log_path = tmp_path / "interrupted-test-hooks.log"
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks, run\n"
+        "@hooks.test_start\n"
+        "def start(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('start:' + str(ctx.attempt_limit) + '\\n')\n"
+        "    run._request_interrupt()\n"
+        "@hooks.test_finish\n"
+        "def finish(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('finish:' + ctx.outcome + ':' + str(ctx.attempts) + '\\n')\n"
+        "@hooks.test_failure\n"
+        "def failure(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('failure:' + str(ctx.attempts) + '\\n')\n",
+        encoding="utf-8",
+    )
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "interrupted.tql").write_text("version\n", encoding="utf-8")
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
+    monkeypatch.chdir(tmp_path)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        result = run.execute(root=tmp_path, tests=[])
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        run._INTERRUPT_EVENT.clear()  # type: ignore[attr-defined]
+        run._INTERRUPT_ANNOUNCED.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+    assert result.exit_code == 130
+    assert result.interrupted
+    assert log_path.read_text(encoding="utf-8").splitlines() == [
+        "start:1",
+        "finish:failed:0",
+        "failure:0",
+    ]
+
+
 def test_suite_static_skip_finish_hook_keeps_suite_context(tmp_path: Path, monkeypatch) -> None:
     original_settings = run._settings  # type: ignore[attr-defined]
     original_root = run.ROOT

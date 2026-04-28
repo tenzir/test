@@ -5550,6 +5550,55 @@ class Worker:
         if attempts == 0 and final_interrupted:
             # The test never started an execution attempt (for example, work
             # was cancelled after an interrupt), so do not count it as failed.
+            # Still balance the hook lifecycle because test_start already ran.
+            finish_ctx = hooks_impl.TestFinishContext(
+                root=self._hook_root,
+                project=self._project_view,
+                test=test_path,
+                runner=runner.name,
+                outcome="failed",
+                reason=_INTERRUPTED_NOTICE,
+                attempts=0,
+                duration=duration,
+                fixtures=_fixture_views(fixtures),
+                suite=suite_view,
+                tmp_dir=tmp_dir,
+                update=self._update,
+                coverage=self._coverage,
+            )
+            _invoke_hooks(
+                self._hook_chain,
+                "test_finish",
+                finish_ctx,
+                reverse=True,
+                project_root=self._hook_root,
+                test_path=test_path,
+                debug=self._debug,
+            )
+            _invoke_hooks(
+                self._hook_chain,
+                "test_failure",
+                hooks_impl.TestFailureContext(
+                    root=finish_ctx.root,
+                    project=finish_ctx.project,
+                    test=finish_ctx.test,
+                    runner=finish_ctx.runner,
+                    reason=finish_ctx.reason,
+                    attempts=finish_ctx.attempts,
+                    duration=finish_ctx.duration,
+                    fixtures=finish_ctx.fixtures,
+                    suite=finish_ctx.suite,
+                    tmp_dir=finish_ctx.tmp_dir,
+                    update=finish_ctx.update,
+                    coverage=finish_ctx.coverage,
+                ),
+                reverse=True,
+                project_root=self._hook_root,
+                test_path=test_path,
+                debug=self._debug,
+            )
+            for path in deferred_tmp_dirs:
+                _cleanup_test_tmp_dir_now(path)
             return True
 
         summary.total += 1
