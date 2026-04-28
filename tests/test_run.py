@@ -12,7 +12,7 @@ from typing import cast
 
 import pytest
 
-from tenzir_test import config, run
+from tenzir_test import config, hooks, run
 from tenzir_test import fixtures as fixture_api
 from tenzir_test.fixtures import node as node_fixture
 from tenzir_test.runners.runner import Runner
@@ -5806,6 +5806,78 @@ write_json
         else:
             fixture_api._FACTORIES["per_test_unavailable_fixture"] = previous_factory
         run.apply_settings(original_settings)
+
+
+def test_worker_fixture_unavailable_skip_finish_hook_failure_runs_once(
+    tmp_path: Path,
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir(parents=True)
+    test_path = tests_dir / "fixture-unavailable-finish.tql"
+    test_path.write_text(
+        """---
+skip:
+  on: fixture-unavailable
+fixtures:
+  - per_test_unavailable_finish_hook_fixture
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+    run._clear_directory_config_cache()
+
+    previous_factory = fixture_api._FACTORIES.get("per_test_unavailable_finish_hook_fixture")
+
+    @fixture_api.fixture(name="per_test_unavailable_finish_hook_fixture", replace=True)
+    def per_test_unavailable_finish_hook_fixture():
+        raise fixture_api.FixtureUnavailable("binary missing")
+        yield {}  # type: ignore[misc]
+
+    finish_outcomes: list[str] = []
+
+    def finish(ctx: hooks.TestFinishContext) -> None:
+        finish_outcomes.append(ctx.outcome)
+        raise RuntimeError("finish failed")
+
+    try:
+        queue = run._build_queue_from_paths([test_path], coverage=False)
+        hook_set = hooks.HookSet(test_finish=[finish])
+        worker = run.Worker(
+            queue,
+            update=False,
+            coverage=False,
+            hook_chain=(hook_set,),
+            project_view=hooks.ProjectView(root=tmp_path, kind="root"),
+            hook_root=tmp_path,
+        )
+        worker.start()
+        with pytest.raises(hooks.HookInvocationError, match="finish failed"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("per_test_unavailable_finish_hook_fixture", None)
+        else:
+            fixture_api._FACTORIES["per_test_unavailable_finish_hook_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+    assert finish_outcomes == ["skipped"]
 
 
 # --- Tests for FixtureUnavailable handling in Worker._run_suite (TST-1, TST-4, TST-6) ---
