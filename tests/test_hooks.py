@@ -544,3 +544,112 @@ def test_fixture_mode_invokes_shutdown_hooks_after_pre_activation_failure(
         _restore_runtime(original_settings, original_root)
 
     assert log_path.read_text(encoding="utf-8") == "1"
+
+
+def test_project_finish_hook_failure_is_not_retried(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    original_env = dict(os.environ)
+    (tmp_path / "tests").mkdir()
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    log_path = tmp_path / "project-finish.log"
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.project_start\n"
+        "def start(ctx):\n"
+        "    pass\n"
+        "@hooks.project_finish\n"
+        "def finish(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('finish\\n')\n"
+        "    raise RuntimeError('finish failed')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
+    monkeypatch.chdir(tmp_path)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(run.HarnessError, match="hook project_finish finish failed"):
+            run.execute(root=tmp_path, tests=[], purge=True)
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        os.environ.clear()
+        os.environ.update(original_env)
+        _restore_runtime(original_settings, original_root)
+
+    assert log_path.read_text(encoding="utf-8").splitlines() == ["finish"]
+
+
+def test_shutdown_hook_failure_is_not_retried(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    original_env = dict(os.environ)
+    (tmp_path / "tests").mkdir()
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    log_path = tmp_path / "shutdown.log"
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.shutdown\n"
+        "def shutdown(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('shutdown:' + str(ctx.exit_code) + '\\n')\n"
+        "    raise RuntimeError('shutdown failed')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
+    monkeypatch.chdir(tmp_path)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(run.HarnessError, match="hook shutdown shutdown failed"):
+            run.execute(root=tmp_path, tests=[])
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        os.environ.clear()
+        os.environ.update(original_env)
+        _restore_runtime(original_settings, original_root)
+
+    assert log_path.read_text(encoding="utf-8").splitlines() == ["shutdown:0"]
+
+
+def test_fixture_mode_shutdown_hook_failure_is_not_retried(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    (tmp_path / "fixtures.py").write_text(
+        "from tenzir_test.fixtures import fixture\n"
+        "@fixture(name='demo_shutdown_failure', replace=True)\n"
+        "def demo_shutdown_failure():\n"
+        "    yield {'DEMO_SHUTDOWN_FAILURE': '1'}\n",
+        encoding="utf-8",
+    )
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    log_path = tmp_path / "fixture-shutdown.log"
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.shutdown\n"
+        "def shutdown(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('shutdown:' + str(ctx.exit_code) + '\\n')\n"
+        "    raise RuntimeError('shutdown failed')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run, "_wait_for_fixture_shutdown", lambda: None)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(run.HarnessError, match="hook shutdown shutdown failed"):
+            run.run_fixture_mode_cli(
+                root=tmp_path,
+                package_dirs=(),
+                fixtures=("demo_shutdown_failure",),
+                debug=False,
+                keep_tmp_dirs=False,
+            )
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+    assert log_path.read_text(encoding="utf-8").splitlines() == ["shutdown:0"]

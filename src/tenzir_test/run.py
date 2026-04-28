@@ -2723,6 +2723,42 @@ def _invoke_hooks(
     )
 
 
+@dataclasses.dataclass(slots=True)
+class _HookInvocationOnce:
+    """Invoke one lifecycle hook phase at most once.
+
+    Lifecycle cleanup must be marked as attempted before invoking user code.
+    Otherwise a failing cleanup hook can be retried by fallback paths that are
+    only meant to cover skipped cleanup.
+    """
+
+    attempted: bool = False
+
+    def invoke(
+        self,
+        hook_chain: Sequence[hooks_impl.HookSet],
+        event: hooks_impl.HookEvent,
+        context: object,
+        *,
+        reverse: bool = False,
+        project_root: Path | None = None,
+        test_path: Path | None = None,
+        debug: bool = False,
+    ) -> None:
+        if self.attempted:
+            return
+        self.attempted = True
+        _invoke_hooks(
+            hook_chain,
+            event,
+            context,
+            reverse=reverse,
+            project_root=project_root,
+            test_path=test_path,
+            debug=debug,
+        )
+
+
 _FIXTURE_LOAD_ROOTS: set[Path] = set()
 _RUNNER_LOAD_ROOTS: set[Path] = set()
 _HOOK_LOAD_CACHE: dict[Path, hooks_impl.HookSet] = {}
@@ -5738,7 +5774,7 @@ def run_fixture_mode_cli(
     root_path = Path(root or os.environ.get("TENZIR_TEST_ROOT") or Path.cwd()).resolve()
     root_hooks = hooks_impl.HookSet()
     startup_succeeded = False
-    shutdown_invoked = False
+    shutdown_once = _HookInvocationOnce()
     try:
         if not _HOOKS_DISABLED:
             try:
@@ -5770,8 +5806,7 @@ def run_fixture_mode_cli(
     apply_settings(settings)
 
     def _invoke_fixture_shutdown(exit_code: int) -> None:
-        nonlocal shutdown_invoked
-        _invoke_hooks(
+        shutdown_once.invoke(
             (root_hooks,),
             "shutdown",
             hooks_impl.ShutdownContext(
@@ -5786,7 +5821,6 @@ def run_fixture_mode_cli(
             project_root=settings.root,
             debug=debug_enabled,
         )
-        shutdown_invoked = True
 
     try:
         _set_cli_packages(list(package_dirs or []))
@@ -5851,7 +5885,7 @@ def run_fixture_mode_cli(
         _invoke_fixture_shutdown(0)
         return 0
     except BaseException as exc:
-        if startup_succeeded and not shutdown_invoked:
+        if startup_succeeded and not shutdown_once.attempted:
             try:
                 _invoke_fixture_shutdown(1)
             except hooks_impl.HookInvocationError as shutdown_exc:
@@ -5913,7 +5947,7 @@ def run_cli(
     root_hooks = hooks_impl.HookSet()
     settings: Settings | None = None
     startup_succeeded = False
-    shutdown_invoked = False
+    shutdown_once = _HookInvocationOnce()
     overall_summary = Summary()
     overall_queue_count = 0
     executed_projects: list[ProjectSelection] = []
@@ -6113,8 +6147,27 @@ def run_cli(
                 _CURRENT_PROJECT_VIEW = project_view
                 _CURRENT_HOOK_CHAIN = hook_chain
 
-                project_finish_pending = True
+                project_finish_once = _HookInvocationOnce()
                 project_summary = Summary()
+
+                def _invoke_project_finish() -> None:
+                    project_finish_once.invoke(
+                        hook_chain,
+                        "project_finish",
+                        hooks_impl.ProjectFinishContext(
+                            root=settings.root,
+                            project=project_view,
+                            next_project=_project_view(next_selection) if next_selection else None,
+                            kind=selection.kind,
+                            summary=_summary_view(project_summary),
+                            interrupted=interrupted or interrupt_requested(),
+                            debug=debug_enabled,
+                        ),
+                        reverse=True,
+                        project_root=selection.root,
+                        debug=debug_enabled,
+                    )
+
                 try:
                     tests_to_run = (
                         selection.selectors if not selection.run_all else [selection.root]
@@ -6122,29 +6175,7 @@ def run_cli(
 
                     if purge:
                         project_summary = Summary()
-                        _invoke_hooks(
-                            hook_chain,
-                            "project_finish",
-                            hooks_impl.ProjectFinishContext(
-                                root=settings.root,
-                                project=project_view,
-                                next_project=_project_view(next_selection)
-                                if next_selection
-                                else None,
-                                kind=selection.kind,
-                                summary=_summary_view(project_summary),
-                                interrupted=interrupted or interrupt_requested(),
-                                debug=debug_enabled,
-                            ),
-                            reverse=True,
-                            project_root=selection.root,
-                            debug=debug_enabled,
-                        )
-                        project_finish_pending = False
-                        previous_project_view = project_view
-                        _CURRENT_PROJECT_ENV = None
-                        _CURRENT_PROJECT_VIEW = None
-                        _CURRENT_HOOK_CHAIN = tuple()
+                        _invoke_project_finish()
                         continue
 
                     collected_paths: set[Path] = set()
@@ -6279,29 +6310,7 @@ def run_cli(
                                 queue_size=project_queue_size,
                             )
                         )
-                        _invoke_hooks(
-                            hook_chain,
-                            "project_finish",
-                            hooks_impl.ProjectFinishContext(
-                                root=settings.root,
-                                project=project_view,
-                                next_project=_project_view(next_selection)
-                                if next_selection
-                                else None,
-                                kind=selection.kind,
-                                summary=_summary_view(project_summary),
-                                interrupted=interrupted or interrupt_requested(),
-                                debug=debug_enabled,
-                            ),
-                            reverse=True,
-                            project_root=selection.root,
-                            debug=debug_enabled,
-                        )
-                        project_finish_pending = False
-                        previous_project_view = project_view
-                        _CURRENT_PROJECT_ENV = None
-                        _CURRENT_PROJECT_VIEW = None
-                        _CURRENT_HOOK_CHAIN = tuple()
+                        _invoke_project_finish()
                         continue
 
                     os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
@@ -6431,51 +6440,13 @@ def run_cli(
                             queue_size=project_queue_size,
                         )
                     )
-                    _invoke_hooks(
-                        hook_chain,
-                        "project_finish",
-                        hooks_impl.ProjectFinishContext(
-                            root=settings.root,
-                            project=project_view,
-                            next_project=_project_view(next_selection) if next_selection else None,
-                            kind=selection.kind,
-                            summary=_summary_view(project_summary),
-                            interrupted=interrupted or interrupt_requested(),
-                            debug=debug_enabled,
-                        ),
-                        reverse=True,
-                        project_root=selection.root,
-                        debug=debug_enabled,
-                    )
-                    project_finish_pending = False
-                    previous_project_view = project_view
-                    _CURRENT_PROJECT_ENV = None
-                    _CURRENT_PROJECT_VIEW = None
-                    _CURRENT_HOOK_CHAIN = tuple()
+                    _invoke_project_finish()
 
                     if interrupt_requested():
                         break
 
                 finally:
-                    if project_finish_pending:
-                        _invoke_hooks(
-                            hook_chain,
-                            "project_finish",
-                            hooks_impl.ProjectFinishContext(
-                                root=settings.root,
-                                project=project_view,
-                                next_project=_project_view(next_selection)
-                                if next_selection
-                                else None,
-                                kind=selection.kind,
-                                summary=_summary_view(project_summary),
-                                interrupted=interrupted or interrupt_requested(),
-                                debug=debug_enabled,
-                            ),
-                            reverse=True,
-                            project_root=selection.root,
-                            debug=debug_enabled,
-                        )
+                    _invoke_project_finish()
                     previous_project_view = project_view
                     _CURRENT_PROJECT_ENV = None
                     _CURRENT_PROJECT_VIEW = None
@@ -6485,8 +6456,7 @@ def run_cli(
             engine_state.refresh()
 
             def _finish_result(result: ExecutionResult) -> ExecutionResult:
-                nonlocal shutdown_invoked
-                _invoke_hooks(
+                shutdown_once.invoke(
                     (root_hooks,),
                     "shutdown",
                     hooks_impl.ShutdownContext(
@@ -6503,7 +6473,6 @@ def run_cli(
                     project_root=settings.root,
                     debug=debug_enabled,
                 )
-                shutdown_invoked = True
                 return result
 
             interrupted = interrupted or interrupt_requested()
@@ -6558,10 +6527,10 @@ def run_cli(
             )
 
     except Exception as exc:
-        if startup_succeeded and not shutdown_invoked:
+        if startup_succeeded and not shutdown_once.attempted:
             shutdown_root = settings.root if settings is not None else root_path
             try:
-                _invoke_hooks(
+                shutdown_once.invoke(
                     (root_hooks,),
                     "shutdown",
                     hooks_impl.ShutdownContext(
