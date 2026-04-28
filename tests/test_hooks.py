@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tenzir_test import run
+from tenzir_test import hooks, run
 
 
 def _restore_runtime(original_settings: object, original_root: Path) -> None:
@@ -334,6 +334,18 @@ def test_project_finish_and_shutdown_run_after_project_setup_failure(
         "finish",
         "shutdown:1",
     ]
+
+
+def test_hook_environment_clear_removes_path() -> None:
+    env = {"PATH": "/bin", "HOME": "/home/test"}
+    path = ["/usr/bin"]
+    hook_env = hooks.HookEnvironment(env, path)
+
+    hook_env.clear()
+
+    assert env == {}
+    assert path == []
+    assert list(hook_env) == []
 
 
 def test_project_env_keeps_diagnostics_flag(tmp_path: Path, monkeypatch) -> None:

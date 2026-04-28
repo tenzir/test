@@ -93,6 +93,10 @@ class HookEnvironment(MutableMapping[str, str]):
     def __len__(self) -> int:
         return len(self._env) + (0 if "PATH" in self._env or not self._path else 1)
 
+    def clear(self) -> None:
+        self._env.clear()
+        self._path.clear()
+
 
 def _register(event: HookEvent, func: T) -> T:
     current = _loading_hooks.get()
