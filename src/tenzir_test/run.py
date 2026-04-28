@@ -2676,7 +2676,10 @@ def _env_path(env: Mapping[str, str]) -> list[str]:
 
 
 def _apply_env_path(env: MutableMapping[str, str], path: Sequence[str | os.PathLike[str]]) -> None:
-    env["PATH"] = os.pathsep.join(os.fspath(entry) for entry in path)
+    if path:
+        env["PATH"] = os.pathsep.join(os.fspath(entry) for entry in path)
+    else:
+        env.pop("PATH", None)
 
 
 def _fixture_views(
@@ -4698,6 +4701,7 @@ class Worker:
         fixtures: tuple[fixtures_impl.FixtureSpec, ...],
         reason: str,
         summary: Summary,
+        suite: hooks_impl.SuiteView | None = None,
     ) -> None:
         handle_skip(
             reason,
@@ -4725,7 +4729,7 @@ class Worker:
                 attempts=0,
                 duration=0.0,
                 fixtures=_fixture_views(fixtures),
-                suite=None,
+                suite=suite,
                 tmp_dir=None,
                 update=self._update,
                 coverage=self._coverage,
@@ -4743,12 +4747,14 @@ class Worker:
         fixtures: tuple[fixtures_impl.FixtureSpec, ...],
         reason: str,
         summary: Summary,
+        suite: hooks_impl.SuiteView | None = None,
     ) -> None:
         self._record_test_skip(
             test_item=test_item,
             fixtures=fixtures,
             reason=reason,
             summary=summary,
+            suite=suite,
         )
 
     def _skip_test_with_reason(
@@ -5110,12 +5116,17 @@ class Worker:
             # Avoid activating suite fixtures when every suite member is statically skipped.
             static_skip_plan = self._suite_static_skip_plan(suite_item)
             if static_skip_plan is not None:
+                suite_view = hooks_impl.SuiteView(
+                    name=suite_item.suite.name,
+                    directory=suite_item.suite.directory,
+                )
                 for test_item, reason in static_skip_plan:
                     self._record_static_skip(
                         test_item=test_item,
                         fixtures=suite_item.fixtures,
                         reason=reason,
                         summary=summary,
+                        suite=suite_view,
                     )
                 return
             inputs_override = typing.cast(str | None, suite_config.get("inputs"))
@@ -5377,24 +5388,50 @@ class Worker:
         final_interrupted = False
         started_at = time.monotonic()
         deferred_tmp_dirs: list[Path] = []
-        _invoke_hooks(
-            self._hook_chain,
-            "test_start",
-            hooks_impl.TestStartContext(
-                root=self._hook_root,
-                project=self._project_view,
-                test=test_path,
-                runner=runner.name,
-                fixtures=_fixture_views(fixtures),
-                suite=suite_view,
-                update=self._update,
-                coverage=self._coverage,
-                attempt_limit=max_attempts,
-            ),
-            project_root=self._hook_root,
-            test_path=test_path,
-            debug=self._debug,
-        )
+        try:
+            _invoke_hooks(
+                self._hook_chain,
+                "test_start",
+                hooks_impl.TestStartContext(
+                    root=self._hook_root,
+                    project=self._project_view,
+                    test=test_path,
+                    runner=runner.name,
+                    fixtures=_fixture_views(fixtures),
+                    suite=suite_view,
+                    update=self._update,
+                    coverage=self._coverage,
+                    attempt_limit=max_attempts,
+                ),
+                project_root=self._hook_root,
+                test_path=test_path,
+                debug=self._debug,
+            )
+        except hooks_impl.HookInvocationError:
+            _invoke_hooks(
+                self._hook_chain,
+                "test_finish",
+                hooks_impl.TestFinishContext(
+                    root=self._hook_root,
+                    project=self._project_view,
+                    test=test_path,
+                    runner=runner.name,
+                    outcome="failed",
+                    reason="test_start hook failed",
+                    attempts=0,
+                    duration=time.monotonic() - started_at,
+                    fixtures=_fixture_views(fixtures),
+                    suite=suite_view,
+                    tmp_dir=None,
+                    update=self._update,
+                    coverage=self._coverage,
+                ),
+                reverse=True,
+                project_root=self._hook_root,
+                test_path=test_path,
+                debug=self._debug,
+            )
+            raise
         cleanup_token = _DEFER_TMP_CLEANUP.set(deferred_tmp_dirs)
         while attempts < max_attempts:
             if interrupt_requested():
@@ -5783,6 +5820,7 @@ def run_fixture_mode_cli(
                 raise HarnessError(f"error: {exc}") from exc
             env = os.environ.copy()
             path = _env_path(env)
+            startup_succeeded = True
             _invoke_hooks(
                 (root_hooks,),
                 "startup",
@@ -5798,19 +5836,36 @@ def run_fixture_mode_cli(
             _apply_env_path(env, path)
             os.environ.clear()
             os.environ.update(env)
-            startup_succeeded = True
     except hooks_impl.HookInvocationError as exc:
+        if startup_succeeded and not shutdown_once.attempted:
+            try:
+                shutdown_once.invoke(
+                    (root_hooks,),
+                    "shutdown",
+                    hooks_impl.ShutdownContext(
+                        root=root_path,
+                        exit_code=1,
+                        interrupted=False,
+                        summary=hooks_impl.SummaryView(failed=0, total=0, skipped=0),
+                        project_results=tuple(),
+                        debug=debug_enabled,
+                    ),
+                    reverse=True,
+                    project_root=root_path,
+                    debug=debug_enabled,
+                )
+            except hooks_impl.HookInvocationError as shutdown_exc:
+                raise HarnessError(f"error: {exc}; additionally, {shutdown_exc}") from exc
         raise HarnessError(f"error: {exc}") from exc
 
-    settings = discover_settings(root=root_path)
-    apply_settings(settings)
+    settings: Settings | None = None
 
-    def _invoke_fixture_shutdown(exit_code: int) -> None:
+    def _invoke_fixture_shutdown(exit_code: int, *, shutdown_root: Path) -> None:
         shutdown_once.invoke(
             (root_hooks,),
             "shutdown",
             hooks_impl.ShutdownContext(
-                root=settings.root,
+                root=shutdown_root,
                 exit_code=exit_code,
                 interrupted=False,
                 summary=hooks_impl.SummaryView(failed=0, total=0, skipped=0),
@@ -5818,11 +5873,13 @@ def run_fixture_mode_cli(
                 debug=debug_enabled,
             ),
             reverse=True,
-            project_root=settings.root,
+            project_root=shutdown_root,
             debug=debug_enabled,
         )
 
     try:
+        settings = discover_settings(root=root_path)
+        apply_settings(settings)
         _set_cli_packages(list(package_dirs or []))
 
         try:
@@ -5882,12 +5939,13 @@ def run_fixture_mode_cli(
             fixtures_impl.pop_context(context_token)
             cleanup_test_tmp_dir(env.get(TEST_TMP_ENV_VAR))
 
-        _invoke_fixture_shutdown(0)
+        _invoke_fixture_shutdown(0, shutdown_root=settings.root)
         return 0
     except BaseException as exc:
         if startup_succeeded and not shutdown_once.attempted:
             try:
-                _invoke_fixture_shutdown(1)
+                shutdown_root = settings.root if settings is not None else root_path
+                _invoke_fixture_shutdown(1, shutdown_root=shutdown_root)
             except hooks_impl.HookInvocationError as shutdown_exc:
                 raise HarnessError(f"error: {shutdown_exc}") from exc
         if isinstance(exc, fixtures_impl.FixtureUnavailable):
@@ -5988,6 +6046,7 @@ def run_cli(
         if not _HOOKS_DISABLED:
             env = os.environ.copy()
             path = _env_path(env)
+            startup_succeeded = True
             _invoke_hooks(
                 (root_hooks,),
                 "startup",
@@ -6003,7 +6062,6 @@ def run_cli(
             _apply_env_path(env, path)
             os.environ.clear()
             os.environ.update(env)
-            startup_succeeded = True
 
         settings = discover_settings(root=root_path)
         apply_settings(settings)
@@ -6124,29 +6182,6 @@ def run_cli(
                     ),
                     None,
                 )
-                _invoke_hooks(
-                    hook_chain,
-                    "project_start",
-                    hooks_impl.ProjectStartContext(
-                        root=settings.root,
-                        project=project_view,
-                        previous_project=previous_project_view,
-                        kind=selection.kind,
-                        env=hooks_impl.HookEnvironment(project_env, project_path),
-                        path=project_path,
-                        debug=debug_enabled,
-                        update=update,
-                        coverage=coverage,
-                    ),
-                    project_root=selection.root,
-                    debug=debug_enabled,
-                )
-                _apply_env_path(project_env, project_path)
-                global _CURRENT_PROJECT_ENV, _CURRENT_PROJECT_VIEW, _CURRENT_HOOK_CHAIN
-                _CURRENT_PROJECT_ENV = project_env
-                _CURRENT_PROJECT_VIEW = project_view
-                _CURRENT_HOOK_CHAIN = hook_chain
-
                 project_finish_once = _HookInvocationOnce()
                 project_summary = Summary()
 
@@ -6167,6 +6202,33 @@ def run_cli(
                         project_root=selection.root,
                         debug=debug_enabled,
                     )
+
+                try:
+                    _invoke_hooks(
+                        hook_chain,
+                        "project_start",
+                        hooks_impl.ProjectStartContext(
+                            root=settings.root,
+                            project=project_view,
+                            previous_project=previous_project_view,
+                            kind=selection.kind,
+                            env=hooks_impl.HookEnvironment(project_env, project_path),
+                            path=project_path,
+                            debug=debug_enabled,
+                            update=update,
+                            coverage=coverage,
+                        ),
+                        project_root=selection.root,
+                        debug=debug_enabled,
+                    )
+                except hooks_impl.HookInvocationError:
+                    _invoke_project_finish()
+                    raise
+                _apply_env_path(project_env, project_path)
+                global _CURRENT_PROJECT_ENV, _CURRENT_PROJECT_VIEW, _CURRENT_HOOK_CHAIN
+                _CURRENT_PROJECT_ENV = project_env
+                _CURRENT_PROJECT_VIEW = project_view
+                _CURRENT_HOOK_CHAIN = hook_chain
 
                 try:
                     tests_to_run = (

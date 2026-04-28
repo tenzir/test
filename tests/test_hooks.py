@@ -653,3 +653,152 @@ def test_fixture_mode_shutdown_hook_failure_is_not_retried(tmp_path: Path, monke
         _restore_runtime(original_settings, original_root)
 
     assert log_path.read_text(encoding="utf-8").splitlines() == ["shutdown:0"]
+
+
+def test_fixture_mode_invokes_shutdown_after_settings_failure(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    original_env = dict(os.environ)
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    log_path = tmp_path / "settings-shutdown.log"
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.startup\n"
+        "def startup(ctx):\n"
+        "    ctx.env['TENZIR_BINARY'] = '\"unterminated'\n"
+        "@hooks.shutdown\n"
+        "def shutdown(ctx):\n"
+        f"    open({str(log_path)!r}, 'w').write(str(ctx.exit_code))\n",
+        encoding="utf-8",
+    )
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(ValueError, match="Invalid shell syntax"):
+            run.run_fixture_mode_cli(
+                root=tmp_path,
+                package_dirs=(),
+                fixtures=("missing",),
+                debug=False,
+                keep_tmp_dirs=False,
+            )
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        os.environ.clear()
+        os.environ.update(original_env)
+        _restore_runtime(original_settings, original_root)
+
+    assert log_path.read_text(encoding="utf-8") == "1"
+
+
+def test_cleared_hook_path_removes_path_from_environment(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    original_env = dict(os.environ)
+    (tmp_path / "tests").mkdir()
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n@hooks.startup\ndef startup(ctx):\n    ctx.path.clear()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.chdir(tmp_path)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        result = run.execute(root=tmp_path, tests=[])
+        path_present = "PATH" in os.environ
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        os.environ.clear()
+        os.environ.update(original_env)
+        _restore_runtime(original_settings, original_root)
+
+    assert result.exit_code == 0
+    assert not path_present
+
+
+def test_suite_static_skip_finish_hook_keeps_suite_context(tmp_path: Path, monkeypatch) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    log_path = tmp_path / "suite-context.log"
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.test_finish\n"
+        "def finish(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write(str(ctx.suite.name if ctx.suite else None) + '\\n')\n",
+        encoding="utf-8",
+    )
+    suite_dir = tmp_path / "tests" / "suite"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text("suite: grouped\n", encoding="utf-8")
+    for name in ("one.tql", "two.tql"):
+        (suite_dir / name).write_text("---\nskip: static\n---\nversion\n", encoding="utf-8")
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
+    monkeypatch.chdir(tmp_path)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        result = run.execute(root=tmp_path, tests=[])
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+    assert result.exit_code == 0
+    assert log_path.read_text(encoding="utf-8").splitlines() == ["grouped", "grouped"]
+
+
+def test_project_finish_runs_after_later_project_start_hook_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original_settings = run._settings  # type: ignore[attr-defined]
+    original_root = run.ROOT
+    root = tmp_path / "root"
+    (root / "tests").mkdir(parents=True)
+    log_path = root / "partial-project.log"
+    hooks_dir = root / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.project_start\n"
+        "def start(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('root-start\\n')\n"
+        "@hooks.project_finish\n"
+        "def finish(ctx):\n"
+        f"    open({str(log_path)!r}, 'a').write('root-finish\\n')\n",
+        encoding="utf-8",
+    )
+    satellite = root / "satellite"
+    (satellite / "tests").mkdir(parents=True)
+    satellite_hooks = satellite / "hooks"
+    satellite_hooks.mkdir()
+    (satellite_hooks / "__init__.py").write_text(
+        "from tenzir_test import hooks\n"
+        "@hooks.project_start\n"
+        "def fail(ctx):\n"
+        "    raise RuntimeError('satellite start failed')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
+    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
+    monkeypatch.chdir(root)
+    run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+
+    try:
+        with pytest.raises(run.HarnessError, match="satellite start failed"):
+            run.execute(root=root, tests=[Path("satellite")], all_projects=True)
+    finally:
+        run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
+        _restore_runtime(original_settings, original_root)
+
+    assert log_path.read_text(encoding="utf-8").splitlines() == [
+        "root-start",
+        "root-finish",
+        "root-start",
+        "root-finish",
+    ]

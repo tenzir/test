@@ -275,6 +275,9 @@ class HookInvocationError(RuntimeError):
     pass
 
 
+_TEARDOWN_EVENTS: frozenset[HookEvent] = frozenset({"shutdown", "project_finish", "test_finish"})
+
+
 def invoke(
     hook_sets: Sequence[HookSet],
     event: HookEvent,
@@ -286,8 +289,11 @@ def invoke(
     debug: bool = False,
 ) -> None:
     ordered_sets = tuple(reversed(hook_sets)) if reverse else tuple(hook_sets)
+    errors: list[HookInvocationError] = []
     for hook_set in ordered_sets:
-        for func in getattr(hook_set, event):
+        funcs = tuple(getattr(hook_set, event))
+        ordered_funcs = tuple(reversed(funcs)) if reverse else funcs
+        for func in ordered_funcs:
             if debug:
                 name = getattr(func, "__qualname__", getattr(func, "__name__", repr(func)))
                 module = getattr(func, "__module__", "<unknown>")
@@ -303,4 +309,13 @@ def invoke(
                 if project_root is not None:
                     parts.append(f"in {project_root}")
                 parts.append(f"({module}): {exc}")
-                raise HookInvocationError(" ".join(parts)) from exc
+                error = HookInvocationError(" ".join(parts))
+                if event in _TEARDOWN_EVENTS:
+                    errors.append(error)
+                    continue
+                raise error from exc
+    if errors:
+        first = errors[0]
+        for error in errors[1:]:
+            first.add_note(str(error))
+        raise first

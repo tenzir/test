@@ -15,7 +15,7 @@ from tenzir_test import hooks
 
 @hooks.startup
 def use_local_build(ctx):
-    ctx.prepend_path(ctx.root / "build" / "bin")
+    ctx.path.insert(0, str(ctx.root / "build" / "bin"))
     ctx.env["TENZIR_BINARY"] = str(ctx.root / "build" / "bin" / "tenzir")
     ctx.env["TENZIR_NODE_BINARY"] = str(ctx.root / "build" / "bin" / "tenzir-node")
 ```
