@@ -5893,7 +5893,7 @@ def test_worker_capability_unavailable_with_multi_skip_conditions(
         run.apply_settings(original_settings)
 
 
-def test_worker_suite_requires_errors_for_unsupported_runner(
+def test_worker_suite_requires_operator_requirements_are_runner_agnostic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     original_settings = config.Settings(
@@ -5912,26 +5912,39 @@ def test_worker_suite_requires_errors_for_unsupported_runner(
     suite_dir = tmp_path / "tests" / "mixed"
     suite_dir.mkdir(parents=True)
     (suite_dir / "test.yaml").write_text(
-        "suite: mixed\nrequires:\n  operators:\n    - from_gcs\n",
+        "suite: mixed\n"
+        "skip:\n  on: capability-unavailable\n"
+        "requires:\n  operators:\n    - from_gcs\n",
         encoding="utf-8",
     )
     tql_path = suite_dir / "01-test.tql"
     sh_path = suite_dir / "02-test.sh"
+    py_path = suite_dir / "03-test.py"
     tql_path.write_text("version\nwrite_json\n", encoding="utf-8")
     sh_path.write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+    py_path.write_text("# runner: python\nprint('ok')\n", encoding="utf-8")
     run._clear_directory_config_cache()
 
+    probes: list[list[str]] = []
+
     def fake_run(cmd, **kwargs):  # noqa: ANN001
-        return SimpleNamespace(returncode=0, stdout=b"present\n", stderr=b"")
+        command = [str(part) for part in cmd]
+        probes.append(command)
+        assert command[0] == "/usr/bin/tenzir"
+        assert command[-1] == 'plugins | where name == "from_gcs"'
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
 
     try:
-        queue = run._build_queue_from_paths([tql_path, sh_path], coverage=False)
+        queue = run._build_queue_from_paths([tql_path, sh_path, py_path], coverage=False)
         worker = run.Worker(queue, update=False, coverage=False)
         worker.start()
-        with pytest.raises(run.HarnessError, match="unsupported requirement categories: operators"):
-            worker.join()
+        summary = worker.join()
+        assert summary.total == 3
+        assert summary.skipped == 3
+        assert summary.failed == 0
+        assert len(probes) == 1
     finally:
         run._clear_directory_config_cache()
         run.apply_settings(original_settings)
