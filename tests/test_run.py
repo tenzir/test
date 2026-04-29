@@ -922,7 +922,7 @@ def test_worker_suite_body_exception_propagates_and_queue_stops(
     try:
         worker = run.Worker(queue, update=False, coverage=False)
         worker.start()
-        with pytest.raises(RuntimeError, match="suite body exploded"):
+        with pytest.raises(RuntimeError, match="suite body exploded") as exc_info:
             worker.join()
     finally:
         run._clear_directory_config_cache()
@@ -930,6 +930,9 @@ def test_worker_suite_body_exception_propagates_and_queue_stops(
 
     assert executed == []
     assert worker.partial_summary.total == 0
+    assert not any(
+        "suite fixture teardown failed" in note for note in getattr(exc_info.value, "__notes__", ())
+    )
 
 
 def test_worker_runs_parallel_suite_concurrently(tmp_path: Path) -> None:

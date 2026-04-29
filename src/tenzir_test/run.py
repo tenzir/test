@@ -5597,37 +5597,38 @@ class Worker:
                 except BaseException as exc:
                     body_exc = exc
                     body_tb = exc.__traceback__
-                try:
-                    if body_exc is None:
+                if body_exc is None:
+                    try:
                         suite_scope.__exit__(None, None, None)
-                    else:
+                    except (HarnessError, hooks_impl.HookInvocationError):
+                        raise
+                    except Exception as exc:
+                        detail = _sanitize_message(str(exc)).strip() or exc.__class__.__name__
+                        self._record_suite_failure(
+                            suite_item=suite_item,
+                            summary=summary,
+                            message=f"suite fixture failed: {detail}",
+                        )
+                        _CLI_LOGGER.warning(
+                            "suite fixture failed for suite '%s': %s",
+                            suite_item.suite.name,
+                            detail,
+                        )
+                        _CLI_LOGGER.debug("suite fixture failure details", exc_info=True)
+                else:
+                    try:
                         suppress = suite_scope.__exit__(type(body_exc), body_exc, body_tb)
-                        if not suppress:
-                            raise body_exc.with_traceback(body_tb)
-                except (HarnessError, hooks_impl.HookInvocationError):
-                    if body_exc is not None:
+                    except (HarnessError, hooks_impl.HookInvocationError):
                         body_exc.add_note("additionally, suite fixture teardown failed")
                         raise body_exc.with_traceback(body_tb)
-                    raise
-                except Exception as exc:
-                    if body_exc is not None:
+                    except Exception as exc:
                         body_exc.add_note(
                             "additionally, suite fixture teardown failed: "
                             f"{_sanitize_message(str(exc))}"
                         )
                         raise body_exc.with_traceback(body_tb) from exc
-                    detail = _sanitize_message(str(exc)).strip() or exc.__class__.__name__
-                    self._record_suite_failure(
-                        suite_item=suite_item,
-                        summary=summary,
-                        message=f"suite fixture failed: {detail}",
-                    )
-                    _CLI_LOGGER.warning(
-                        "suite fixture failed for suite '%s': %s",
-                        suite_item.suite.name,
-                        detail,
-                    )
-                    _CLI_LOGGER.debug("suite fixture failure details", exc_info=True)
+                    if not suppress:
+                        raise body_exc.with_traceback(body_tb)
             finally:
                 _log_suite_event(suite_item.suite, event="teardown", total=total)
                 fixtures_impl.pop_context(context_token)
