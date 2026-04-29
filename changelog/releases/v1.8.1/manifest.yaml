@@ -1,0 +1,9 @@
+created: 2026-04-29
+title: Suite fixture failure reporting
+intro: >-
+  This release improves suite fixture failure handling so setup and teardown errors
+  are reported as regular test failures. The harness now continues running independent
+  queued tests instead of aborting with a Python traceback.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.8.0
