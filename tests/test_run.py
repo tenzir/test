@@ -688,6 +688,167 @@ def test_worker_suite_fixture_teardown_failure_is_reported_and_queue_continues(
         run.apply_settings(original_settings)
 
 
+def test_worker_suite_fixture_teardown_failure_invokes_failure_hooks(
+    tmp_path: Path,
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: context\nfixtures:\n  - hook_teardown_fixture\n", encoding="utf-8"
+    )
+    suite_test = suite_dir / "01-suite.tql"
+    suite_test.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    previous_factory = fixture_api._FACTORIES.get("hook_teardown_fixture")
+
+    @fixture_api.fixture(name="hook_teardown_fixture", replace=True)
+    def hook_teardown_fixture():
+        try:
+            yield {}
+        finally:
+            raise RuntimeError("teardown exploded")
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    finish_events: list[tuple[str, str | None, str | None]] = []
+    failure_events: list[tuple[str | None, str | None]] = []
+
+    def finish(ctx: hooks.TestFinishContext) -> None:
+        suite_name = ctx.suite.name if ctx.suite else None
+        finish_events.append((ctx.outcome, ctx.reason, suite_name))
+
+    def failure(ctx: hooks.TestFailureContext) -> None:
+        suite_name = ctx.suite.name if ctx.suite else None
+        failure_events.append((ctx.reason, suite_name))
+
+    runner = RecordingRunner()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(name="context", directory=suite_dir),
+            tests=[run.TestQueueItem(runner=runner, path=suite_test)],
+            fixtures=(fixture_api.FixtureSpec("hook_teardown_fixture"),),
+        ),
+    ]
+    try:
+        worker = run.Worker(
+            queue,
+            update=False,
+            coverage=False,
+            hook_chain=(hooks.HookSet(test_finish=[finish], test_failure=[failure]),),
+            project_view=hooks.ProjectView(root=tmp_path, kind="root"),
+            hook_root=tmp_path,
+        )
+        worker.start()
+        summary = worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("hook_teardown_fixture", None)
+        else:
+            fixture_api._FACTORIES["hook_teardown_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+    assert summary.total == 2
+    assert summary.failed == 1
+    assert finish_events == [
+        ("passed", None, "context"),
+        ("failed", "suite fixture failed: teardown exploded", "context"),
+    ]
+    assert failure_events == [("suite fixture failed: teardown exploded", "context")]
+
+
+def test_worker_suite_hook_failure_propagates_instead_of_becoming_fixture_failure(
+    tmp_path: Path,
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text("suite: context\n", encoding="utf-8")
+    suite_test = suite_dir / "01-suite.tql"
+    suite_test.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            return True
+
+    def start(ctx: hooks.TestStartContext) -> None:  # noqa: ARG001
+        raise RuntimeError("start hook exploded")
+
+    runner = RecordingRunner()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(name="context", directory=suite_dir),
+            tests=[run.TestQueueItem(runner=runner, path=suite_test)],
+            fixtures=(),
+        ),
+    ]
+    try:
+        worker = run.Worker(
+            queue,
+            update=False,
+            coverage=False,
+            hook_chain=(hooks.HookSet(test_start=[start]),),
+            project_view=hooks.ProjectView(root=tmp_path, kind="root"),
+            hook_root=tmp_path,
+        )
+        worker.start()
+        with pytest.raises(hooks.HookInvocationError, match="start hook exploded"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+    assert worker._exception is not None
+    assert worker.partial_summary.total == 0
+
+
 def test_worker_runs_parallel_suite_concurrently(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,

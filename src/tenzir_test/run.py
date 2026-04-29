@@ -5376,6 +5376,42 @@ class Worker:
             summary.record_fixture_outcome(_fixture_names(suite_item.fixtures), False)
         summary.failed += 1
         summary.failed_paths.append(rel_path)
+        finish_ctx = hooks_impl.TestFinishContext(
+            root=self._hook_root,
+            project=self._project_view,
+            test=test_item.path,
+            runner=test_item.runner.name,
+            outcome="failed",
+            reason=message,
+            attempts=0,
+            duration=0.0,
+            fixtures=_fixture_views(suite_item.fixtures),
+            suite=hooks_impl.SuiteView(
+                name=suite_item.suite.name,
+                directory=suite_item.suite.directory,
+            ),
+            tmp_dir=None,
+            update=self._update,
+            coverage=self._coverage,
+        )
+        _invoke_hooks(
+            self._hook_chain,
+            "test_finish",
+            finish_ctx,
+            reverse=True,
+            project_root=self._hook_root,
+            test_path=test_item.path,
+            debug=self._debug,
+        )
+        _invoke_hooks(
+            self._hook_chain,
+            "test_failure",
+            _finish_context_to_failure_context(finish_ctx),
+            reverse=True,
+            project_root=self._hook_root,
+            test_path=test_item.path,
+            debug=self._debug,
+        )
 
     def _run_suite(self, suite_item: SuiteQueueItem, summary: Summary) -> None:
         suite_priority_released = False
@@ -5540,7 +5576,7 @@ class Worker:
                     suite_item.suite.name,
                     reason,
                 )
-            except HarnessError:
+            except (HarnessError, hooks_impl.HookInvocationError):
                 raise
             except Exception as exc:
                 detail = _sanitize_message(str(exc)).strip() or exc.__class__.__name__
