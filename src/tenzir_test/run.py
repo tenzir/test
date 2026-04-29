@@ -246,9 +246,6 @@ class RequiresConfig:
     def has_requirements(self) -> bool:
         return bool(self.operators)
 
-    def as_mapping(self) -> dict[str, tuple[str, ...]]:
-        return {"operators": self.operators}
-
     @classmethod
     def from_raw(
         cls,
@@ -4871,6 +4868,7 @@ class Worker:
         self._project_view = project_view or hooks_impl.ProjectView(
             root=self._hook_root, kind="root"
         )
+        self._operator_requirement_cache: dict[tuple[str, tuple[str, ...]], bool] = {}
         self._thread = threading.Thread(target=self._work)
 
     def __del__(self) -> None:
@@ -5117,6 +5115,35 @@ class Worker:
             )
         return True
 
+    def _is_operator_available(
+        self,
+        operator: str,
+        *,
+        env: Mapping[str, str],
+        config_args: Sequence[str],
+    ) -> bool:
+        if not TENZIR_BINARY:
+            raise RuntimeError(
+                "TENZIR_BINARY must be configured before checking required TQL operators"
+            )
+        cache_key = (operator, tuple(config_args))
+        if cache_key in self._operator_requirement_cache:
+            return self._operator_requirement_cache[cache_key]
+        escaped = operator.replace("\\", "\\\\").replace('"', '\\"')
+        probe = f'plugins | where name == "{escaped}"'
+        completed = run_subprocess(
+            [*TENZIR_BINARY, *config_args, probe],
+            env=dict(env),
+            capture_output=True,
+            check=False,
+            force_capture=True,
+            cwd=str(ROOT),
+        )
+        stdout = completed.stdout or b""
+        result = bool(stdout.strip())
+        self._operator_requirement_cache[cache_key] = result
+        return result
+
     def _evaluate_suite_requirements(
         self,
         *,
@@ -5126,39 +5153,19 @@ class Worker:
         env: Mapping[str, str],
         config_args: Sequence[str],
     ) -> str | None:
-        requirements = requires.as_mapping()
-        missing_by_key: dict[str, set[str]] = {}
-        unsupported_by_key: dict[str, set[str]] = {}
-        for runner in {test_item.runner for test_item in tests}:
-            result = runner.check_requirements(
-                requirements,
+        del suite_item, tests
+        missing_operators = [
+            operator
+            for operator in requires.operators
+            if not self._is_operator_available(
+                operator,
                 env=env,
                 config_args=config_args,
             )
-            for key in result.unsupported_keys:
-                unsupported_by_key.setdefault(key, set()).add(runner.name)
-            for key, required_values in result.missing_values.items():
-                if not required_values:
-                    continue
-                missing_by_key.setdefault(key, set()).update(required_values)
-        if unsupported_by_key:
-            detail = ", ".join(
-                f"{key} (runners: {', '.join(sorted(runners))})"
-                for key, runners in sorted(unsupported_by_key.items())
-            )
-            raise HarnessError(
-                f"suite '{suite_item.suite.name}' has unsupported requirement categories: {detail}"
-            )
-        if not missing_by_key:
+        ]
+        if not missing_operators:
             return None
-        parts: list[str] = []
-        for key, missing_set in sorted(missing_by_key.items()):
-            rendered_values = ", ".join(sorted(missing_set))
-            if key == "operators":
-                parts.append(f"missing operators: {rendered_values}")
-            else:
-                parts.append(f"missing {key}: {rendered_values}")
-        return "; ".join(parts)
+        return f"missing operators: {', '.join(sorted(missing_operators))}"
 
     def _suite_static_skip_plan(
         self, suite_item: SuiteQueueItem
