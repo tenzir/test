@@ -868,7 +868,13 @@ def suite_scope(names: Iterable[FixtureSpec | str]) -> Iterator[dict[str, str]]:
 
     context_token = _push_fixture_options_context(normalized)
     stack = ExitStack()
-    combined = _activate_into_stack(normalized, stack)
+    try:
+        combined = _activate_into_stack(normalized, stack)
+    except BaseException:
+        stack.close()
+        if context_token is not None:
+            _CONTEXT.reset(context_token)
+        raise
     scope = _SuiteScope(fixtures=normalized, stack=stack, env=combined)
     token = _SUITE_SCOPE.set(scope)
     try:

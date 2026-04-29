@@ -688,6 +688,99 @@ def test_worker_suite_fixture_teardown_failure_is_reported_and_queue_continues(
         run.apply_settings(original_settings)
 
 
+def test_worker_suite_fixture_setup_failure_closes_already_entered_fixtures(
+    tmp_path: Path,
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: context\nfixtures:\n  - entered_fixture\n  - failing_setup_fixture\n",
+        encoding="utf-8",
+    )
+    suite_test = suite_dir / "01-suite.tql"
+    suite_test.write_text("version\nwrite_json\n", encoding="utf-8")
+    standalone_test = tmp_path / "tests" / "standalone.tql"
+    standalone_test.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    counts = {"start": 0, "stop": 0}
+    executed: list[Path] = []
+    previous_entered = fixture_api._FACTORIES.get("entered_fixture")
+    previous_failing = fixture_api._FACTORIES.get("failing_setup_fixture")
+
+    @fixture_api.fixture(name="entered_fixture", replace=True)
+    def entered_fixture():
+        counts["start"] += 1
+        try:
+            yield {}
+        finally:
+            counts["stop"] += 1
+
+    @fixture_api.fixture(name="failing_setup_fixture", replace=True)
+    def failing_setup_fixture():
+        raise RuntimeError("setup exploded")
+        yield {}  # type: ignore[misc]
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            executed.append(test.relative_to(tmp_path))
+            return True
+
+    runner = RecordingRunner()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(name="context", directory=suite_dir),
+            tests=[run.TestQueueItem(runner=runner, path=suite_test)],
+            fixtures=(
+                fixture_api.FixtureSpec("entered_fixture"),
+                fixture_api.FixtureSpec("failing_setup_fixture"),
+            ),
+        ),
+        run.TestQueueItem(runner=runner, path=standalone_test),
+    ]
+    try:
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        if previous_entered is None:
+            fixture_api._FACTORIES.pop("entered_fixture", None)
+        else:
+            fixture_api._FACTORIES["entered_fixture"] = previous_entered
+        if previous_failing is None:
+            fixture_api._FACTORIES.pop("failing_setup_fixture", None)
+        else:
+            fixture_api._FACTORIES["failing_setup_fixture"] = previous_failing
+        run.apply_settings(original_settings)
+
+    assert summary.failed == 1
+    assert counts == {"start": 1, "stop": 1}
+    assert executed == [Path("tests/standalone.tql")]
+
+
 def test_worker_suite_fixture_teardown_failure_invokes_failure_hooks(
     tmp_path: Path,
 ) -> None:
