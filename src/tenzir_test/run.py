@@ -5124,7 +5124,7 @@ class Worker:
     ) -> bool:
         if not TENZIR_BINARY:
             raise RuntimeError(
-                "TENZIR_BINARY must be configured before evaluating suite requirements"
+                "TENZIR_BINARY must be configured before checking required TQL operators"
             )
         cache_key = (operator, tuple(config_args))
         if cache_key in self._operator_requirement_cache:
