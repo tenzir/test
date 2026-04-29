@@ -670,7 +670,7 @@ def test_worker_suite_fixture_teardown_failure_is_reported_and_queue_continues(
         worker.start()
         summary = worker.join()
         assert worker._exception is None
-        assert summary.total == 3
+        assert summary.total == 2
         assert summary.failed == 1
         assert set(executed) == {
             Path("tests/context/01-suite.tql"),
@@ -735,16 +735,18 @@ def test_worker_suite_fixture_teardown_failure_invokes_failure_hooks(
         def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
             return True
 
-    finish_events: list[tuple[str, str | None, str | None]] = []
-    failure_events: list[tuple[str | None, str | None]] = []
+    finish_events: list[tuple[str, str | None, str | None, Path, str]] = []
+    failure_events: list[tuple[str | None, str | None, Path, str]] = []
 
     def finish(ctx: hooks.TestFinishContext) -> None:
         suite_name = ctx.suite.name if ctx.suite else None
-        finish_events.append((ctx.outcome, ctx.reason, suite_name))
+        finish_events.append(
+            (ctx.outcome, ctx.reason, suite_name, ctx.test.relative_to(tmp_path), ctx.runner)
+        )
 
     def failure(ctx: hooks.TestFailureContext) -> None:
         suite_name = ctx.suite.name if ctx.suite else None
-        failure_events.append((ctx.reason, suite_name))
+        failure_events.append((ctx.reason, suite_name, ctx.test.relative_to(tmp_path), ctx.runner))
 
     runner = RecordingRunner()
     queue: list[run.RunnerQueueItem] = [
@@ -773,13 +775,26 @@ def test_worker_suite_fixture_teardown_failure_invokes_failure_hooks(
             fixture_api._FACTORIES["hook_teardown_fixture"] = previous_factory
         run.apply_settings(original_settings)
 
-    assert summary.total == 2
+    assert summary.total == 1
     assert summary.failed == 1
     assert finish_events == [
-        ("passed", None, "context"),
-        ("failed", "suite fixture failed: teardown exploded", "context"),
+        ("passed", None, "context", Path("tests/context/01-suite.tql"), "recording"),
+        (
+            "failed",
+            "suite fixture failed: teardown exploded",
+            "context",
+            Path("tests/context/test.yaml"),
+            "suite",
+        ),
     ]
-    assert failure_events == [("suite fixture failed: teardown exploded", "context")]
+    assert failure_events == [
+        (
+            "suite fixture failed: teardown exploded",
+            "context",
+            Path("tests/context/test.yaml"),
+            "suite",
+        )
+    ]
 
 
 def test_worker_suite_hook_failure_propagates_instead_of_becoming_fixture_failure(

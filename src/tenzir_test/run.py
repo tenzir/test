@@ -5367,11 +5367,9 @@ class Worker:
         summary: Summary,
         message: str,
     ) -> None:
-        test_item = suite_item.tests[0]
-        report_failure(test_item.path, format_failure_message(message))
-        rel_path = _relativize_path(test_item.path)
-        summary.total += 1
-        summary.record_runner_outcome(test_item.runner.name, False)
+        suite_failure_path = suite_item.suite.directory / _CONFIG_FILE_NAME
+        report_failure(suite_failure_path, format_failure_message(message))
+        rel_path = _relativize_path(suite_failure_path)
         if suite_item.fixtures:
             summary.record_fixture_outcome(_fixture_names(suite_item.fixtures), False)
         summary.failed += 1
@@ -5379,8 +5377,8 @@ class Worker:
         finish_ctx = hooks_impl.TestFinishContext(
             root=self._hook_root,
             project=self._project_view,
-            test=test_item.path,
-            runner=test_item.runner.name,
+            test=suite_failure_path,
+            runner="suite",
             outcome="failed",
             reason=message,
             attempts=0,
@@ -5400,7 +5398,7 @@ class Worker:
             finish_ctx,
             reverse=True,
             project_root=self._hook_root,
-            test_path=test_item.path,
+            test_path=suite_failure_path,
             debug=self._debug,
         )
         _invoke_hooks(
@@ -5409,7 +5407,7 @@ class Worker:
             _finish_context_to_failure_context(finish_ctx),
             reverse=True,
             project_root=self._hook_root,
-            test_path=test_item.path,
+            test_path=suite_failure_path,
             debug=self._debug,
         )
 
