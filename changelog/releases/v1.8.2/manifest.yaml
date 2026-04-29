@@ -1,0 +1,9 @@
+created: 2026-04-29
+title: Runner-independent suite requirements
+intro: >-
+  This release fixes suite-level requirement checks so they apply consistently across
+  every test runner. Mixed TQL, shell, Python, and custom test suites now evaluate
+  required Tenzir operators independently of runner order.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.8.1
