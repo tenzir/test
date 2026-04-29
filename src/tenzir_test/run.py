@@ -27,7 +27,7 @@ import time
 import typing
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, TracebackType
 from typing import Any, Literal, TypeVar, cast, overload
 
 import yaml
@@ -5540,22 +5540,9 @@ class Worker:
             )
             _log_suite_event(suite_item.suite, event="setup", total=total)
             interrupted = False
+            suite_scope = fixtures_impl.suite_scope(suite_item.fixtures)
             try:
-                with fixtures_impl.suite_scope(suite_item.fixtures):
-                    if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
-                        interrupted = self._run_suite_parallel(
-                            suite_item=suite_item,
-                            tests=tests,
-                            summary=summary,
-                            release_suite_priority=release_suite_priority,
-                        )
-                    else:
-                        release_suite_priority()
-                        interrupted = self._run_suite_sequential(
-                            suite_item=suite_item,
-                            tests=tests,
-                            summary=summary,
-                        )
+                suite_scope.__enter__()
             except fixtures_impl.FixtureUnavailable as exc:
                 if not (
                     isinstance(skip_cfg, SkipConfig)
@@ -5591,6 +5578,58 @@ class Worker:
                     detail,
                 )
                 _CLI_LOGGER.debug("suite fixture failure details", exc_info=True)
+            else:
+                body_exc: BaseException | None = None
+                body_tb: TracebackType | None = None
+                try:
+                    if suite_item.suite.mode is SuiteExecutionMode.PARALLEL:
+                        interrupted = self._run_suite_parallel(
+                            suite_item=suite_item,
+                            tests=tests,
+                            summary=summary,
+                            release_suite_priority=release_suite_priority,
+                        )
+                    else:
+                        release_suite_priority()
+                        interrupted = self._run_suite_sequential(
+                            suite_item=suite_item,
+                            tests=tests,
+                            summary=summary,
+                        )
+                except BaseException as exc:
+                    body_exc = exc
+                    body_tb = exc.__traceback__
+                try:
+                    if body_exc is None:
+                        suite_scope.__exit__(None, None, None)
+                    else:
+                        suppress = suite_scope.__exit__(type(body_exc), body_exc, body_tb)
+                        if not suppress:
+                            raise body_exc.with_traceback(body_tb)
+                except (HarnessError, hooks_impl.HookInvocationError):
+                    if body_exc is not None:
+                        body_exc.add_note("additionally, suite fixture teardown failed")
+                        raise body_exc.with_traceback(body_tb)
+                    raise
+                except Exception as exc:
+                    if body_exc is not None:
+                        body_exc.add_note(
+                            "additionally, suite fixture teardown failed: "
+                            f"{_sanitize_message(str(exc))}"
+                        )
+                        raise body_exc.with_traceback(body_tb) from exc
+                    detail = _sanitize_message(str(exc)).strip() or exc.__class__.__name__
+                    self._record_suite_failure(
+                        suite_item=suite_item,
+                        summary=summary,
+                        message=f"suite fixture failed: {detail}",
+                    )
+                    _CLI_LOGGER.warning(
+                        "suite fixture failed for suite '%s': %s",
+                        suite_item.suite.name,
+                        detail,
+                    )
+                    _CLI_LOGGER.debug("suite fixture failure details", exc_info=True)
             finally:
                 _log_suite_event(suite_item.suite, event="teardown", total=total)
                 fixtures_impl.pop_context(context_token)

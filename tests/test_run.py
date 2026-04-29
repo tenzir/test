@@ -849,6 +849,74 @@ def test_worker_suite_hook_failure_propagates_instead_of_becoming_fixture_failur
     assert worker.partial_summary.total == 0
 
 
+def test_worker_suite_body_exception_propagates_and_queue_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text("suite: context\n", encoding="utf-8")
+    suite_test = suite_dir / "01-suite.tql"
+    suite_test.write_text("version\nwrite_json\n", encoding="utf-8")
+    standalone_test = tmp_path / "tests" / "standalone.tql"
+    standalone_test.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    executed: list[Path] = []
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            executed.append(test.relative_to(tmp_path))
+            return True
+
+    def fail_suite_body(*args: object, **kwargs: object) -> bool:
+        raise RuntimeError("suite body exploded")
+
+    monkeypatch.setattr(run.Worker, "_run_suite_sequential", fail_suite_body)
+
+    runner = RecordingRunner()
+    queue: list[run.RunnerQueueItem] = [
+        run.TestQueueItem(runner=runner, path=standalone_test),
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(name="context", directory=suite_dir),
+            tests=[run.TestQueueItem(runner=runner, path=suite_test)],
+            fixtures=(),
+        ),
+    ]
+    try:
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        with pytest.raises(RuntimeError, match="suite body exploded"):
+            worker.join()
+    finally:
+        run._clear_directory_config_cache()
+        run.apply_settings(original_settings)
+
+    assert executed == []
+    assert worker.partial_summary.total == 0
+
+
 def test_worker_runs_parallel_suite_concurrently(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
