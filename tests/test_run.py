@@ -605,6 +605,89 @@ def test_worker_runs_suite_sequentially(monkeypatch: pytest.MonkeyPatch, tmp_pat
         run.apply_settings(original_settings)
 
 
+def test_worker_suite_fixture_teardown_failure_is_reported_and_queue_continues(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=run.TENZIR_BINARY,
+            tenzir_node_binary=run.TENZIR_NODE_BINARY,
+        )
+    )
+    suite_dir = tmp_path / "tests" / "context"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text(
+        "suite: context\nfixtures:\n  - failing_teardown_fixture\n", encoding="utf-8"
+    )
+    suite_test = suite_dir / "01-suite.tql"
+    suite_test.write_text("version\nwrite_json\n", encoding="utf-8")
+    standalone_test = tmp_path / "tests" / "standalone.tql"
+    standalone_test.write_text("version\nwrite_json\n", encoding="utf-8")
+
+    executed: list[Path] = []
+    previous_factory = fixture_api._FACTORIES.get("failing_teardown_fixture")
+
+    @fixture_api.fixture(name="failing_teardown_fixture", replace=True)
+    def failing_teardown_fixture():
+        try:
+            yield {}
+        finally:
+            raise RuntimeError("teardown exploded")
+
+    class RecordingRunner(Runner):
+        def __init__(self) -> None:
+            super().__init__(name="recording")
+
+        def collect_tests(self, path: Path) -> set[tuple[Runner, Path]]:
+            if path.is_file():
+                return {(self, path)}
+            return set()
+
+        def purge(self) -> None:
+            return
+
+        def run(self, test: Path, update: bool, coverage: bool = False) -> bool:  # noqa: ARG002
+            executed.append(test.relative_to(tmp_path))
+            return True
+
+    runner = RecordingRunner()
+    queue: list[run.RunnerQueueItem] = [
+        run.SuiteQueueItem(
+            suite=run.SuiteInfo(name="context", directory=suite_dir),
+            tests=[run.TestQueueItem(runner=runner, path=suite_test)],
+            fixtures=(fixture_api.FixtureSpec("failing_teardown_fixture"),),
+        ),
+        run.TestQueueItem(runner=runner, path=standalone_test),
+    ]
+    try:
+        worker = run.Worker(queue, update=False, coverage=False)
+        worker.start()
+        summary = worker.join()
+        assert worker._exception is None
+        assert summary.total == 3
+        assert summary.failed == 1
+        assert set(executed) == {
+            Path("tests/context/01-suite.tql"),
+            Path("tests/standalone.tql"),
+        }
+        output = capsys.readouterr().out
+        assert "suite fixture failed: teardown exploded" in output
+        assert "Traceback" not in output
+    finally:
+        run._clear_directory_config_cache()
+        if previous_factory is None:
+            fixture_api._FACTORIES.pop("failing_teardown_fixture", None)
+        else:
+            fixture_api._FACTORIES["failing_teardown_fixture"] = previous_factory
+        run.apply_settings(original_settings)
+
+
 def test_worker_runs_parallel_suite_concurrently(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,

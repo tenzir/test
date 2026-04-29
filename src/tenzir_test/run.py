@@ -5360,6 +5360,23 @@ class Worker:
         _merge_summary_inplace(summary, suite_summary)
         return interrupted
 
+    def _record_suite_failure(
+        self,
+        *,
+        suite_item: SuiteQueueItem,
+        summary: Summary,
+        message: str,
+    ) -> None:
+        test_item = suite_item.tests[0]
+        report_failure(test_item.path, format_failure_message(message))
+        rel_path = _relativize_path(test_item.path)
+        summary.total += 1
+        summary.record_runner_outcome(test_item.runner.name, False)
+        if suite_item.fixtures:
+            summary.record_fixture_outcome(_fixture_names(suite_item.fixtures), False)
+        summary.failed += 1
+        summary.failed_paths.append(rel_path)
+
     def _run_suite(self, suite_item: SuiteQueueItem, summary: Summary) -> None:
         suite_priority_released = False
 
@@ -5523,6 +5540,21 @@ class Worker:
                     suite_item.suite.name,
                     reason,
                 )
+            except HarnessError:
+                raise
+            except Exception as exc:
+                detail = _sanitize_message(str(exc)).strip() or exc.__class__.__name__
+                self._record_suite_failure(
+                    suite_item=suite_item,
+                    summary=summary,
+                    message=f"suite fixture failed: {detail}",
+                )
+                _CLI_LOGGER.warning(
+                    "suite fixture failed for suite '%s': %s",
+                    suite_item.suite.name,
+                    detail,
+                )
+                _CLI_LOGGER.debug("suite fixture failure details", exc_info=True)
             finally:
                 _log_suite_event(suite_item.suite, event="teardown", total=total)
                 fixtures_impl.pop_context(context_token)
