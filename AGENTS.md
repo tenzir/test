@@ -37,3 +37,8 @@ The framework supports satellite projects that inherit fixtures and runners from
 ## Documentation
 
 Primary documentation lives at <https://docs.tenzir.com/reference/test.md>.
+
+## Logging
+
+Use the harness logging facilities for diagnostic output. Reserve `print()` for
+intentional user-facing test results and summaries.
