@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 import dataclasses
+import logging
 import os
 from collections.abc import Callable, Iterator, MutableMapping, Sequence
 from pathlib import Path
@@ -290,6 +291,7 @@ class HookInvocationError(RuntimeError):
 
 
 _TEARDOWN_EVENTS: frozenset[HookEvent] = frozenset({"shutdown", "project_finish", "test_finish"})
+_CLI_LOGGER = logging.getLogger("tenzir_test.cli")
 
 
 def invoke(
@@ -311,7 +313,7 @@ def invoke(
             if debug:
                 name = getattr(func, "__qualname__", getattr(func, "__name__", repr(func)))
                 module = getattr(func, "__module__", "<unknown>")
-                print(f"debug: invoking hook {event} {module}.{name}")
+                _CLI_LOGGER.debug("invoking hook %s %s.%s", event, module, name)
             try:
                 cast(Callable[[object], None], func)(context)
             except BaseException as exc:

@@ -37,3 +37,11 @@ The framework supports satellite projects that inherit fixtures and runners from
 ## Documentation
 
 Primary documentation lives at <https://docs.tenzir.com/reference/test.md>.
+
+## Logging
+
+Use the harness logging facilities for diagnostic output instead of ad-hoc
+`print()` calls. In particular, debug output must go through the existing
+`tenzir_test.cli` logger or a module logger configured by the harness, so all
+messages use the same prefixes, colors, synchronization, and verbosity flags.
+Reserve `print()` for intentional user-facing test results and summaries.
