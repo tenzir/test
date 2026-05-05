@@ -1,0 +1,8 @@
+created: 2026-05-05
+title: Consistent hook debug diagnostics
+intro: >-
+  This release makes hook debug diagnostics consistent with the rest of the harness
+  debug trace, so users get uniform output when diagnosing hook behavior.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.8.2
