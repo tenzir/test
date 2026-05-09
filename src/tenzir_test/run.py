@@ -4274,7 +4274,7 @@ def get_version() -> str:
                 *TENZIR_BINARY,
                 "--bare-mode",
                 "--console-verbosity=warning",
-                "version | select version | write_lines",
+                "version | select version | to_stdout { write_lines }",
             ]
         )
         .decode()
