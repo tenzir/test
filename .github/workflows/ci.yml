@@ -17,10 +17,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-26]
         python-version: ["3.12", "3.13"]
         exclude:
-          - os: macos-latest
+          - os: macos-26
             python-version: "3.13"
 
     steps:
@@ -92,7 +92,7 @@ jobs:
     needs: build
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-26]
 
     steps:
       - name: Download artifacts
