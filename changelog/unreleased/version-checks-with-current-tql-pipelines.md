@@ -9,4 +9,4 @@ prs:
 created: 2026-05-09T09:43:15.038686Z
 ---
 
-The test harness can detect the installed Tenzir version with current TQL pipeline semantics. This fixes startup/version checks for Tenzir builds that require output to be routed through an explicit stdout sink.
+The test harness can detect the installed Tenzir version with current TQL pipeline semantics while remaining compatible with existing v5 releases. This fixes startup/version checks for Tenzir builds that require output to be routed through an explicit stdout sink.
