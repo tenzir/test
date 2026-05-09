@@ -1,0 +1,9 @@
+created: 2026-05-09
+title: Version checks with current TQL pipelines
+intro: >-
+  The test harness now detects the installed Tenzir version across current and upcoming
+  Tenzir releases. This keeps startup and version checks working during the transition
+  to the next Tenzir release series.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.8.3
