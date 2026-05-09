@@ -4268,18 +4268,24 @@ def _print_detailed_summary(summary: Summary) -> None:
 def get_version() -> str:
     if not TENZIR_BINARY:
         raise FileNotFoundError("TENZIR_BINARY is not configured")
-    return (
-        subprocess.check_output(
-            [
-                *TENZIR_BINARY,
-                "--bare-mode",
-                "--console-verbosity=warning",
-                "version | select version | write_lines",
-            ]
-        )
-        .decode()
-        .strip()
-    )
+    command = [
+        *TENZIR_BINARY,
+        "--bare-mode",
+        "--console-verbosity=warning",
+    ]
+    # FIXME: Remove this fallback after tenzir/tenzir has bootstrapped onto a
+    # v6 release candidate and downstream consumers no longer need to run the
+    # harness against v5 binaries. The new probe is required by v6, but v5 only
+    # accepts it with --neo, and --neo no longer exists in v6.
+    for pipeline in (
+        "version | select version | to_stdout { write_lines }",
+        "version | select version | write_lines",
+    ):
+        try:
+            return subprocess.check_output([*command, pipeline]).decode().strip()
+        except subprocess.CalledProcessError:
+            continue
+    raise RuntimeError("failed to detect Tenzir version")
 
 
 def success(test: Path) -> None:
