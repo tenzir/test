@@ -4843,6 +4843,16 @@ class TestFilterPathsByFixtureTags:
             coverage=False,
         ) == {test_path}
 
+    def test_parse_errors_remain_selected(self, tmp_path: Path) -> None:
+        test_path = tmp_path / "case.tql"
+        test_path.write_text("---\nfixtures:\n  - broken: []\n---\nversion\n", encoding="utf-8")
+
+        assert run._filter_paths_by_fixture_tags(
+            {test_path},
+            ["container"],
+            coverage=False,
+        ) == {test_path}
+
 
 # Tests for _expand_suites
 

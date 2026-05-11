@@ -6026,7 +6026,16 @@ def _filter_paths_by_fixture_tags(
         return set(paths)
     matched: set[Path] = set()
     for path in paths:
-        for spec in _get_test_fixtures(path, coverage=coverage):
+        try:
+            config = parse_test_config(path, coverage=coverage)
+        except ValueError:
+            matched.add(path)
+            continue
+        fixture_specs = cast(
+            Iterable[fixtures_impl.FixtureSpec],
+            config.get("fixtures", tuple()),
+        )
+        for spec in fixture_specs:
             if fixtures_impl.get_tags(spec.name) & active_tags:
                 matched.add(path)
                 break
