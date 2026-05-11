@@ -6013,6 +6013,35 @@ def _filter_paths_by_patterns(
     return matched
 
 
+def _filter_paths_by_fixture_tags(
+    paths: Iterable[Path],
+    tags: Sequence[str],
+    *,
+    coverage: bool,
+) -> set[Path]:
+    """Return paths whose configured fixtures have any requested tag."""
+
+    active_tags = frozenset(tag.strip().lower() for tag in tags if tag and tag.strip())
+    if not active_tags:
+        return set(paths)
+    matched: set[Path] = set()
+    for path in paths:
+        try:
+            config = parse_test_config(path, coverage=coverage)
+        except (ValueError, yaml.YAMLError):
+            matched.add(path)
+            continue
+        fixture_specs = cast(
+            Iterable[fixtures_impl.FixtureSpec],
+            config.get("fixtures", tuple()),
+        )
+        for spec in fixture_specs:
+            if fixtures_impl.get_tags(spec.name) & active_tags:
+                matched.add(path)
+                break
+    return matched
+
+
 def _expand_suites(paths: set[Path]) -> set[Path]:
     """If any test in a suite was selected, include all tests from that suite."""
     suite_dirs: set[Path] = set()
@@ -6321,6 +6350,7 @@ def run_cli(
     jobs_overridden: bool = False,
     all_projects: bool = False,
     match_patterns: Sequence[str] = (),
+    fixture_tags: Sequence[str] = (),
     no_hooks: bool = False,
 ) -> ExecutionResult:
     """Execute the harness and return a structured result for library consumers.
@@ -6339,6 +6369,10 @@ def run_cli(
             any pattern are selected.  When path arguments are also provided
             via *tests*, only tests matching both are run (intersection).
             Empty or whitespace-only patterns are silently ignored.
+        fixture_tags: Fixture tags selected by ``-F/--fixture-tag``. Tests
+            matching any tag are selected. When path arguments or
+            *match_patterns* are also provided, only tests matching all
+            selectors are run (intersection).
     """
     from tenzir_test.engine import state as engine_state
 
@@ -6679,6 +6713,7 @@ def run_cli(
                             raise HarnessError(f"error: `{test}` is neither a file nor a directory")
 
                     active_patterns = [p.strip() for p in match_patterns if p and p.strip()]
+                    should_expand_suites = False
                     if active_patterns:
                         # Filter collected tests to those matching any
                         # pattern.  This acts as an intersection when path
@@ -6690,7 +6725,7 @@ def run_cli(
                             active_patterns,
                             project_root=selection.root,
                         )
-                        collected_paths = _expand_suites(collected_paths)
+                        should_expand_suites = True
                         if not collected_paths:
                             pattern_list = ", ".join(repr(p) for p in active_patterns)
                             if not selection.run_all:
@@ -6700,6 +6735,29 @@ def run_cli(
                                 )
                             else:
                                 print(f"{INFO} no tests matched pattern(s): {pattern_list}")
+
+                    active_fixture_tags = [
+                        tag.strip().lower() for tag in fixture_tags if tag and tag.strip()
+                    ]
+                    if active_fixture_tags:
+                        collected_paths = _filter_paths_by_fixture_tags(
+                            collected_paths,
+                            active_fixture_tags,
+                            coverage=coverage,
+                        )
+                        should_expand_suites = True
+                        if not collected_paths:
+                            tag_list = ", ".join(repr(tag) for tag in active_fixture_tags)
+                            if not selection.run_all or active_patterns:
+                                print(
+                                    f"{INFO} no tests matched fixture tag(s) {tag_list}"
+                                    f" within the selected paths"
+                                )
+                            else:
+                                print(f"{INFO} no tests matched fixture tag(s): {tag_list}")
+
+                    if should_expand_suites and collected_paths:
+                        collected_paths = _expand_suites(collected_paths)
 
                     if interrupt_requested():
                         break
@@ -7029,6 +7087,7 @@ def execute(
     jobs_overridden: bool = False,
     all_projects: bool = False,
     match_patterns: Sequence[str] = (),
+    fixture_tags: Sequence[str] = (),
     no_hooks: bool = False,
 ) -> ExecutionResult:
     """Library-oriented wrapper around `run_cli` with defaulted parameters.
@@ -7047,6 +7106,9 @@ def execute(
             any pattern are selected.  When path arguments are also provided
             via *tests*, only tests matching both are run (intersection).
             Empty or whitespace-only patterns are silently ignored.
+        fixture_tags: Fixture tags selected by ``-F/--fixture-tag``. Tests
+            matching any tag are selected. Intersects with TEST paths and
+            *match_patterns*.
     """
     resolved_jobs = jobs if jobs is not None else get_default_jobs()
     return run_cli(
@@ -7071,6 +7133,7 @@ def execute(
         jobs_overridden=jobs_overridden,
         all_projects=all_projects,
         match_patterns=match_patterns,
+        fixture_tags=fixture_tags,
         no_hooks=no_hooks,
     )
 

@@ -498,7 +498,13 @@ def docker_compose() -> Iterator[dict[str, str]]:
             _teardown(base_args, env=runtime_env, cwd=cwd, down=options.down)
 
 
-register("docker-compose", docker_compose, replace=True, options=DockerComposeOptions)
+register(
+    "docker-compose",
+    docker_compose,
+    replace=True,
+    options=DockerComposeOptions,
+    tags=("container", "docker-compose"),
+)
 
 
 __all__ = [

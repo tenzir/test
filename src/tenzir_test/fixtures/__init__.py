@@ -27,14 +27,17 @@ from typing import (
     Protocol,
     Sequence,
     Literal,
+    TypeVar,
 )
 
 
 _FIXTURES_ENV = "TENZIR_TEST_FIXTURES"
 _HOOKS_ATTR = "__tenzir_fixture_hooks__"
+_TAGS_ATTR = "__tenzir_fixture_tags__"
 
 _TMP_DIR_CLEANUP: dict[Path, Callable[[], None]] = {}
 _TMP_DIR_CLEANUP_LOCK = threading.RLock()
+T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,6 +507,7 @@ class _FactoryCallable(Protocol):
 
 
 _FACTORIES: dict[str, FixtureFactory] = {}
+_FIXTURE_TAGS: dict[str, frozenset[str]] = {}
 
 
 @dataclass(slots=True)
@@ -749,6 +753,93 @@ def _infer_name(func: Callable[..., object], explicit: str | None) -> str:
     raise ValueError("Unable to infer fixture name; please provide one explicitly")
 
 
+def _normalize_tags(tags: Iterable[str] | str | None) -> frozenset[str]:
+    if tags is None:
+        return frozenset()
+    if isinstance(tags, str):
+        tags = (tags,)
+    normalized: set[str] = set()
+    for tag in tags:
+        if not isinstance(tag, str):
+            raise TypeError(f"fixture tags must be strings, got {type(tag).__name__}")
+        value = tag.strip().lower()
+        if not value:
+            raise ValueError("fixture tags must be non-empty strings")
+        normalized.add(value)
+    return frozenset(normalized)
+
+
+def tag_provider(*tags: str) -> Callable[[T], T]:
+    """Mark an abstraction as contributing fixture tags to users of it."""
+
+    normalized = _normalize_tags(tags)
+
+    def _decorator(obj: T) -> T:
+        existing: frozenset[str] = getattr(obj, _TAGS_ATTR, frozenset())
+        setattr(obj, _TAGS_ATTR, frozenset(existing) | normalized)
+        return obj
+
+    return _decorator
+
+
+def _tags_from_provider(value: object) -> frozenset[str]:
+    tags = set(getattr(value, _TAGS_ATTR, frozenset()))
+    module = inspect.getmodule(value)
+    if module is not None:
+        tags.update(getattr(module, _TAGS_ATTR, frozenset()))
+    return frozenset(tags)
+
+
+def _infer_tags_from_callable(
+    func: object,
+    *,
+    seen: set[int] | None = None,
+    depth: int = 0,
+) -> frozenset[str]:
+    if seen is None:
+        seen = set()
+    if depth > 8:
+        return frozenset()
+    obj_id = id(func)
+    if obj_id in seen:
+        return frozenset()
+    seen.add(obj_id)
+
+    tags = set(_tags_from_provider(func))
+    code = getattr(func, "__code__", None)
+    globals_map = getattr(func, "__globals__", None)
+    if code is None or not isinstance(globals_map, Mapping):
+        return frozenset(tags)
+    callable_func = typing.cast(Callable[..., Any], func)
+
+    try:
+        closure = inspect.getclosurevars(callable_func)
+    except TypeError:
+        closure_values: Iterable[object] = ()
+    else:
+        closure_values = (*closure.nonlocals.values(), *closure.globals.values())
+    for value in closure_values:
+        tags.update(_tags_from_provider(value))
+        if inspect.isfunction(value):
+            tags.update(_infer_tags_from_callable(value, seen=seen, depth=depth + 1))
+
+    for name in code.co_names:
+        try:
+            value = globals_map[name]
+        except KeyError:
+            continue
+        tags.update(_tags_from_provider(value))
+        if inspect.isfunction(value) and value.__globals__ is globals_map:
+            tags.update(_infer_tags_from_callable(value, seen=seen, depth=depth + 1))
+    return frozenset(tags)
+
+
+def get_tags(name: str) -> frozenset[str]:
+    """Return the tags registered for the named fixture."""
+
+    return _FIXTURE_TAGS.get(name, frozenset())
+
+
 def register(
     name: str | None,
     factory: _FactoryCallable,
@@ -756,6 +847,7 @@ def register(
     replace: bool = False,
     options: type | None = None,
     assertions: type | None = None,
+    tags: Iterable[str] | str | None = None,
 ) -> None:
     resolved_name = _infer_name(factory, name)
     if resolved_name in _FACTORIES and not replace:
@@ -772,7 +864,12 @@ def register(
                 f"'assertions' for fixture '{resolved_name}' must be a dataclass type, "
                 f"got {type(assertions).__name__}"
             )
+    normalized_tags = _normalize_tags(tags) | _infer_tags_from_callable(factory)
     _FACTORIES[resolved_name] = _normalize_factory(factory)
+    if normalized_tags:
+        _FIXTURE_TAGS[resolved_name] = normalized_tags
+    else:
+        _FIXTURE_TAGS.pop(resolved_name, None)
     if options is not None:
         _OPTIONS_CLASSES[resolved_name] = options
     if assertions is not None:
@@ -787,6 +884,7 @@ def fixture(
     log_teardown: bool = False,
     options: type | None = None,
     assertions: type | None = None,
+    tags: Iterable[str] | str | None = None,
 ) -> Callable[[_FactoryCallable], _FactoryCallable] | _FactoryCallable:
     """Decorator registering a fixture factory.
 
@@ -819,6 +917,7 @@ def fixture(
             replace=replace,
             options=options,
             assertions=assertions,
+            tags=_normalize_tags(tags) | _infer_tags_from_callable(inner),
         )
 
         if log_teardown:
@@ -906,12 +1005,14 @@ __all__ = [
     "fixture",
     "fixtures",
     "fixtures_api",
+    "get_tags",
     "get_assertions_class",
     "get_options_class",
     "suite_scope",
     "has",
     "register",
     "require",
+    "tag_provider",
     "register_tmp_dir_cleanup",
     "unregister_tmp_dir_cleanup",
     "invoke_tmp_dir_cleanup",

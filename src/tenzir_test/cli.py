@@ -38,9 +38,12 @@ Examples:
   tenzir-test                          Run all tests in the project
   tenzir-test tests/alerts/            Run all tests in a directory
   tenzir-test tests/basic.tql          Run a specific test file
-  tenzir-test -m '*ctx*'               Run tests matching a path pattern
-  tenzir-test -m '*add*' -m '*del*'    Run tests matching either pattern
-  tenzir-test tests/ctx/ -m '*create*' Intersect directory with pattern
+  tenzir-test --match '*ctx*'          Run tests matching a path pattern
+  tenzir-test --match '*add*' --match '*del*'
+                                       Run tests matching either pattern
+  tenzir-test tests/ctx/ --match '*create*'
+                                       Intersect directory with pattern
+  tenzir-test --fixture-tag container  Run tests using container-backed fixtures
   tenzir-test --run-skipped            Run all skipped tests unconditionally
   tenzir-test --run-skipped-reason maintenance
                                        Run only skipped tests whose reason matches
@@ -212,6 +215,19 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
         "all tests in that suite are included automatically."
     ),
 )
+@click.option(
+    "-F",
+    "--fixture-tag",
+    "fixture_tags",
+    multiple=True,
+    type=str,
+    help=(
+        "Run tests that request a fixture with the given tag. "
+        "Repeatable; tests matching any tag are selected. "
+        "If TEST paths or --match patterns are also given, only tests matching all "
+        "selectors are run (intersection)."
+    ),
+)
 @click.pass_context
 def cli(
     ctx: click.Context,
@@ -239,6 +255,7 @@ def cli(
     run_skipped_reasons: tuple[str, ...],
     all_projects: bool,
     no_hooks: bool,
+    fixture_tags: tuple[str, ...],
 ) -> int:
     """Execute test scenarios and compare output against baselines.
 
@@ -257,10 +274,14 @@ def cli(
     Use -m/--match to select tests by substring or glob pattern.
     Bare strings match as substrings; glob metacharacters (*, ?, [) trigger
     fnmatch mode. Patterns match against relative paths shown in test output.
-    When both TEST paths and -m patterns are given, only tests matching both
+    When both TEST paths and --match patterns are given, only tests matching both
     are run (intersection). Empty pattern strings are silently ignored.
     If a matched test belongs to a suite (configured via test.yaml), all
     tests in that suite are included automatically.
+
+    Use -F/--fixture-tag to select tests by metadata inherited from their
+    requested fixtures. Tags are repeatable and use OR semantics. They
+    intersect with TEST paths and --match patterns.
     """
 
     package_paths: list[Path] = []
@@ -312,6 +333,7 @@ def cli(
             jobs_overridden=jobs_overridden,
             all_projects=all_projects,
             match_patterns=list(match_patterns),
+            fixture_tags=list(fixture_tags),
             no_hooks=no_hooks,
         )
     except runtime.HarnessError as exc:
