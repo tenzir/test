@@ -780,6 +780,14 @@ def tag_provider(*tags: str) -> Callable[[T], T]:
     return _decorator
 
 
+def _tags_from_provider(value: object) -> frozenset[str]:
+    tags = set(getattr(value, _TAGS_ATTR, frozenset()))
+    module = inspect.getmodule(value)
+    if module is not None:
+        tags.update(getattr(module, _TAGS_ATTR, frozenset()))
+    return frozenset(tags)
+
+
 def _infer_tags_from_callable(
     func: object,
     *,
@@ -795,7 +803,7 @@ def _infer_tags_from_callable(
         return frozenset()
     seen.add(obj_id)
 
-    tags = set(getattr(func, _TAGS_ATTR, frozenset()))
+    tags = set(_tags_from_provider(func))
     code = getattr(func, "__code__", None)
     globals_map = getattr(func, "__globals__", None)
     if code is None or not isinstance(globals_map, Mapping):
@@ -809,7 +817,7 @@ def _infer_tags_from_callable(
     else:
         closure_values = (*closure.nonlocals.values(), *closure.globals.values())
     for value in closure_values:
-        tags.update(getattr(value, _TAGS_ATTR, frozenset()))
+        tags.update(_tags_from_provider(value))
         if inspect.isfunction(value):
             tags.update(_infer_tags_from_callable(value, seen=seen, depth=depth + 1))
 
@@ -818,7 +826,7 @@ def _infer_tags_from_callable(
             value = globals_map[name]
         except KeyError:
             continue
-        tags.update(getattr(value, _TAGS_ATTR, frozenset()))
+        tags.update(_tags_from_provider(value))
         if inspect.isfunction(value) and value.__globals__ is globals_map:
             tags.update(_infer_tags_from_callable(value, seen=seen, depth=depth + 1))
     return frozenset(tags)
@@ -995,12 +1003,14 @@ __all__ = [
     "fixture",
     "fixtures",
     "fixtures_api",
+    "get_tags",
     "get_assertions_class",
     "get_options_class",
     "suite_scope",
     "has",
     "register",
     "require",
+    "tag_provider",
     "register_tmp_dir_cleanup",
     "unregister_tmp_dir_cleanup",
     "invoke_tmp_dir_cleanup",

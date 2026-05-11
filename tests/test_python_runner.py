@@ -616,6 +616,32 @@ def test_fixture_infers_tags_through_local_helper() -> None:
         fixtures._FIXTURE_TAGS.pop(fixture_name, None)  # type: ignore[attr-defined]
 
 
+def test_fixture_infers_tags_from_directly_imported_tagged_module_helper() -> None:
+    fixture_name = "direct_container_helper_fixture"
+
+    from tenzir_test.fixtures.container_runtime import run_command
+
+    @fixtures.fixture(name=fixture_name, replace=True)
+    def _tagged_fixture() -> dict[str, str]:
+        run_command(["true"])
+        return {}
+
+    try:
+        assert fixtures.get_tags(fixture_name) == frozenset({"container"})
+    finally:
+        fixtures._FACTORIES.pop(fixture_name, None)  # type: ignore[attr-defined]
+        fixtures._FIXTURE_TAGS.pop(fixture_name, None)  # type: ignore[attr-defined]
+
+
+def test_fixtures_star_import_exports_fixture_tag_api() -> None:
+    namespace: dict[str, object] = {}
+
+    exec("from tenzir_test.fixtures import *", namespace)
+
+    assert namespace["tag_provider"] is fixtures.tag_provider
+    assert namespace["get_tags"] is fixtures.get_tags
+
+
 def test_fixture_generator_registration() -> None:
     fixture_name = "generator_fixture"
     teardown_called = {"value": False}
