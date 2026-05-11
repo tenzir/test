@@ -6028,7 +6028,7 @@ def _filter_paths_by_fixture_tags(
     for path in paths:
         try:
             config = parse_test_config(path, coverage=coverage)
-        except ValueError:
+        except (ValueError, yaml.YAMLError):
             matched.add(path)
             continue
         fixture_specs = cast(

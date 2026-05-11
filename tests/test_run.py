@@ -4853,6 +4853,16 @@ class TestFilterPathsByFixtureTags:
             coverage=False,
         ) == {test_path}
 
+    def test_malformed_yaml_remains_selected(self, tmp_path: Path) -> None:
+        test_path = tmp_path / "case.tql"
+        test_path.write_text("---\nfixtures: [broken\n---\nversion\n", encoding="utf-8")
+
+        assert run._filter_paths_by_fixture_tags(
+            {test_path},
+            ["container"],
+            coverage=False,
+        ) == {test_path}
+
 
 # Tests for _expand_suites
 
