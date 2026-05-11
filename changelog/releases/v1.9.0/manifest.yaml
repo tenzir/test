@@ -1,0 +1,9 @@
+created: 2026-05-11
+title: Fixture tag test selection
+intro: >-
+  This release lets users select tests by fixture tag with the new --fixture-tag option.
+  It makes it easier to run focused subsets such as container-backed or Docker Compose
+  tests without naming every test path.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.8.4
