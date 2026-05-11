@@ -7,10 +7,15 @@ import logging
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, TypeVar
+
+from . import tag_provider
+
+tag_provider("container")(sys.modules[__name__])
 
 T = TypeVar("T")
 
@@ -67,12 +72,14 @@ class ContainerReadinessTimeout(RuntimeError):
 
 
 @dataclass(frozen=True)
+@tag_provider("container")
 class RuntimeSpec:
     """Container runtime selected for fixture operations."""
 
     binary: str
 
 
+@tag_provider("container")
 def detect_runtime(order: tuple[str, ...] = ("podman", "docker")) -> RuntimeSpec | None:
     """Return the first available container runtime in lookup order."""
 
@@ -189,6 +196,7 @@ def wait_until_ready(
 
 
 @dataclass(frozen=True)
+@tag_provider("container")
 class ManagedContainer:
     """Handle for a running container."""
 

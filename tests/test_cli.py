@@ -302,6 +302,7 @@ def test_cli_match_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert cli.main(["-m", "*context*"]) == 0
     assert captured["match_patterns"] == ["*context*"]
+    assert captured["fixture_tags"] == []
 
 
 def test_cli_multiple_match_flags(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -331,6 +332,19 @@ def test_cli_match_with_path_args(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cli.main(["tests/foo.tql", "-m", "*bar*"]) == 0
     assert captured["match_patterns"] == ["*bar*"]
     assert captured["tests"] == [Path("tests/foo.tql")]
+
+
+def test_cli_fixture_tag_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> run.ExecutionResult:
+        captured.update(kwargs)
+        return _make_result()
+
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert cli.main(["-F", "container", "--fixture-tag", "docker-compose"]) == 0
+    assert captured["fixture_tags"] == ["container", "docker-compose"]
 
 
 def test_cli_unknown_option(capsys: pytest.CaptureFixture[str]) -> None:

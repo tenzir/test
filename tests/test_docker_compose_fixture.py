@@ -55,6 +55,10 @@ def _prepare_suite_files(tmp_path: Path) -> tuple[Path, Path]:
     return test_file, compose_file
 
 
+def test_docker_compose_fixture_tags() -> None:
+    assert fixture_api.get_tags("docker-compose") == frozenset({"container", "docker-compose"})
+
+
 def test_docker_compose_fixture_unavailable_when_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

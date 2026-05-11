@@ -575,6 +575,47 @@ def test_fixture_decorator_registers_env() -> None:
         fixtures._FACTORIES.pop(fixture_name, None)  # type: ignore[attr-defined]
 
 
+def test_fixture_infers_tags_from_provider() -> None:
+    fixture_name = "tagged_provider_fixture"
+
+    @fixtures.tag_provider("container")
+    def _provider() -> None:
+        return None
+
+    @fixtures.fixture(name=fixture_name, replace=True)
+    def _tagged_fixture() -> dict[str, str]:
+        _provider()
+        return {}
+
+    try:
+        assert fixtures.get_tags(fixture_name) == frozenset({"container"})
+    finally:
+        fixtures._FACTORIES.pop(fixture_name, None)  # type: ignore[attr-defined]
+        fixtures._FIXTURE_TAGS.pop(fixture_name, None)  # type: ignore[attr-defined]
+
+
+def test_fixture_infers_tags_through_local_helper() -> None:
+    fixture_name = "helper_tagged_provider_fixture"
+
+    @fixtures.tag_provider("container")
+    def _provider() -> None:
+        return None
+
+    def _helper() -> None:
+        _provider()
+
+    @fixtures.fixture(name=fixture_name, replace=True)
+    def _tagged_fixture() -> dict[str, str]:
+        _helper()
+        return {}
+
+    try:
+        assert fixtures.get_tags(fixture_name) == frozenset({"container"})
+    finally:
+        fixtures._FACTORIES.pop(fixture_name, None)  # type: ignore[attr-defined]
+        fixtures._FIXTURE_TAGS.pop(fixture_name, None)  # type: ignore[attr-defined]
+
+
 def test_fixture_generator_registration() -> None:
     fixture_name = "generator_fixture"
     teardown_called = {"value": False}
