@@ -753,9 +753,11 @@ def _infer_name(func: Callable[..., object], explicit: str | None) -> str:
     raise ValueError("Unable to infer fixture name; please provide one explicitly")
 
 
-def _normalize_tags(tags: Iterable[str] | None) -> frozenset[str]:
+def _normalize_tags(tags: Iterable[str] | str | None) -> frozenset[str]:
     if tags is None:
         return frozenset()
+    if isinstance(tags, str):
+        tags = (tags,)
     normalized: set[str] = set()
     for tag in tags:
         if not isinstance(tag, str):
@@ -845,7 +847,7 @@ def register(
     replace: bool = False,
     options: type | None = None,
     assertions: type | None = None,
-    tags: Iterable[str] | None = None,
+    tags: Iterable[str] | str | None = None,
 ) -> None:
     resolved_name = _infer_name(factory, name)
     if resolved_name in _FACTORIES and not replace:
@@ -882,7 +884,7 @@ def fixture(
     log_teardown: bool = False,
     options: type | None = None,
     assertions: type | None = None,
-    tags: Iterable[str] | None = None,
+    tags: Iterable[str] | str | None = None,
 ) -> Callable[[_FactoryCallable], _FactoryCallable] | _FactoryCallable:
     """Decorator registering a fixture factory.
 

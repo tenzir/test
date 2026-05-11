@@ -633,6 +633,34 @@ def test_fixture_infers_tags_from_directly_imported_tagged_module_helper() -> No
         fixtures._FIXTURE_TAGS.pop(fixture_name, None)  # type: ignore[attr-defined]
 
 
+def test_register_treats_string_tags_as_single_tag() -> None:
+    fixture_name = "string_tag_registered_fixture"
+
+    def _factory() -> dict[str, str]:
+        return {}
+
+    try:
+        fixtures.register(fixture_name, _factory, replace=True, tags="container")
+        assert fixtures.get_tags(fixture_name) == frozenset({"container"})
+    finally:
+        fixtures._FACTORIES.pop(fixture_name, None)  # type: ignore[attr-defined]
+        fixtures._FIXTURE_TAGS.pop(fixture_name, None)  # type: ignore[attr-defined]
+
+
+def test_fixture_decorator_treats_string_tags_as_single_tag() -> None:
+    fixture_name = "string_tag_decorated_fixture"
+
+    @fixtures.fixture(name=fixture_name, replace=True, tags="container")
+    def _factory() -> dict[str, str]:
+        return {}
+
+    try:
+        assert fixtures.get_tags(fixture_name) == frozenset({"container"})
+    finally:
+        fixtures._FACTORIES.pop(fixture_name, None)  # type: ignore[attr-defined]
+        fixtures._FIXTURE_TAGS.pop(fixture_name, None)  # type: ignore[attr-defined]
+
+
 def test_fixtures_star_import_exports_fixture_tag_api() -> None:
     namespace: dict[str, object] = {}
 
