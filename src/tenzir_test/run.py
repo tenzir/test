@@ -6713,6 +6713,7 @@ def run_cli(
                             raise HarnessError(f"error: `{test}` is neither a file nor a directory")
 
                     active_patterns = [p.strip() for p in match_patterns if p and p.strip()]
+                    should_expand_suites = False
                     if active_patterns:
                         # Filter collected tests to those matching any
                         # pattern.  This acts as an intersection when path
@@ -6724,7 +6725,7 @@ def run_cli(
                             active_patterns,
                             project_root=selection.root,
                         )
-                        collected_paths = _expand_suites(collected_paths)
+                        should_expand_suites = True
                         if not collected_paths:
                             pattern_list = ", ".join(repr(p) for p in active_patterns)
                             if not selection.run_all:
@@ -6744,7 +6745,7 @@ def run_cli(
                             active_fixture_tags,
                             coverage=coverage,
                         )
-                        collected_paths = _expand_suites(collected_paths)
+                        should_expand_suites = True
                         if not collected_paths:
                             tag_list = ", ".join(repr(tag) for tag in active_fixture_tags)
                             if not selection.run_all or active_patterns:
@@ -6754,6 +6755,9 @@ def run_cli(
                                 )
                             else:
                                 print(f"{INFO} no tests matched fixture tag(s): {tag_list}")
+
+                    if should_expand_suites and collected_paths:
+                        collected_paths = _expand_suites(collected_paths)
 
                     if interrupt_requested():
                         break

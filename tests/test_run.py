@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Iterable, Sequence, cast
 
 import pytest
 
@@ -5153,6 +5153,51 @@ class TestMatchPatternIntegration:
                 fixture_api._FIXTURE_TAGS.pop("local", None)  # type: ignore[attr-defined]
             else:
                 fixture_api._FIXTURE_TAGS["local"] = previous_local  # type: ignore[attr-defined]
+            self._teardown(info)
+
+    def test_match_and_fixture_tag_filter_before_suite_expansion(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        info = self._setup_project(tmp_path)
+        suite_dir = info["root"] / "tests" / "suite"
+        suite_dir.mkdir()
+        (suite_dir / "test.yaml").write_text("suite: mixed\n", encoding="utf-8")
+        create_test = suite_dir / "01-create.tql"
+        delete_test = suite_dir / "02-delete.tql"
+        create_test.write_text("version\n", encoding="utf-8")
+        delete_test.write_text("version\n", encoding="utf-8")
+
+        def filter_fixture_tags(
+            paths: Iterable[Path],
+            tags: Sequence[str],
+            *,
+            coverage: bool,
+        ) -> set[Path]:
+            del tags, coverage
+            resolved = {path.resolve() for path in paths}
+            if delete_test.resolve() in resolved:
+                return {delete_test.resolve()}
+            return set()
+
+        monkeypatch.setattr(run, "_filter_paths_by_fixture_tags", filter_fixture_tags)
+        try:
+            run._clear_directory_config_cache()
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    info["root"],
+                    tests=[suite_dir],
+                    match_patterns=("create",),
+                    fixture_tags=("container",),
+                )
+            )
+            assert result.queue_size == 0
+            output = capsys.readouterr().out
+            assert "no tests matched fixture tag(s)" in output
+            assert "within the selected paths" in output
+        finally:
             self._teardown(info)
 
     # -- pattern-only: -m without TEST paths ------------------------------
