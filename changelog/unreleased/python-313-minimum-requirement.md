@@ -1,6 +1,6 @@
 ---
 title: Python 3.13 minimum requirement
-type: breaking
+type: change
 authors:
   - mavam
   - codex
