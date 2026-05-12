@@ -12,16 +12,24 @@ permissions:
 
 jobs:
   test:
-    name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-26]
-        python-version: ["3.12", "3.13"]
-        exclude:
-          - os: macos-26
+        include:
+          - label: Quality / Python 3.13
+            os: ubuntu-latest
             python-version: "3.13"
+            task: quality
+          - label: Tests / Python 3.14
+            os: ubuntu-latest
+            python-version: "3.14"
+            task: tests
+          - label: Tests / macOS
+            os: macos-26
+            python-version: "3.14"
+            task: tests
 
     steps:
       - uses: actions/checkout@v5
@@ -39,11 +47,11 @@ jobs:
         run: uv sync --python ${{ matrix.python-version }} --dev
 
       - name: Run quality checks
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        if: matrix.task == 'quality'
         run: uv run lefthook run pre-push --all-files
 
       - name: Run tests
-        if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.12'
+        if: matrix.task == 'tests'
         run: uv run pytest --durations=10
 
   build:
@@ -58,7 +66,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install 3.13
 
       - name: Build package
         run: |
@@ -81,11 +89,8 @@ jobs:
 
   test-install:
     name: Test installation from artifact
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     needs: build
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-26]
 
     steps:
       - name: Download artifacts
@@ -97,5 +102,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
+      - name: Set up Python
+        run: uv python install 3.13
+
       - name: Smoke test wheel
-        run: uvx --from dist/*.whl tenzir-test --help
+        run: uvx --python 3.13 --from dist/*.whl tenzir-test --help
