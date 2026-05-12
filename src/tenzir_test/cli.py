@@ -43,7 +43,8 @@ Examples:
                                        Run tests matching either pattern
   tenzir-test tests/ctx/ --match '*create*'
                                        Intersect directory with pattern
-  tenzir-test --fixture-tag container  Run tests using container-backed fixtures
+  tenzir-test --fixture-name node      Run tests requesting a fixture by name
+  tenzir-test --fixture-tag container  Run tests using tagged fixtures
   tenzir-test --run-skipped            Run all skipped tests unconditionally
   tenzir-test --run-skipped-reason maintenance
                                        Run only skipped tests whose reason matches
@@ -216,14 +217,25 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     ),
 )
 @click.option(
-    "-F",
+    "--fixture-name",
+    "fixture_names",
+    multiple=True,
+    type=str,
+    help=(
+        "Run tests that request a fixture with the given name. "
+        "Repeatable; tests matching any selected fixture name are selected. "
+        "If TEST paths or --match patterns are also given, only tests matching all "
+        "selectors are run (intersection)."
+    ),
+)
+@click.option(
     "--fixture-tag",
     "fixture_tags",
     multiple=True,
     type=str,
     help=(
         "Run tests that request a fixture with the given tag. "
-        "Repeatable; tests matching any tag are selected. "
+        "Repeatable; tests matching any tag or selected fixture name are selected. "
         "If TEST paths or --match patterns are also given, only tests matching all "
         "selectors are run (intersection)."
     ),
@@ -255,6 +267,7 @@ def cli(
     run_skipped_reasons: tuple[str, ...],
     all_projects: bool,
     no_hooks: bool,
+    fixture_names: tuple[str, ...],
     fixture_tags: tuple[str, ...],
 ) -> int:
     """Execute test scenarios and compare output against baselines.
@@ -279,9 +292,11 @@ def cli(
     If a matched test belongs to a suite (configured via test.yaml), all
     tests in that suite are included automatically.
 
-    Use -F/--fixture-tag to select tests by metadata inherited from their
-    requested fixtures. Tags are repeatable and use OR semantics. They
-    intersect with TEST paths and --match patterns.
+    Use --fixture-name and --fixture-tag to select tests by requested fixtures.
+    Fixture names and tags are repeatable and use OR semantics across the
+    combined fixture selector. The fixture selector intersects with TEST paths
+    and --match patterns. Use --fixture for standalone fixture mode, not test
+    selection.
     """
 
     package_paths: list[Path] = []
@@ -333,6 +348,7 @@ def cli(
             jobs_overridden=jobs_overridden,
             all_projects=all_projects,
             match_patterns=list(match_patterns),
+            fixture_names=list(fixture_names),
             fixture_tags=list(fixture_tags),
             no_hooks=no_hooks,
         )
