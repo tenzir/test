@@ -1,0 +1,21 @@
+pre-push:
+  parallel: true
+  commands:
+    ruff-check:
+      run: uv run ruff check
+    ruff-format:
+      run: uv run ruff format --check
+    mypy:
+      run: uv run mypy
+    pytest:
+      run: uv run pytest --durations=10
+    build:
+      run: uv build
+
+fix:
+  parallel: false
+  commands:
+    ruff-check:
+      run: uv run ruff check --fix
+    ruff-format:
+      run: uv run ruff format

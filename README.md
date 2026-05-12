@@ -34,6 +34,27 @@ for an end-to-end walkthrough of writing tests.
 We also provide a dense [reference](https://docs.tenzir.com/reference/test) that
 explains concepts, configuration, multi-project execution, and CLI details.
 
+## 🛠️ Development
+
+Install development dependencies and Git hooks with:
+
+```sh
+uv sync --dev
+uv run lefthook install
+```
+
+Run the same quality gate used by CI and local pushes with:
+
+```sh
+uv run lefthook run pre-push --all-files
+```
+
+Apply formatting and safe lint fixes with:
+
+```sh
+uv run lefthook run fix --all-files
+```
+
 ## 📜 License
 
 `tenzir-test` is available under the Apache License, Version 2.0. See

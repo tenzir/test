@@ -38,19 +38,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --python ${{ matrix.python-version }} --dev
 
-      - name: Ruff lint
+      - name: Run quality checks
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        run: uv run ruff check
-
-      - name: Ruff format (check)
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        run: uv run ruff format --check
-
-      - name: Type check
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        run: uv run mypy
+        run: uv run lefthook run pre-push --all-files
 
       - name: Run tests
+        if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.12'
         run: uv run pytest --durations=10
 
   build:
