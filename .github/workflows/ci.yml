@@ -46,9 +46,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --python ${{ matrix.python-version }} --dev
 
-      - name: Run quality checks
+      - name: Run Ruff lint
         if: matrix.task == 'quality'
-        run: uv run lefthook run pre-push --all-files
+        run: uv run ruff check
+
+      - name: Check Ruff formatting
+        if: matrix.task == 'quality'
+        run: uv run ruff format --check
+
+      - name: Run mypy
+        if: matrix.task == 'quality'
+        run: uv run mypy
 
       - name: Run tests
         if: matrix.task == 'tests'

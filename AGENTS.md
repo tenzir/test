@@ -53,11 +53,14 @@ uv sync --dev
 uv run lefthook install
 ```
 
-Run the shared quality gate before pushing or merging:
+Run the shared formatting gate before pushing:
 
 ```sh
 uv run lefthook run pre-push --all-files
 ```
+
+CI runs the full validation suite, including type checks, unit tests, and
+package builds.
 
 Use the explicit fix hook for formatting and safe lint rewrites:
 
