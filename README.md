@@ -34,22 +34,6 @@ for an end-to-end walkthrough of writing tests.
 We also provide a dense [reference](https://docs.tenzir.com/reference/test) that
 explains concepts, configuration, multi-project execution, and CLI details.
 
-## 🎯 Test Selection
-
-Select tests by path, by relative-path pattern, or by requested fixture:
-
-```sh
-tenzir-test tests/alerts --match kafka --fixture-name docker-compose
-tenzir-test --fixture-name node --fixture-name sink
-tenzir-test --fixture-tag container
-```
-
-Repeated `--fixture-name` and `--fixture-tag` values use OR semantics across
-the combined fixture selector. That selector intersects with positional test
-paths and `--match`; if a selected test belongs to a suite, suite expansion
-happens after filtering. The separate `--fixture` option remains standalone
-foreground fixture mode and does not select tests.
-
 ## 🛠️ Development
 
 Install development dependencies and Git hooks with:
