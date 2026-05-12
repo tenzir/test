@@ -18,15 +18,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: Quality Python 3.13 on Ubuntu
+          - label: Quality / Python 3.13
             os: ubuntu-latest
             python-version: "3.13"
             task: quality
-          - label: Test Python 3.14 on Ubuntu
+          - label: Tests / Python 3.14
             os: ubuntu-latest
             python-version: "3.14"
             task: tests
-          - label: Test Python 3.14 on macOS
+          - label: Tests / macOS
             os: macos-26
             python-version: "3.14"
             task: tests
