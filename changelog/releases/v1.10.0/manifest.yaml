@@ -1,0 +1,9 @@
+created: 2026-05-12
+title: Fixture-based test selection
+intro: >-
+  tenzir-test now lets users select scenarios by requested fixture name, making it
+  easier to run only tests that depend on resources such as nodes or Docker Compose.
+  This release also requires Python 3.13 or newer.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.9.0
