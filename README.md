@@ -17,7 +17,7 @@ you can diff against established baselines.
 ## 📦 Installation
 
 Install the latest release from PyPI with `uvx`—`tenzir-test` requires Python
-3.12 or newer:
+3.13 or newer:
 
 ```sh
 uvx tenzir-test --help

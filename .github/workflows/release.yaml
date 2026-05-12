@@ -56,7 +56,7 @@ jobs:
       title: ${{ inputs.title }}
       git-add-paths: pyproject.toml uv.lock
       pre-create: |
-        uv sync --dev
+        uv sync --python 3.13 --dev
         uv run lefthook run pre-push --all-files
       post-create: |
         uv lock

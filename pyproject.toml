@@ -3,7 +3,7 @@ name = "tenzir-test"
 version = "1.9.0"
 description = "Reusable test execution framework extracted from the Tenzir repository."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 authors = [{ name = "Tenzir", email = "engineering@tenzir.com" }]
 maintainers = [{ name = "Tenzir Engineering", email = "engineering@tenzir.com" }]
 license = { text = "Apache-2.0" }
@@ -14,8 +14,8 @@ classifiers = [
   "License :: OSI Approved :: Apache Software License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Testing",
   "Topic :: Software Development :: Quality Assurance",
   "Topic :: Software Development :: Libraries :: Python Modules",
@@ -68,7 +68,7 @@ exclude = [
 ]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 100
 src = ["src"]
 
@@ -94,7 +94,7 @@ pythonpath = ["src"]
 
 [tool.mypy]
 files = ["src"]
-python_version = "3.12"
+python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
