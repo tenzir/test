@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Iterable, Sequence, cast
+from typing import Iterable, cast
 
 import pytest
 
@@ -155,6 +155,7 @@ def test_execute_delegates_to_run_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["update"] is True
     assert captured["run_skipped"] is False
     assert captured["run_skipped_reasons"] == ()
+    assert captured["fixture_names"] == ()
     assert captured["fixture_tags"] == ()
 
 
@@ -4796,7 +4797,7 @@ class TestFilterPathsByPatterns:
         assert result == {foo}
 
 
-class TestFilterPathsByFixtureTags:
+class TestFilterPathsByFixtureSelector:
     def test_matches_any_fixture_tag(self, tmp_path: Path) -> None:
         root = tmp_path / "project"
         tests_dir = root / "tests"
@@ -4816,9 +4817,9 @@ class TestFilterPathsByFixtureTags:
         fixture_api._FIXTURE_TAGS["tagged"] = frozenset({"container"})  # type: ignore[attr-defined]
         fixture_api._FIXTURE_TAGS["other"] = frozenset({"node"})  # type: ignore[attr-defined]
         try:
-            result = run._filter_paths_by_fixture_tags(
+            result = run._filter_paths_by_fixture_selector(
                 {tagged, other},
-                ["container"],
+                run.FixtureSelector.from_cli(tags=["container"]),
                 coverage=False,
             )
         finally:
@@ -4833,13 +4834,50 @@ class TestFilterPathsByFixtureTags:
 
         assert result == {tagged}
 
-    def test_empty_tags_return_original_paths(self, tmp_path: Path) -> None:
+    def test_matches_any_fixture_name(self, tmp_path: Path) -> None:
+        tests_dir = tmp_path / "tests"
+        node_dir = tests_dir / "node"
+        sink_dir = tests_dir / "sink"
+        node_dir.mkdir(parents=True)
+        sink_dir.mkdir(parents=True)
+        node_test = node_dir / "case.tql"
+        sink_test = sink_dir / "case.tql"
+        node_test.touch()
+        sink_test.touch()
+        (node_dir / "test.yaml").write_text(
+            "fixtures:\n  - node:\n      tls: true\n",
+            encoding="utf-8",
+        )
+        (sink_dir / "test.yaml").write_text("fixtures: [sink]\n", encoding="utf-8")
+
+        result = run._filter_paths_by_fixture_selector(
+            {node_test, sink_test},
+            run.FixtureSelector.from_cli(names=["node"]),
+            coverage=False,
+        )
+
+        assert result == {node_test}
+
+    def test_fixture_name_matching_is_case_sensitive(self, tmp_path: Path) -> None:
+        test_path = tmp_path / "case.tql"
+        test_path.write_text("---\nfixtures: [Node]\n---\nversion\n", encoding="utf-8")
+
+        assert (
+            run._filter_paths_by_fixture_selector(
+                {test_path},
+                run.FixtureSelector.from_cli(names=["node"]),
+                coverage=False,
+            )
+            == set()
+        )
+
+    def test_empty_selectors_return_original_paths(self, tmp_path: Path) -> None:
         test_path = tmp_path / "case.tql"
         test_path.touch()
 
-        assert run._filter_paths_by_fixture_tags(
+        assert run._filter_paths_by_fixture_selector(
             {test_path},
-            ["", "  "],
+            run.FixtureSelector.from_cli(names=["", "  "], tags=["", "  "]),
             coverage=False,
         ) == {test_path}
 
@@ -4847,9 +4885,9 @@ class TestFilterPathsByFixtureTags:
         test_path = tmp_path / "case.tql"
         test_path.write_text("---\nfixtures:\n  - broken: []\n---\nversion\n", encoding="utf-8")
 
-        assert run._filter_paths_by_fixture_tags(
+        assert run._filter_paths_by_fixture_selector(
             {test_path},
-            ["container"],
+            run.FixtureSelector.from_cli(names=["node"]),
             coverage=False,
         ) == {test_path}
 
@@ -4857,9 +4895,60 @@ class TestFilterPathsByFixtureTags:
         test_path = tmp_path / "case.tql"
         test_path.write_text("---\nfixtures: [broken\n---\nversion\n", encoding="utf-8")
 
-        assert run._filter_paths_by_fixture_tags(
+        assert run._filter_paths_by_fixture_selector(
             {test_path},
-            ["container"],
+            run.FixtureSelector.from_cli(names=["node"]),
+            coverage=False,
+        ) == {test_path}
+
+    def test_name_and_tag_selectors_or_together(self, tmp_path: Path) -> None:
+        tests_dir = tmp_path / "tests"
+        node_dir = tests_dir / "node"
+        tagged_dir = tests_dir / "tagged"
+        other_dir = tests_dir / "other"
+        for directory in (node_dir, tagged_dir, other_dir):
+            directory.mkdir(parents=True)
+        node_test = node_dir / "case.tql"
+        tagged_test = tagged_dir / "case.tql"
+        other_test = other_dir / "case.tql"
+        for test_path in (node_test, tagged_test, other_test):
+            test_path.touch()
+        (node_dir / "test.yaml").write_text("fixtures: [node]\n", encoding="utf-8")
+        (tagged_dir / "test.yaml").write_text("fixtures: [tagged]\n", encoding="utf-8")
+        (other_dir / "test.yaml").write_text("fixtures: [other]\n", encoding="utf-8")
+
+        previous_tagged = fixture_api._FIXTURE_TAGS.get("tagged")  # type: ignore[attr-defined]
+        previous_other = fixture_api._FIXTURE_TAGS.get("other")  # type: ignore[attr-defined]
+        fixture_api._FIXTURE_TAGS["tagged"] = frozenset({"container"})  # type: ignore[attr-defined]
+        fixture_api._FIXTURE_TAGS["other"] = frozenset({"local"})  # type: ignore[attr-defined]
+        try:
+            result = run._filter_paths_by_fixture_selector(
+                {node_test, tagged_test, other_test},
+                run.FixtureSelector.from_cli(names=["node"], tags=["container"]),
+                coverage=False,
+            )
+        finally:
+            if previous_tagged is None:
+                fixture_api._FIXTURE_TAGS.pop("tagged", None)  # type: ignore[attr-defined]
+            else:
+                fixture_api._FIXTURE_TAGS["tagged"] = previous_tagged  # type: ignore[attr-defined]
+            if previous_other is None:
+                fixture_api._FIXTURE_TAGS.pop("other", None)  # type: ignore[attr-defined]
+            else:
+                fixture_api._FIXTURE_TAGS["other"] = previous_other  # type: ignore[attr-defined]
+
+        assert result == {node_test, tagged_test}
+
+    def test_name_matching_uses_fixture_name_not_options(self, tmp_path: Path) -> None:
+        test_path = tmp_path / "case.tql"
+        test_path.write_text(
+            "---\nfixtures:\n  - node:\n      tls: true\n  - sink\n---\nversion\n",
+            encoding="utf-8",
+        )
+
+        assert run._filter_paths_by_fixture_selector(
+            {test_path},
+            run.FixtureSelector.from_cli(names=["node"]),
             coverage=False,
         ) == {test_path}
 
@@ -5023,6 +5112,7 @@ def _run_cli_kwargs(
     tests: list[Path] | None = None,
     match_patterns: tuple[str, ...] = (),
     all_projects: bool = False,
+    fixture_names: tuple[str, ...] = (),
     fixture_tags: tuple[str, ...] = (),
 ) -> dict:
     """Return the full set of keyword arguments for ``run.run_cli``."""
@@ -5047,6 +5137,7 @@ def _run_cli_kwargs(
         jobs_overridden=False,
         all_projects=all_projects,
         match_patterns=match_patterns,
+        fixture_names=fixture_names,
         fixture_tags=fixture_tags,
     )
 
@@ -5165,6 +5256,120 @@ class TestMatchPatternIntegration:
                 fixture_api._FIXTURE_TAGS["local"] = previous_local  # type: ignore[attr-defined]
             self._teardown(info)
 
+    def test_fixture_name_filters_discovered_tests(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        info = self._setup_project(tmp_path)
+        ctx_dir = info["root"] / "tests" / "ctx"
+        other_dir = info["root"] / "tests" / "other"
+        (ctx_dir / "test.yaml").write_text(
+            "fixtures:\n  - node:\n      tls: true\n",
+            encoding="utf-8",
+        )
+        (other_dir / "test.yaml").write_text("fixtures: [sink]\n", encoding="utf-8")
+        try:
+            run._clear_directory_config_cache()
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    info["root"],
+                    fixture_names=("node",),
+                )
+            )
+            assert result.queue_size == 2
+            assert result.summary.total == 2
+        finally:
+            self._teardown(info)
+
+    def test_fixture_name_intersects_with_path_args(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        info = self._setup_project(tmp_path)
+        ctx_dir = info["root"] / "tests" / "ctx"
+        other_dir = info["root"] / "tests" / "other"
+        (ctx_dir / "test.yaml").write_text("fixtures: [node]\n", encoding="utf-8")
+        (other_dir / "test.yaml").write_text("fixtures: [node]\n", encoding="utf-8")
+        try:
+            run._clear_directory_config_cache()
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    info["root"],
+                    tests=[other_dir],
+                    fixture_names=("node",),
+                )
+            )
+            assert result.queue_size == 1
+            assert result.summary.total == 1
+        finally:
+            self._teardown(info)
+
+    def test_fixture_name_intersects_with_match_patterns(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        info = self._setup_project(tmp_path)
+        ctx_dir = info["root"] / "tests" / "ctx"
+        other_dir = info["root"] / "tests" / "other"
+        (ctx_dir / "test.yaml").write_text("fixtures: [node]\n", encoding="utf-8")
+        (other_dir / "test.yaml").write_text("fixtures: [node]\n", encoding="utf-8")
+        try:
+            run._clear_directory_config_cache()
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    info["root"],
+                    match_patterns=("delete",),
+                    fixture_names=("node",),
+                )
+            )
+            assert result.queue_size == 1
+            assert result.summary.total == 1
+        finally:
+            self._teardown(info)
+
+    def test_fixture_name_filter_happens_before_suite_expansion(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        info = self._setup_project(tmp_path)
+        suite_dir = info["root"] / "tests" / "suite"
+        suite_dir.mkdir()
+        (suite_dir / "test.yaml").write_text(
+            "suite: mixed\nfixtures: [node]\n",
+            encoding="utf-8",
+        )
+        create_test = suite_dir / "01-create.tql"
+        delete_test = suite_dir / "02-delete.tql"
+        create_test.write_text("version\n", encoding="utf-8")
+        delete_test.write_text("version\n", encoding="utf-8")
+        try:
+            run._clear_directory_config_cache()
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    info["root"],
+                    tests=[suite_dir],
+                    match_patterns=("create",),
+                    fixture_names=("node",),
+                )
+            )
+            assert result.queue_size == 2
+            assert result.summary.total == 2
+        finally:
+            self._teardown(info)
+
+    def test_fixture_name_no_match_uses_generic_selector_message(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        info = self._setup_project(tmp_path)
+        try:
+            result = run.run_cli(
+                **_run_cli_kwargs(
+                    info["root"],
+                    fixture_names=("missing",),
+                )
+            )
+            assert result.queue_size == 0
+            output = capsys.readouterr().out
+            assert "no tests matched fixture selector(s): name='missing'" in output
+        finally:
+            self._teardown(info)
+
     def test_match_and_fixture_tag_filter_before_suite_expansion(
         self,
         tmp_path: Path,
@@ -5180,19 +5385,19 @@ class TestMatchPatternIntegration:
         create_test.write_text("version\n", encoding="utf-8")
         delete_test.write_text("version\n", encoding="utf-8")
 
-        def filter_fixture_tags(
+        def filter_fixture_selector(
             paths: Iterable[Path],
-            tags: Sequence[str],
+            selector: run.FixtureSelector,
             *,
             coverage: bool,
         ) -> set[Path]:
-            del tags, coverage
+            del selector, coverage
             resolved = {path.resolve() for path in paths}
             if delete_test.resolve() in resolved:
                 return {delete_test.resolve()}
             return set()
 
-        monkeypatch.setattr(run, "_filter_paths_by_fixture_tags", filter_fixture_tags)
+        monkeypatch.setattr(run, "_filter_paths_by_fixture_selector", filter_fixture_selector)
         try:
             run._clear_directory_config_cache()
             result = run.run_cli(
@@ -5205,7 +5410,7 @@ class TestMatchPatternIntegration:
             )
             assert result.queue_size == 0
             output = capsys.readouterr().out
-            assert "no tests matched fixture tag(s)" in output
+            assert "no tests matched fixture selector(s)" in output
             assert "within the selected paths" in output
         finally:
             self._teardown(info)

@@ -6013,16 +6013,45 @@ def _filter_paths_by_patterns(
     return matched
 
 
-def _filter_paths_by_fixture_tags(
+@dataclasses.dataclass(frozen=True, slots=True)
+class FixtureSelector:
+    names: frozenset[str] = dataclasses.field(default_factory=frozenset)
+    tags: frozenset[str] = dataclasses.field(default_factory=frozenset)
+
+    @classmethod
+    def from_cli(
+        cls,
+        *,
+        names: Sequence[str] = (),
+        tags: Sequence[str] = (),
+    ) -> "FixtureSelector":
+        return cls(
+            names=frozenset(name.strip() for name in names if name and name.strip()),
+            tags=frozenset(tag.strip().lower() for tag in tags if tag and tag.strip()),
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.names or self.tags)
+
+    def describe(self) -> str:
+        parts = [f"name={name!r}" for name in sorted(self.names)]
+        parts.extend(f"tag={tag!r}" for tag in sorted(self.tags))
+        return ", ".join(parts)
+
+    def matches(self, spec: fixtures_impl.FixtureSpec) -> bool:
+        return spec.name in self.names or bool(fixtures_impl.get_tags(spec.name) & self.tags)
+
+
+def _filter_paths_by_fixture_selector(
     paths: Iterable[Path],
-    tags: Sequence[str],
+    selector: FixtureSelector,
     *,
     coverage: bool,
 ) -> set[Path]:
-    """Return paths whose configured fixtures have any requested tag."""
+    """Return paths whose configured fixtures match the requested selector."""
 
-    active_tags = frozenset(tag.strip().lower() for tag in tags if tag and tag.strip())
-    if not active_tags:
+    if not selector.enabled:
         return set(paths)
     matched: set[Path] = set()
     for path in paths:
@@ -6036,7 +6065,7 @@ def _filter_paths_by_fixture_tags(
             config.get("fixtures", tuple()),
         )
         for spec in fixture_specs:
-            if fixtures_impl.get_tags(spec.name) & active_tags:
+            if selector.matches(spec):
                 matched.add(path)
                 break
     return matched
@@ -6350,6 +6379,7 @@ def run_cli(
     jobs_overridden: bool = False,
     all_projects: bool = False,
     match_patterns: Sequence[str] = (),
+    fixture_names: Sequence[str] = (),
     fixture_tags: Sequence[str] = (),
     no_hooks: bool = False,
 ) -> ExecutionResult:
@@ -6369,10 +6399,12 @@ def run_cli(
             any pattern are selected.  When path arguments are also provided
             via *tests*, only tests matching both are run (intersection).
             Empty or whitespace-only patterns are silently ignored.
-        fixture_tags: Fixture tags selected by ``-F/--fixture-tag``. Tests
-            matching any tag are selected. When path arguments or
-            *match_patterns* are also provided, only tests matching all
-            selectors are run (intersection).
+        fixture_names: Fixture names selected by ``--fixture-name``. Tests
+            requesting any selected fixture name are selected. Intersects with
+            TEST paths and *match_patterns*.
+        fixture_tags: Fixture tags selected by ``--fixture-tag``. Tests
+            matching any tag are selected. Combined with *fixture_names* using
+            OR semantics, then intersected with TEST paths and *match_patterns*.
     """
     from tenzir_test.engine import state as engine_state
 
@@ -6446,6 +6478,10 @@ def run_cli(
         run_skipped_selector = RunSkippedSelector.from_cli(
             run_all=run_skipped,
             reason_patterns=run_skipped_reasons,
+        )
+        fixture_selector = FixtureSelector.from_cli(
+            names=fixture_names,
+            tags=fixture_tags,
         )
 
         plan: ExecutionPlan | None = None
@@ -6736,25 +6772,24 @@ def run_cli(
                             else:
                                 print(f"{INFO} no tests matched pattern(s): {pattern_list}")
 
-                    active_fixture_tags = [
-                        tag.strip().lower() for tag in fixture_tags if tag and tag.strip()
-                    ]
-                    if active_fixture_tags:
-                        collected_paths = _filter_paths_by_fixture_tags(
+                    if fixture_selector.enabled:
+                        collected_paths = _filter_paths_by_fixture_selector(
                             collected_paths,
-                            active_fixture_tags,
+                            fixture_selector,
                             coverage=coverage,
                         )
                         should_expand_suites = True
                         if not collected_paths:
-                            tag_list = ", ".join(repr(tag) for tag in active_fixture_tags)
+                            selector_list = fixture_selector.describe()
                             if not selection.run_all or active_patterns:
                                 print(
-                                    f"{INFO} no tests matched fixture tag(s) {tag_list}"
+                                    f"{INFO} no tests matched fixture selector(s) {selector_list}"
                                     f" within the selected paths"
                                 )
                             else:
-                                print(f"{INFO} no tests matched fixture tag(s): {tag_list}")
+                                print(
+                                    f"{INFO} no tests matched fixture selector(s): {selector_list}"
+                                )
 
                     if should_expand_suites and collected_paths:
                         collected_paths = _expand_suites(collected_paths)
@@ -7087,6 +7122,7 @@ def execute(
     jobs_overridden: bool = False,
     all_projects: bool = False,
     match_patterns: Sequence[str] = (),
+    fixture_names: Sequence[str] = (),
     fixture_tags: Sequence[str] = (),
     no_hooks: bool = False,
 ) -> ExecutionResult:
@@ -7106,9 +7142,12 @@ def execute(
             any pattern are selected.  When path arguments are also provided
             via *tests*, only tests matching both are run (intersection).
             Empty or whitespace-only patterns are silently ignored.
-        fixture_tags: Fixture tags selected by ``-F/--fixture-tag``. Tests
-            matching any tag are selected. Intersects with TEST paths and
-            *match_patterns*.
+        fixture_names: Fixture names selected by ``--fixture-name``. Tests
+            requesting any selected fixture name are selected. Intersects with
+            TEST paths and *match_patterns*.
+        fixture_tags: Fixture tags selected by ``--fixture-tag``. Tests
+            matching any tag are selected. Combined with *fixture_names* using
+            OR semantics, then intersected with TEST paths and *match_patterns*.
     """
     resolved_jobs = jobs if jobs is not None else get_default_jobs()
     return run_cli(
@@ -7133,6 +7172,7 @@ def execute(
         jobs_overridden=jobs_overridden,
         all_projects=all_projects,
         match_patterns=match_patterns,
+        fixture_names=fixture_names,
         fixture_tags=fixture_tags,
         no_hooks=no_hooks,
     )
