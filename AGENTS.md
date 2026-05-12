@@ -42,3 +42,25 @@ Primary documentation lives at <https://docs.tenzir.com/reference/test.md>.
 
 Use the harness logging facilities for diagnostic output. Reserve `print()` for
 intentional user-facing test results and summaries.
+
+## Development Workflow
+
+Use `uv` for dependencies and virtual environments. Install the shared Git hooks
+after syncing dependencies:
+
+```sh
+uv sync --dev
+uv run lefthook install
+```
+
+Run the shared quality gate before pushing or merging:
+
+```sh
+uv run lefthook run pre-push --all-files
+```
+
+Use the explicit fix hook for formatting and safe lint rewrites:
+
+```sh
+uv run lefthook run fix --all-files
+```

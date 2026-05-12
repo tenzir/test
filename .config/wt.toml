@@ -1,0 +1,5 @@
+# Keep new worktrees ready to use and install the shared Git hooks.
+pre-start = "uv sync --dev && uv run lefthook install"
+
+# Run the same quality gate before Worktrunk merges as local pushes and CI.
+pre-merge = "uv run lefthook run pre-push --all-files"
