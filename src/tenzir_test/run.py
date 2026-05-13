@@ -3063,14 +3063,17 @@ def _format_missing_fixture_dependency_error(
 
 
 def _fixture_dependency_files(root: Path) -> tuple[Path, ...]:
-    fixtures_file = root / "fixtures.py"
     fixtures_package = root / "fixtures"
-    candidates: list[Path] = []
-    if fixtures_file.exists():
-        candidates.append(fixtures_file)
+    fixtures_file = root / "fixtures.py"
+
     if fixtures_package.is_dir():
-        candidates.extend(sorted(fixtures_package.glob("**/*.py")))
-    return tuple(candidates)
+        init_file = fixtures_package / "__init__.py"
+        if init_file.exists():
+            return tuple(sorted(fixtures_package.glob("**/*.py")))
+        return tuple(sorted(fixtures_package.glob("*.py")))
+    if fixtures_file.exists():
+        return (fixtures_file,)
+    return tuple()
 
 
 def _collect_fixture_dependencies(root: Path) -> tuple[str, ...]:

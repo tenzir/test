@@ -1,9 +1,10 @@
 ---
-title: Inline dependencies for project fixtures
-type: feature
+title: Project fixture inline dependencies
+type: bugfix
 authors:
   - mavam
   - codex
+pr: 47
 created: 2026-05-13T09:10:22.248071Z
 ---
 

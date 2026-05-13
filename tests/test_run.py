@@ -244,9 +244,32 @@ def test_load_project_fixtures_installs_inline_dependencies_before_import(
     assert calls == [(tmp_path, ("demo-fixture-dep",), "project fixtures")]
 
 
-def test_fixture_dependencies_scan_recursively(tmp_path: Path) -> None:
-    nested_dir = tmp_path / "fixtures" / "nested"
+def test_fixture_dependencies_scan_package_modules_recursively(tmp_path: Path) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    nested_dir = fixture_dir / "nested"
     nested_dir.mkdir(parents=True)
+    (tmp_path / "fixtures.py").write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-stale-dep"]',
+                "# ///",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (fixture_dir / "__init__.py").write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-package-dep"]',
+                "# ///",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     (nested_dir / "tool.py").write_text(
         "\n".join(
             [
@@ -259,7 +282,40 @@ def test_fixture_dependencies_scan_recursively(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert run._collect_fixture_dependencies(tmp_path) == ("demo-nested-dep",)  # type: ignore[attr-defined]
+    assert run._collect_fixture_dependencies(tmp_path) == (  # type: ignore[attr-defined]
+        "demo-package-dep",
+        "demo-nested-dep",
+    )
+
+
+def test_fixture_dependencies_scan_top_level_modules_only(tmp_path: Path) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    nested_dir = fixture_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    (fixture_dir / "tool.py").write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-tool-dep"]',
+                "# ///",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (nested_dir / "unused.py").write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-nested-dep"]',
+                "# ///",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert run._collect_fixture_dependencies(tmp_path) == ("demo-tool-dep",)  # type: ignore[attr-defined]
 
 
 def test_load_project_fixtures_without_inline_dependencies_does_not_call_uv(
