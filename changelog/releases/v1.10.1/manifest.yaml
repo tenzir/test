@@ -1,0 +1,10 @@
+created: 2026-05-13
+title: Project fixture inline dependencies
+intro: >-
+  Project fixtures can now declare their Python package dependencies inline with PEP
+  723 metadata. tenzir-test installs those dependencies before loading fixtures, so
+  regular test runs and fixture mode work for projects with self-contained fixture
+  modules.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.10.0
