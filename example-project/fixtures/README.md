@@ -10,6 +10,30 @@ Importing the package brings the concrete modules into scope so their
 `@fixture()` decorators run. Tests that need manual control just import the
 package (for example `import fixtures`) before acquiring controllers.
 
+## Inline dependencies
+
+Fixture modules can declare Python package dependencies with PEP 723 script
+metadata. Put the metadata block at the top of the fixture file:
+
+```python
+# /// script
+# dependencies = ["boto3"]
+# ///
+
+from tenzir_test import fixture
+```
+
+When fixture modules declare dependencies, `tenzir-test` installs them into the
+active Python environment before it imports the fixtures:
+
+```sh
+uv pip install --python <current-python> boto3
+```
+
+This requires `uv` on `PATH`. Dependency metadata is supported in `fixtures.py`
+and in any Python file under the `fixtures/` package, including nested modules
+that `fixtures/__init__.py` imports.
+
 ## `http.py`
 
 The `http` fixture starts a lightweight echo server:

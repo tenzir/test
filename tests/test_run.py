@@ -18,6 +18,15 @@ from tenzir_test.fixtures import node as node_fixture
 from tenzir_test.runners.runner import Runner
 
 
+def _clear_loaded_fixture_modules() -> None:
+    run._FIXTURE_LOAD_ROOTS.clear()  # type: ignore[attr-defined]
+    sys.modules.pop("fixtures", None)
+    sys.modules.pop("_tenzir_project_fixtures", None)
+    for module_name in list(sys.modules):
+        if module_name.startswith(("_tenzir_project_fixture_", "_tenzir_project_fixtures.")):
+            sys.modules.pop(module_name, None)
+
+
 def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
     original_settings = run._settings
     original_root = run.ROOT
@@ -168,22 +177,194 @@ def test_load_project_fixtures_reports_missing_python_dependency(tmp_path: Path)
     )
 
     try:
-        run._FIXTURE_LOAD_ROOTS.clear()  # type: ignore[attr-defined]
+        _clear_loaded_fixture_modules()
         with pytest.raises(RuntimeError, match="missing Python dependency") as exc_info:
             run._load_project_fixtures(tmp_path, expose_namespace=False)  # type: ignore[attr-defined]
     finally:
-        run._FIXTURE_LOAD_ROOTS.clear()  # type: ignore[attr-defined]
-        sys.modules.pop("fixtures", None)
-        sys.modules.pop("_tenzir_project_fixtures", None)
-        for module_name in list(sys.modules):
-            if module_name.startswith("_tenzir_project_fixture_"):
-                sys.modules.pop(module_name, None)
+        _clear_loaded_fixture_modules()
 
     message = str(exc_info.value)
     assert "totally_missing_fixture_dependency" in message
     assert "fixtures/__init__.py" in message
     assert "uv run tenzir-test" in message
     assert "uvx --with <package> tenzir-test" in message
+
+
+def test_load_project_fixtures_installs_inline_dependencies_before_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    fixture_dir.mkdir()
+    install_marker = tmp_path / "installed"
+    (fixture_dir / "__init__.py").write_text(
+        "from .localstack import localstack\n",
+        encoding="utf-8",
+    )
+    (fixture_dir / "localstack.py").write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-fixture-dep"]',
+                "# ///",
+                f"assert __import__('pathlib').Path({str(install_marker)!r}).exists()",
+                "from tenzir_test import fixture",
+                "",
+                '@fixture(name="demo-inline-dependency", replace=True)',
+                "def localstack():",
+                "    yield {}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    calls: list[tuple[Path, tuple[str, ...], str]] = []
+
+    def fake_install(
+        owner: Path,
+        dependencies: tuple[str, ...],
+        *,
+        timeout: int,
+        context: str,
+    ) -> None:
+        assert timeout == 300
+        install_marker.touch()
+        calls.append((owner, dependencies, context))
+
+    monkeypatch.setattr(run, "install_inline_dependencies", fake_install)
+
+    try:
+        _clear_loaded_fixture_modules()
+        run._load_project_fixtures(tmp_path, expose_namespace=False)  # type: ignore[attr-defined]
+        assert "demo-inline-dependency" in fixture_api._FACTORIES  # type: ignore[attr-defined]
+    finally:
+        _clear_loaded_fixture_modules()
+        fixture_api._FACTORIES.pop("demo-inline-dependency", None)  # type: ignore[attr-defined]
+
+    assert calls == [(tmp_path, ("demo-fixture-dep",), "project fixtures")]
+
+
+def test_fixture_dependencies_scan_package_modules_recursively(tmp_path: Path) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    nested_dir = fixture_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    (tmp_path / "fixtures.py").write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-stale-dep"]',
+                "# ///",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (fixture_dir / "__init__.py").write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-package-dep"]',
+                "# ///",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (nested_dir / "tool.py").write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-nested-dep"]',
+                "# ///",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert run._collect_fixture_dependencies(tmp_path) == (  # type: ignore[attr-defined]
+        "demo-package-dep",
+        "demo-nested-dep",
+    )
+
+
+def test_fixture_dependencies_scan_top_level_modules_only(tmp_path: Path) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    nested_dir = fixture_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    (fixture_dir / "tool.py").write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-tool-dep"]',
+                "# ///",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (nested_dir / "unused.py").write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-nested-dep"]',
+                "# ///",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert run._collect_fixture_dependencies(tmp_path) == ("demo-tool-dep",)  # type: ignore[attr-defined]
+
+
+def test_load_project_fixtures_without_inline_dependencies_does_not_call_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    fixture_dir.mkdir()
+    (fixture_dir / "__init__.py").write_text(
+        "from tenzir_test import fixture\n"
+        '@fixture(name="plain-fixture", replace=True)\n'
+        "def run():\n"
+        "    yield {}\n",
+        encoding="utf-8",
+    )
+
+    def fail_run_subprocess(*args: object, **kwargs: object) -> None:
+        pytest.fail("dependency installation should not run")
+
+    monkeypatch.setattr(run, "run_subprocess", fail_run_subprocess)
+
+    try:
+        _clear_loaded_fixture_modules()
+        run._load_project_fixtures(tmp_path, expose_namespace=False)  # type: ignore[attr-defined]
+    finally:
+        _clear_loaded_fixture_modules()
+        fixture_api._FACTORIES.pop("plain-fixture", None)  # type: ignore[attr-defined]
+
+
+def test_invalid_fixture_inline_metadata_mentions_fixture_file(tmp_path: Path) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    fixture_dir.mkdir()
+    fixture_file = fixture_dir / "broken.py"
+    fixture_file.write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# dependencies = ["demo-fixture-dep"]',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    try:
+        _clear_loaded_fixture_modules()
+        with pytest.raises(RuntimeError, match="broken.py.*missing closing '# ///' marker"):
+            run._load_project_fixtures(tmp_path, expose_namespace=False)  # type: ignore[attr-defined]
+    finally:
+        _clear_loaded_fixture_modules()
 
 
 def test_format_summary_reports_counts_and_percentages() -> None:

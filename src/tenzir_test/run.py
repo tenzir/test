@@ -36,6 +36,7 @@ import tenzir_test.fixtures as fixtures_impl
 from . import hooks as hooks_impl
 from . import packages
 from .config import Settings, discover_settings
+from .inline_dependencies import extract_inline_dependencies, install_inline_dependencies
 from .runners import (
     ShellRunner,  # noqa: F401
     CustomPythonFixture,  # noqa: F401
@@ -3061,6 +3062,32 @@ def _format_missing_fixture_dependency_error(
     )
 
 
+def _fixture_dependency_files(root: Path) -> tuple[Path, ...]:
+    fixtures_package = root / "fixtures"
+    fixtures_file = root / "fixtures.py"
+
+    if fixtures_package.is_dir():
+        init_file = fixtures_package / "__init__.py"
+        if init_file.exists():
+            return tuple(sorted(fixtures_package.glob("**/*.py")))
+        return tuple(sorted(fixtures_package.glob("*.py")))
+    if fixtures_file.exists():
+        return (fixtures_file,)
+    return tuple()
+
+
+def _collect_fixture_dependencies(root: Path) -> tuple[str, ...]:
+    dependencies: list[str] = []
+    seen: set[str] = set()
+    for fixture_file in _fixture_dependency_files(root):
+        for dependency in extract_inline_dependencies(fixture_file):
+            if dependency in seen:
+                continue
+            seen.add(dependency)
+            dependencies.append(dependency)
+    return tuple(dependencies)
+
+
 def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
     resolved_root = root.resolve()
     if resolved_root in _FIXTURE_LOAD_ROOTS:
@@ -3084,6 +3111,14 @@ def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
             ) from exc
 
     try:
+        fixture_dependencies = _collect_fixture_dependencies(root)
+        install_inline_dependencies(
+            root,
+            fixture_dependencies,
+            timeout=300,
+            context="project fixtures",
+        )
+
         alias_target = None
         if fixtures_package.is_dir():
             init_file = fixtures_package / "__init__.py"

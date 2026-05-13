@@ -14,6 +14,7 @@ import signal
 
 from tenzir_test import _python_runner as python_runner
 from tenzir_test import config, run, fixtures
+from tenzir_test import inline_dependencies
 from tenzir_test.runners import custom_python_fixture_runner as python_runner_impl
 from tenzir_test.runners.custom_python_fixture_runner import _jsonify_config
 
@@ -103,7 +104,7 @@ def test_extract_script_dependencies(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    dependencies = python_runner_impl._extract_script_dependencies(script)
+    dependencies = inline_dependencies.extract_inline_dependencies(script)
     assert dependencies == ("pymysql", "certifi>=2025.0")
 
 
@@ -150,7 +151,7 @@ def test_python_runner_installs_inline_dependencies(
 
     monkeypatch.setattr(run.subprocess, "run", fake_run)
     monkeypatch.setattr(shutil, "which", lambda name: "uv" if name == "uv" else None)
-    python_runner_impl._INSTALLED_SCRIPT_DEPENDENCIES.clear()
+    inline_dependencies._INSTALLED_INLINE_DEPENDENCIES.clear()  # type: ignore[attr-defined]
 
     runner = run.CustomPythonFixture()
     assert runner.run(script, update=True, coverage=False)
