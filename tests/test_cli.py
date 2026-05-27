@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 import tenzir_test
 
 from tenzir_test import cli, run
+from tenzir_test.inline_dependencies import DISABLE_INLINE_DEPENDENCY_INSTALL_ENV
 
 
 def _make_result(exit_code: int = 0, *, interrupted: bool = False) -> run.ExecutionResult:
@@ -252,6 +255,23 @@ def test_cli_no_diff_stat_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["show_diff_stat"] is False
 
 
+def test_cli_disable_inline_dependency_install_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_cli(**_: object) -> run.ExecutionResult:
+        captured["disabled"] = os.environ.get(DISABLE_INLINE_DEPENDENCY_INSTALL_ENV)
+        return _make_result()
+
+    monkeypatch.delenv(DISABLE_INLINE_DEPENDENCY_INSTALL_ENV, raising=False)
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    assert cli.main(["--disable-inline-dependency-install"]) == 0
+    assert captured["disabled"] == "1"
+    assert DISABLE_INLINE_DEPENDENCY_INSTALL_ENV not in os.environ
+
+
 def test_cli_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
     exit_code = cli.main(["--version"])
     assert exit_code == 0
@@ -281,6 +301,29 @@ def test_cli_fixture_mode_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     from pathlib import Path
 
     assert captured["package_dirs"] == [Path("a"), Path("b")]
+
+
+def test_cli_fixture_mode_disable_inline_dependency_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fixture_mode_cli(**kwargs: object) -> int:
+        captured.update(kwargs)
+        captured["disabled"] = os.environ.get(DISABLE_INLINE_DEPENDENCY_INSTALL_ENV)
+        return 7
+
+    def fake_run_cli(**_: object) -> run.ExecutionResult:
+        raise AssertionError("run_cli must not be called in --fixture mode")
+
+    monkeypatch.delenv(DISABLE_INLINE_DEPENDENCY_INSTALL_ENV, raising=False)
+    monkeypatch.setattr(cli.runtime, "run_fixture_mode_cli", fake_fixture_mode_cli)
+    monkeypatch.setattr(cli.runtime, "run_cli", fake_run_cli)
+
+    exit_code = cli.main(["--fixture", "mysql", "--disable-inline-dependency-install"])
+    assert exit_code == 7
+    assert captured["disabled"] == "1"
+    assert DISABLE_INLINE_DEPENDENCY_INSTALL_ENV not in os.environ
 
 
 def test_cli_fixture_mode_disallows_tests(capsys: pytest.CaptureFixture[str]) -> None:

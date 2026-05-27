@@ -31,8 +31,8 @@ uv pip install --python <current-python> boto3
 ```
 
 This requires `uv` on `PATH` unless the dependency is already installed in the
-active Python environment. Set
-`TENZIR_TEST_DISABLE_INLINE_DEPENDENCY_INSTALL=1` when another tool, such as
+active Python environment. Pass `--disable-inline-dependency-install`, or set
+`TENZIR_TEST_DISABLE_INLINE_DEPENDENCY_INSTALL=1`, when another tool, such as
 Nix, provisions all fixture dependencies and `tenzir-test` should never install
 them at runtime.
 

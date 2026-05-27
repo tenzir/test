@@ -14,7 +14,7 @@ from typing import Final
 _DEPENDENCY_INSTALL_LOCK: Final = threading.RLock()
 _INSTALLED_INLINE_DEPENDENCIES: set[tuple[str, str]] = set()
 _BARE_REQUIREMENT_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_DISABLE_INSTALL_ENV: Final = "TENZIR_TEST_DISABLE_INLINE_DEPENDENCY_INSTALL"
+DISABLE_INLINE_DEPENDENCY_INSTALL_ENV: Final = "TENZIR_TEST_DISABLE_INLINE_DEPENDENCY_INSTALL"
 
 
 def extract_inline_dependencies(path: Path) -> tuple[str, ...]:
@@ -85,7 +85,7 @@ def install_inline_dependencies(
     timeout: int,
     context: str,
 ) -> None:
-    if not dependencies or os.environ.get(_DISABLE_INSTALL_ENV):
+    if not dependencies or os.environ.get(DISABLE_INLINE_DEPENDENCY_INSTALL_ENV):
         return
 
     from . import run as run_mod
