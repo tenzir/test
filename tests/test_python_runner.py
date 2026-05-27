@@ -166,6 +166,71 @@ def test_python_runner_installs_inline_dependencies(
     assert uv_install_calls[0][-1] == "pymysql"
 
 
+def test_inline_dependency_install_skips_installed_bare_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_run_subprocess(*args: object, **kwargs: object) -> None:
+        pytest.fail("installed dependency should not be installed")
+
+    monkeypatch.setattr(run, "run_subprocess", fail_run_subprocess)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(inline_dependencies, "distribution", lambda dependency: object())
+    inline_dependencies._INSTALLED_INLINE_DEPENDENCIES.clear()  # type: ignore[attr-defined]
+
+    inline_dependencies.install_inline_dependencies(
+        tmp_path,
+        ("boto3",),
+        timeout=30,
+        context="python test",
+    )
+
+
+def test_inline_dependency_install_can_be_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_run_subprocess(*args: object, **kwargs: object) -> None:
+        pytest.fail("dependency installation should be disabled")
+
+    monkeypatch.setattr(run, "run_subprocess", fail_run_subprocess)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setenv("TENZIR_TEST_DISABLE_INLINE_DEPENDENCY_INSTALL", "1")
+    inline_dependencies._INSTALLED_INLINE_DEPENDENCIES.clear()  # type: ignore[attr-defined]
+
+    inline_dependencies.install_inline_dependencies(
+        tmp_path,
+        ("missing-package", "certifi>=2025.0"),
+        timeout=30,
+        context="python test",
+    )
+
+
+def test_inline_dependency_install_keeps_installing_versioned_requirements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run_subprocess(args, **kwargs):  # noqa: ANN001
+        calls.append([str(part) for part in args])
+        return _DummyCompleted()
+
+    monkeypatch.setattr(run, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(run, "is_passthrough_enabled", lambda: False)
+    monkeypatch.setattr(shutil, "which", lambda name: "uv" if name == "uv" else None)
+    monkeypatch.setattr(inline_dependencies, "distribution", lambda dependency: object())
+    inline_dependencies._INSTALLED_INLINE_DEPENDENCIES.clear()  # type: ignore[attr-defined]
+
+    inline_dependencies.install_inline_dependencies(
+        tmp_path,
+        ("certifi>=2025.0",),
+        timeout=30,
+        context="python test",
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1:3] == ["pip", "install"]
+    assert calls[0][-1] == "certifi>=2025.0"
+
+
 def test_python_runner_update_writes_reference(
     python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

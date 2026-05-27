@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, distribution
+import os
+import re
 import shutil
 import sys
 import threading
@@ -10,6 +13,8 @@ from typing import Final
 
 _DEPENDENCY_INSTALL_LOCK: Final = threading.RLock()
 _INSTALLED_INLINE_DEPENDENCIES: set[tuple[str, str]] = set()
+_BARE_REQUIREMENT_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+DISABLE_INLINE_DEPENDENCY_INSTALL_ENV: Final = "TENZIR_TEST_DISABLE_INLINE_DEPENDENCY_INSTALL"
 
 
 def extract_inline_dependencies(path: Path) -> tuple[str, ...]:
@@ -80,15 +85,8 @@ def install_inline_dependencies(
     timeout: int,
     context: str,
 ) -> None:
-    if not dependencies:
+    if not dependencies or os.environ.get(DISABLE_INLINE_DEPENDENCY_INSTALL_ENV):
         return
-
-    uv_binary = shutil.which("uv")
-    if uv_binary is None:
-        raise RuntimeError(
-            f"{context} in {owner} declare dependencies {dependencies!r}, "
-            "but 'uv' is not available on PATH"
-        )
 
     from . import run as run_mod
 
@@ -97,9 +95,17 @@ def install_inline_dependencies(
             dep
             for dep in dependencies
             if (sys.executable, dep) not in _INSTALLED_INLINE_DEPENDENCIES
+            and not _is_installed_bare_requirement(dep)
         ]
         if not missing_dependencies:
             return
+
+        uv_binary = shutil.which("uv")
+        if uv_binary is None:
+            raise RuntimeError(
+                f"{context} in {owner} declare dependencies {dependencies!r}, "
+                "but 'uv' is not available on PATH"
+            )
         run_mod.run_subprocess(
             [
                 uv_binary,
@@ -115,3 +121,13 @@ def install_inline_dependencies(
         )
         for dep in missing_dependencies:
             _INSTALLED_INLINE_DEPENDENCIES.add((sys.executable, dep))
+
+
+def _is_installed_bare_requirement(dependency: str) -> bool:
+    if _BARE_REQUIREMENT_RE.fullmatch(dependency) is None:
+        return False
+    try:
+        distribution(dependency)
+    except PackageNotFoundError:
+        return False
+    return True

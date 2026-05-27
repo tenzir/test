@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+import os
 from pathlib import Path
 import sys
 
 import click
 
 from . import __version__, run as runtime
+from .inline_dependencies import DISABLE_INLINE_DEPENDENCY_INSTALL_ENV
 
 
 class _UnindentedEpilogCommand(click.Command):
@@ -28,6 +31,23 @@ def _normalize_exit_code(value: object) -> int:
     if isinstance(value, int):
         return value
     return 1
+
+
+@contextmanager
+def _inline_dependency_install_scope(disabled: bool) -> Iterator[None]:
+    if not disabled:
+        yield
+        return
+
+    previous_value = os.environ.get(DISABLE_INLINE_DEPENDENCY_INSTALL_ENV)
+    os.environ[DISABLE_INLINE_DEPENDENCY_INSTALL_ENV] = "1"
+    try:
+        yield
+    finally:
+        if previous_value is None:
+            os.environ.pop(DISABLE_INLINE_DEPENDENCY_INSTALL_ENV, None)
+        else:
+            os.environ[DISABLE_INLINE_DEPENDENCY_INSTALL_ENV] = previous_value
 
 
 @click.command(
@@ -200,6 +220,11 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     help="Disable project hook loading and invocation.",
 )
 @click.option(
+    "--disable-inline-dependency-install",
+    is_flag=True,
+    help="Disable runtime installation for inline Python dependencies.",
+)
+@click.option(
     "-m",
     "--match",
     "match_patterns",
@@ -267,6 +292,7 @@ def cli(
     run_skipped_reasons: tuple[str, ...],
     all_projects: bool,
     no_hooks: bool,
+    disable_inline_dependency_install: bool,
     fixture_names: tuple[str, ...],
     fixture_tags: tuple[str, ...],
 ) -> int:
@@ -311,47 +337,48 @@ def cli(
     jobs_overridden = jobs_source is not click.core.ParameterSource.DEFAULT
 
     try:
-        if fixtures:
-            if tests:
-                raise click.UsageError(
-                    "positional TEST arguments cannot be used with --fixture mode"
+        with _inline_dependency_install_scope(disable_inline_dependency_install):
+            if fixtures:
+                if tests:
+                    raise click.UsageError(
+                        "positional TEST arguments cannot be used with --fixture mode"
+                    )
+                return runtime.run_fixture_mode_cli(
+                    root=root,
+                    package_dirs=package_paths,
+                    fixtures=list(fixtures),
+                    debug=debug,
+                    keep_tmp_dirs=keep_tmp_dirs,
+                    no_hooks=no_hooks,
                 )
-            return runtime.run_fixture_mode_cli(
+
+            result = runtime.run_cli(
                 root=root,
                 package_dirs=package_paths,
-                fixtures=list(fixtures),
+                tests=list(tests),
+                update=update,
                 debug=debug,
+                purge=purge,
+                coverage=coverage,
+                coverage_source_dir=coverage_source_dir,
+                runner_summary=runner_summary,
+                fixture_summary=fixture_summary,
+                show_summary=show_summary,
+                show_diff_output=show_diff_output,
+                show_diff_stat=show_diff_stat,
                 keep_tmp_dirs=keep_tmp_dirs,
+                jobs=jobs,
+                passthrough=passthrough,
+                verbose=verbose,
+                run_skipped=run_skipped,
+                run_skipped_reasons=list(run_skipped_reasons),
+                jobs_overridden=jobs_overridden,
+                all_projects=all_projects,
+                match_patterns=list(match_patterns),
+                fixture_names=list(fixture_names),
+                fixture_tags=list(fixture_tags),
                 no_hooks=no_hooks,
             )
-
-        result = runtime.run_cli(
-            root=root,
-            package_dirs=package_paths,
-            tests=list(tests),
-            update=update,
-            debug=debug,
-            purge=purge,
-            coverage=coverage,
-            coverage_source_dir=coverage_source_dir,
-            runner_summary=runner_summary,
-            fixture_summary=fixture_summary,
-            show_summary=show_summary,
-            show_diff_output=show_diff_output,
-            show_diff_stat=show_diff_stat,
-            keep_tmp_dirs=keep_tmp_dirs,
-            jobs=jobs,
-            passthrough=passthrough,
-            verbose=verbose,
-            run_skipped=run_skipped,
-            run_skipped_reasons=list(run_skipped_reasons),
-            jobs_overridden=jobs_overridden,
-            all_projects=all_projects,
-            match_patterns=list(match_patterns),
-            fixture_names=list(fixture_names),
-            fixture_tags=list(fixture_tags),
-            no_hooks=no_hooks,
-        )
     except runtime.HarnessError as exc:
         if exc.show_message and exc.args:
             raise click.ClickException(str(exc)) from exc
