@@ -433,6 +433,8 @@ RunnerQueueItem = TestQueueItem | SuiteQueueItem
 
 @dataclasses.dataclass(slots=True)
 class SuiteQueueState:
+    """Track pending parallel suites that should reserve slots before other work."""
+
     pending_items: int = 0
 
 
@@ -5309,8 +5311,11 @@ class Worker:
         suite_fixtures: tuple[fixtures_impl.FixtureSpec, ...],
         suite_assertion_lock: threading.Lock | None,
         acquire_slot: bool = True,
+        start_event: threading.Event | None = None,
     ) -> tuple[Summary, bool]:
         local_summary = Summary()
+        if start_event is not None:
+            start_event.wait()
         if acquire_slot:
             interrupted = run_context.run(
                 self._run_test_item_with_slot,
@@ -5340,71 +5345,114 @@ class Worker:
         release_suite_priority: typing.Callable[[], None],
     ) -> bool:
         total = len(tests)
-        requested_workers = min(max(1, total), self._jobs)
         min_jobs = suite_item.suite.min_jobs
-        required_workers = min_jobs if min_jobs is not None else 1
-        reserved_workers = self._acquire_suite_test_slots(
-            requested_workers,
-            min_slots=required_workers,
-        )
-        release_suite_priority()
-        if reserved_workers <= 0:
-            return True
-        if min_jobs is not None and reserved_workers < min_jobs:
-            self._release_test_slots(reserved_workers)
-            suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
-            raise HarnessError(
-                (
-                    f"parallel suite '{suite_item.suite.name}' in {suite_dir} "
-                    f"requires at least {min_jobs} concurrent workers for correctness, "
-                    f"but only {reserved_workers} are currently available"
-                )
-            )
         suite_assertion_lock = threading.Lock()
         suite_summary = Summary()
         interrupted = False
-        futures: list[concurrent.futures.Future[tuple[Summary, bool]]] = []
-        try:
+
+        next_test_index = 0
+        suite_priority_released = False
+        while next_test_index < total:
+            if interrupt_requested():
+                interrupted = True
+                break
+
+            remaining = total - next_test_index
+            requested_workers = min(max(1, remaining), self._jobs)
+            is_first_batch = next_test_index == 0
+            required_workers = min_jobs if is_first_batch and min_jobs is not None else 1
+            reserved_workers = self._acquire_suite_test_slots(
+                requested_workers,
+                min_slots=required_workers,
+            )
+            if not suite_priority_released:
+                release_suite_priority()
+                suite_priority_released = True
+            if reserved_workers <= 0:
+                interrupted = True
+                break
+            if is_first_batch and min_jobs is not None and reserved_workers < min_jobs:
+                self._release_test_slots(reserved_workers)
+                suite_dir = _relativize_path(suite_item.suite.directory / _CONFIG_FILE_NAME)
+                raise HarnessError(
+                    (
+                        f"parallel suite '{suite_item.suite.name}' in {suite_dir} "
+                        f"requires at least {min_jobs} concurrent workers for correctness, "
+                        f"but only {reserved_workers} are currently available"
+                    )
+                )
+
+            batch = tests[next_test_index : next_test_index + reserved_workers]
+            batch_start = threading.Event()
+            futures: list[concurrent.futures.Future[tuple[Summary, bool]]] = []
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=reserved_workers,
                 thread_name_prefix="suite",
             ) as executor:
-                for index, test_item in enumerate(tests, start=1):
+                try:
+                    for batch_index, test_item in enumerate(batch, start=next_test_index + 1):
+                        if interrupt_requested():
+                            interrupted = True
+                            break
+                        run_context = contextvars.copy_context()
+                        futures.append(
+                            executor.submit(
+                                self._run_suite_member,
+                                run_context=run_context,
+                                test_item=test_item,
+                                suite_progress=(suite_item.suite.name, batch_index, total),
+                                suite_fixtures=suite_item.fixtures,
+                                suite_assertion_lock=suite_assertion_lock,
+                                acquire_slot=False,
+                                start_event=batch_start,
+                            )
+                        )
+                    batch_start.set()
                     if interrupt_requested():
                         interrupted = True
-                        break
-                    run_context = contextvars.copy_context()
-                    futures.append(
-                        executor.submit(
-                            self._run_suite_member,
-                            run_context=run_context,
-                            test_item=test_item,
-                            suite_progress=(suite_item.suite.name, index, total),
-                            suite_fixtures=suite_item.fixtures,
-                            suite_assertion_lock=suite_assertion_lock,
-                            acquire_slot=False,
-                        )
-                    )
-                if interrupt_requested():
-                    interrupted = True
-                    for pending in futures:
-                        if pending.done():
-                            continue
-                        pending.cancel()
-                for future in concurrent.futures.as_completed(futures):
-                    if future.cancelled():
-                        continue
-                    member_summary, member_interrupted = future.result()
-                    _merge_summary_inplace(suite_summary, member_summary)
-                    if member_interrupted:
-                        interrupted = True
-                        _request_interrupt()
                         for pending in futures:
                             if pending.done():
                                 continue
                             pending.cancel()
-        finally:
-            self._release_test_slots(reserved_workers)
+                    pending_futures = set(futures)
+                    while pending_futures:
+                        if interrupt_requested():
+                            interrupted = True
+                            for pending in pending_futures:
+                                if pending.done():
+                                    continue
+                                pending.cancel()
+                        done_futures, pending_futures = concurrent.futures.wait(
+                            pending_futures,
+                            timeout=0.1,
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+                        if not done_futures:
+                            continue
+                        member_interrupted_in_batch = False
+                        for future in done_futures:
+                            if future.cancelled():
+                                continue
+                            member_summary, member_interrupted = future.result()
+                            _merge_summary_inplace(suite_summary, member_summary)
+                            if member_interrupted:
+                                member_interrupted_in_batch = True
+                        if member_interrupted_in_batch:
+                            interrupted = True
+                            _request_interrupt()
+                            for pending in pending_futures:
+                                if pending.done():
+                                    continue
+                                pending.cancel()
+                            continue
+                finally:
+                    batch_start.set()
+                    self._release_test_slots(reserved_workers)
+            if interrupted:
+                break
+            next_test_index += len(batch)
+        if not suite_priority_released:
+            release_suite_priority()
         _merge_summary_inplace(summary, suite_summary)
         return interrupted
 

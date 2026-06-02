@@ -1388,7 +1388,7 @@ def test_worker_parallel_suite_caps_executor_workers_to_jobs(
         summary = worker.join()
         assert summary.total == 3
         assert summary.failed == 0
-        assert max_workers_seen == [2]
+        assert max_workers_seen == [2, 1]
     finally:
         run._clear_directory_config_cache()
         run.apply_settings(original_settings)
