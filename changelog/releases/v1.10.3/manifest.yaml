@@ -1,0 +1,8 @@
+created: 2026-06-15
+title: Synchronized parallel suite batches
+intro: >-
+  This release fixes a reliability issue in parallel test suites where interdependent
+  pipelines could start out of sync.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.10.2
