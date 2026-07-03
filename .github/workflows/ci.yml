@@ -46,6 +46,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --python ${{ matrix.python-version }} --dev
 
+      - name: Validate changelog
+        if: matrix.task == 'quality'
+        run: uvx tenzir-ship --root changelog validate
+
       - name: Run Ruff lint
         if: matrix.task == 'quality'
         run: uv run ruff check
