@@ -80,16 +80,18 @@ class _OutputPump:
 def _watch_node_exit(
     process: subprocess.Popen[str],
     stopping: threading.Event,
-    stderr_pump: _OutputPump,
+    stderr_pump: _OutputPump | None,
 ) -> None:
     """Report a node that exits while the fixture is still active."""
     returncode = process.wait()
     if stopping.is_set():
         return
-    # The pump reaches EOF once the process is gone; wait for it so the tail
-    # includes the node's final output.
-    stderr_pump.join(_PUMP_JOIN_TIMEOUT)
-    tail = stderr_pump.tail()
+    tail = ""
+    if stderr_pump is not None:
+        # The pump reaches EOF once the process is gone; wait for it so the
+        # tail includes the node's final output.
+        stderr_pump.join(_PUMP_JOIN_TIMEOUT)
+        tail = stderr_pump.tail()
     detail = f"; stderr tail:\n{tail}" if tail else ""
     _LOGGER.error("tenzir-node exited unexpectedly with code %s%s", returncode, detail)
 
@@ -357,7 +359,9 @@ def node() -> Iterator[dict[str, str]]:
                 diagnostics.append(f"exit code {returncode}")
             # Try to read stderr output using non-blocking I/O. This captures
             # diagnostics even when the process is still running (e.g., when it
-            # hangs after writing an error message but before exiting).
+            # hangs after writing an error message but before exiting). The
+            # output pumps only start after the endpoint arrived, so stderr
+            # has no other reader yet.
             stderr_output = _read_available_stderr(process)
             if stderr_output:
                 diagnostics.append(f"stderr:\n{stderr_output}")
@@ -371,18 +375,21 @@ def node() -> Iterator[dict[str, str]]:
         # primary evidence when the node misbehaves mid-suite.
         stdout_log = temp_dir / "node-stdout.log"
         stderr_log = temp_dir / "node-stderr.log"
-        if process.stdout:
-            pumps.append(_OutputPump(process.stdout, stdout_log, "node-stdout-pump"))
-        stderr_pump: _OutputPump | None = None
-        if process.stderr:
-            stderr_pump = _OutputPump(process.stderr, stderr_log, "node-stderr-pump")
-            pumps.append(stderr_pump)
-            threading.Thread(
-                target=_watch_node_exit,
-                args=(process, stopping, stderr_pump),
-                name="node-exit-watcher",
-                daemon=True,
-            ).start()
+        stdout_pump = (
+            _OutputPump(process.stdout, stdout_log, "node-stdout-pump") if process.stdout else None
+        )
+        stderr_pump = (
+            _OutputPump(process.stderr, stderr_log, "node-stderr-pump") if process.stderr else None
+        )
+        pumps = [pump for pump in (stdout_pump, stderr_pump) if pump is not None]
+        # The watcher reports the stderr tail because that is where the node
+        # writes its diagnostics; stdout only carries the endpoint line.
+        threading.Thread(
+            target=_watch_node_exit,
+            args=(process, stopping, stderr_pump),
+            name="node-exit-watcher",
+            daemon=True,
+        ).start()
 
         client_binary: str | None = None
         if context.tenzir_binary:
