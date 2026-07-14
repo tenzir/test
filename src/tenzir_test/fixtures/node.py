@@ -11,10 +11,11 @@ import shlex
 import subprocess
 import tempfile
 import threading
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Iterator, TYPE_CHECKING
+from typing import IO, Iterator, TYPE_CHECKING
 import weakref
 
 from . import (
@@ -28,6 +29,69 @@ if TYPE_CHECKING:
     from . import FixtureContext
 
 _STDERR_READ_TIMEOUT = 0.5  # seconds to wait for stderr data
+_TAIL_MAX_LINES = 100  # lines of node output kept in memory for failure reports
+_PUMP_JOIN_TIMEOUT = 5.0  # seconds to wait for output pumps during teardown
+
+
+class _OutputPump:
+    """Drains a process output stream into a log file on a background thread.
+
+    An undrained pipe blocks the node once the kernel buffer fills up, and its
+    contents are lost when the process goes away. The pump prevents both: it
+    persists everything to ``log_path`` and keeps a bounded tail in memory for
+    failure reports.
+    """
+
+    def __init__(self, stream: IO[str], log_path: Path, name: str) -> None:
+        self._stream = stream
+        self._log_path = log_path
+        self._tail: deque[str] = deque(maxlen=_TAIL_MAX_LINES)
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            with self._log_path.open("a", encoding="utf-8") as log:
+                for line in self._stream:
+                    log.write(line)
+                    log.flush()
+                    with self._lock:
+                        self._tail.append(line)
+        except (OSError, ValueError):  # stream closed during teardown
+            pass
+        finally:
+            # The pump owns the stream: closing it from another thread would
+            # block on the reader lock while a read is in flight.
+            try:
+                self._stream.close()
+            except OSError:  # pragma: no cover - defensive cleanup
+                pass
+
+    def tail(self) -> str:
+        """The most recent output lines, for embedding in error messages."""
+        with self._lock:
+            return "".join(self._tail).strip()
+
+    def join(self, timeout: float) -> None:
+        self._thread.join(timeout)
+
+
+def _watch_node_exit(
+    process: subprocess.Popen[str],
+    stopping: threading.Event,
+    stderr_pump: _OutputPump,
+) -> None:
+    """Report a node that exits while the fixture is still active."""
+    returncode = process.wait()
+    if stopping.is_set():
+        return
+    # The pump reaches EOF once the process is gone; wait for it so the tail
+    # includes the node's final output.
+    stderr_pump.join(_PUMP_JOIN_TIMEOUT)
+    tail = stderr_pump.tail()
+    detail = f"; stderr tail:\n{tail}" if tail else ""
+    _LOGGER.error("tenzir-node exited unexpectedly with code %s%s", returncode, detail)
 
 
 def _read_available_stderr(process: subprocess.Popen[str]) -> str:
@@ -279,6 +343,8 @@ def node() -> Iterator[dict[str, str]]:
             record.process = process
 
     endpoint: str | None = None
+    stopping = threading.Event()
+    pumps: list[_OutputPump] = []
     try:
         if process.stdout:
             endpoint = process.stdout.readline().strip()
@@ -300,6 +366,24 @@ def node() -> Iterator[dict[str, str]]:
             )
             raise RuntimeError(f"failed to obtain endpoint from tenzir-node ({detail})")
 
+        # Keep draining both pipes for the fixture's lifetime: a full pipe
+        # buffer stalls the node's logging, and the retained output is the
+        # primary evidence when the node misbehaves mid-suite.
+        stdout_log = temp_dir / "node-stdout.log"
+        stderr_log = temp_dir / "node-stderr.log"
+        if process.stdout:
+            pumps.append(_OutputPump(process.stdout, stdout_log, "node-stdout-pump"))
+        stderr_pump: _OutputPump | None = None
+        if process.stderr:
+            stderr_pump = _OutputPump(process.stderr, stderr_log, "node-stderr-pump")
+            pumps.append(stderr_pump)
+            threading.Thread(
+                target=_watch_node_exit,
+                args=(process, stopping, stderr_pump),
+                name="node-exit-watcher",
+                daemon=True,
+            ).start()
+
         client_binary: str | None = None
         if context.tenzir_binary:
             client_binary = shlex.join(context.tenzir_binary)
@@ -311,15 +395,16 @@ def node() -> Iterator[dict[str, str]]:
             "TENZIR_NODE_CLIENT_TIMEOUT": str(context.config["timeout"]),
             "TENZIR_NODE_STATE_DIRECTORY": str(state_dir),
             "TENZIR_NODE_CACHE_DIRECTORY": str(cache_dir),
+            "TENZIR_NODE_STDOUT_LOG": str(stdout_log),
+            "TENZIR_NODE_STDERR_LOG": str(stderr_log),
         }
         # Filter out empty values to avoid polluting the environment.
         filtered_env = {k: v for k, v in fixture_env.items() if v}
         yield filtered_env
     finally:
-        if process.stdout:
-            process.stdout.close()
-        if process.stderr:
-            process.stderr.close()
+        # Mark the shutdown as intentional before stopping the process so the
+        # exit watcher stays quiet.
+        stopping.set()
         with _TEMP_DIR_LOCK:
             record = _TEMP_DIRS.get(key)
         if record is not None:
@@ -330,6 +415,15 @@ def node() -> Iterator[dict[str, str]]:
                 _terminate_process(process)
             except Exception as exc:
                 _LOGGER.warning("failed to terminate leaked tenzir-node (key=%s): %s", key, exc)
+        # The pumps close their streams themselves once they hit EOF; only
+        # close streams that were never handed to a pump.
+        for pump in pumps:
+            pump.join(_PUMP_JOIN_TIMEOUT)
+        if not pumps:
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
 
 
 register("node", node, replace=True)
