@@ -2396,6 +2396,7 @@ def test_node_fixture_uses_explicit_node_config(tmp_path, monkeypatch):
             pid=42,
             terminate=lambda: captured.setdefault("terminated", True),
             wait=lambda timeout=None: captured.setdefault("waits", []).append(timeout),
+            poll=lambda: None,
             kill=lambda: captured.setdefault("killed", True),
         )
         return process
@@ -2449,6 +2450,7 @@ def test_node_fixture_skips_config_when_unset(monkeypatch):
             pid=43,
             terminate=lambda: None,
             wait=lambda timeout=None: None,
+            poll=lambda: None,
             kill=lambda: None,
         )
 
@@ -2497,6 +2499,7 @@ def test_node_fixture_adds_package_dirs_from_env(monkeypatch):
             pid=44,
             terminate=lambda: None,
             wait=lambda timeout=None: None,
+            poll=lambda: None,
             kill=lambda: None,
         )
 
@@ -2548,6 +2551,7 @@ def test_node_fixture_deduplicates_package_dirs(monkeypatch):
             pid=45,
             terminate=lambda: None,
             wait=lambda timeout=None: None,
+            poll=lambda: None,
             kill=lambda: None,
         )
 

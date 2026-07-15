@@ -6,7 +6,6 @@ import atexit
 import functools
 import logging
 import os
-import select
 import shlex
 import subprocess
 import tempfile
@@ -47,6 +46,8 @@ class _OutputPump:
         self._log_path = log_path
         self._tail: deque[str] = deque(maxlen=_TAIL_MAX_LINES)
         self._lock = threading.Lock()
+        self._output_available = threading.Event()
+        self._log_path.touch(exist_ok=True)
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._thread.start()
 
@@ -58,6 +59,7 @@ class _OutputPump:
                     log.flush()
                     with self._lock:
                         self._tail.append(line)
+                    self._output_available.set()
         except (OSError, ValueError):  # stream closed during teardown
             pass
         finally:
@@ -76,16 +78,22 @@ class _OutputPump:
     def join(self, timeout: float) -> None:
         self._thread.join(timeout)
 
+    def wait_for_output(self, timeout: float) -> None:
+        """Wait until the pump captures its first output line or times out."""
+        self._output_available.wait(timeout)
+
 
 def _watch_node_exit(
     process: subprocess.Popen[str],
     stopping: threading.Event,
     stderr_pump: _OutputPump | None,
+    lifecycle_lock: threading.Lock,
 ) -> None:
     """Report a node that exits while the fixture is still active."""
     returncode = process.wait()
-    if stopping.is_set():
-        return
+    with lifecycle_lock:
+        if stopping.is_set():
+            return
     tail = ""
     if stderr_pump is not None:
         # The pump reaches EOF once the process is gone; wait for it so the
@@ -94,35 +102,6 @@ def _watch_node_exit(
         tail = stderr_pump.tail()
     detail = f"; stderr tail:\n{tail}" if tail else ""
     _LOGGER.error("tenzir-node exited unexpectedly with code %s%s", returncode, detail)
-
-
-def _read_available_stderr(process: subprocess.Popen[str]) -> str:
-    """Read any available stderr output without blocking.
-
-    Uses select() to check if data is available before reading. This allows
-    capturing diagnostic output even when the process is still running but
-    has written error messages to stderr.
-    """
-    if not process.stderr:
-        return ""
-    try:
-        fd = process.stderr.fileno()
-        readable, _, _ = select.select([fd], [], [], _STDERR_READ_TIMEOUT)
-        if not readable:
-            return ""
-        # Read available data in chunks to avoid blocking on partial reads.
-        chunks: list[str] = []
-        while True:
-            ready, _, _ = select.select([fd], [], [], 0)
-            if not ready:
-                break
-            chunk = os.read(fd, 4096).decode("utf-8", errors="replace")
-            if not chunk:
-                break
-            chunks.append(chunk)
-        return "".join(chunks).strip()
-    except Exception:
-        return ""
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:
@@ -155,7 +134,7 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
 
 @dataclass(slots=True)
 class _TempDirRecord:
-    temp_dir: tempfile.TemporaryDirectory[str]
+    temp_dir: tempfile.TemporaryDirectory[str] | None
     ref: weakref.ref["FixtureContext"]
     path: Path
     process: subprocess.Popen[str] | None = None
@@ -179,6 +158,8 @@ def _stop_process(record: _TempDirRecord) -> None:
 
 def _cleanup_record(record: _TempDirRecord) -> None:
     _stop_process(record)
+    if record.temp_dir is None:
+        return
     try:
         record.temp_dir.cleanup()
     except Exception as exc:  # pragma: no cover - defensive logging
@@ -210,8 +191,15 @@ def _ensure_temp_dir(context: "FixtureContext") -> Path:
         _cleanup_record(stale_record)
 
     tmp_root = context.env.get("TENZIR_TMP_DIR") or None
-    temp_dir = tempfile.TemporaryDirectory(prefix="tenzir-node-", dir=tmp_root)
-    path = Path(temp_dir.name)
+    temp_dir: tempfile.TemporaryDirectory[str] | None
+    if tmp_root is None:
+        temp_dir = tempfile.TemporaryDirectory(prefix="tenzir-node-")
+        path = Path(temp_dir.name)
+    else:
+        # The harness owns TENZIR_TMP_DIR and removes it after fixture teardown.
+        # Leave nested artifacts in place so --keep can preserve them.
+        temp_dir = None
+        path = Path(tempfile.mkdtemp(prefix="tenzir-node-", dir=tmp_root))
 
     def _cleanup(dead_ref: weakref.ref["FixtureContext"]) -> None:
         with _TEMP_DIR_LOCK:
@@ -287,6 +275,8 @@ def node() -> Iterator[dict[str, str]]:
         package_args.append(f"--package-dirs={','.join(package_dirs)}")
     temp_dir = _ensure_temp_dir(context)
     key = id(context)
+    stdout_log = temp_dir / "node-stdout.log"
+    stderr_log = temp_dir / "node-stderr.log"
 
     configured_state = env.get("TENZIR_NODE_STATE_DIRECTORY")
     state_dir = Path(configured_state) if configured_state else temp_dir / "state"
@@ -344,12 +334,22 @@ def node() -> Iterator[dict[str, str]]:
         if record is not None:
             record.process = process
 
-    endpoint: str | None = None
     stopping = threading.Event()
-    pumps: list[_OutputPump] = []
+    lifecycle_lock = threading.Lock()
+    stdout_pump: _OutputPump | None = None
+    stderr_pump: _OutputPump | None = None
+    watcher: threading.Thread | None = None
     try:
+        # Start draining stderr before waiting for the endpoint. Otherwise,
+        # startup diagnostics can fill the pipe and prevent the node from ever
+        # reaching the endpoint print.
+        if process.stderr:
+            stderr_pump = _OutputPump(process.stderr, stderr_log, "node-stderr-pump")
+
+        endpoint_line = ""
         if process.stdout:
-            endpoint = process.stdout.readline().strip()
+            endpoint_line = process.stdout.readline()
+        endpoint = endpoint_line.strip()
 
         if not endpoint:
             # Collect diagnostic information to help debug startup failures.
@@ -357,12 +357,13 @@ def node() -> Iterator[dict[str, str]]:
             returncode = process.poll()
             if returncode is not None:
                 diagnostics.append(f"exit code {returncode}")
-            # Try to read stderr output using non-blocking I/O. This captures
-            # diagnostics even when the process is still running (e.g., when it
-            # hangs after writing an error message but before exiting). The
-            # output pumps only start after the endpoint arrived, so stderr
-            # has no other reader yet.
-            stderr_output = _read_available_stderr(process)
+                if stderr_pump is not None:
+                    stderr_pump.join(_PUMP_JOIN_TIMEOUT)
+            elif stderr_pump is not None:
+                # Give diagnostics already in flight a short opportunity to
+                # reach the in-memory tail without blocking on a live stream.
+                stderr_pump.wait_for_output(_STDERR_READ_TIMEOUT)
+            stderr_output = stderr_pump.tail() if stderr_pump is not None else ""
             if stderr_output:
                 diagnostics.append(f"stderr:\n{stderr_output}")
             detail = (
@@ -370,26 +371,22 @@ def node() -> Iterator[dict[str, str]]:
             )
             raise RuntimeError(f"failed to obtain endpoint from tenzir-node ({detail})")
 
-        # Keep draining both pipes for the fixture's lifetime: a full pipe
-        # buffer stalls the node's logging, and the retained output is the
-        # primary evidence when the node misbehaves mid-suite.
-        stdout_log = temp_dir / "node-stdout.log"
-        stderr_log = temp_dir / "node-stderr.log"
-        stdout_pump = (
-            _OutputPump(process.stdout, stdout_log, "node-stdout-pump") if process.stdout else None
-        )
-        stderr_pump = (
-            _OutputPump(process.stderr, stderr_log, "node-stderr-pump") if process.stderr else None
-        )
-        pumps = [pump for pump in (stdout_pump, stderr_pump) if pump is not None]
+        # Preserve the endpoint line before handing the rest of stdout to the
+        # pump, so the log contains the complete stream.
+        with stdout_log.open("a", encoding="utf-8") as log:
+            log.write(endpoint_line)
+        if process.stdout:
+            stdout_pump = _OutputPump(process.stdout, stdout_log, "node-stdout-pump")
+
         # The watcher reports the stderr tail because that is where the node
         # writes its diagnostics; stdout only carries the endpoint line.
-        threading.Thread(
+        watcher = threading.Thread(
             target=_watch_node_exit,
-            args=(process, stopping, stderr_pump),
+            args=(process, stopping, stderr_pump, lifecycle_lock),
             name="node-exit-watcher",
             daemon=True,
-        ).start()
+        )
+        watcher.start()
 
         client_binary: str | None = None
         if context.tenzir_binary:
@@ -409,9 +406,12 @@ def node() -> Iterator[dict[str, str]]:
         filtered_env = {k: v for k, v in fixture_env.items() if v}
         yield filtered_env
     finally:
-        # Mark the shutdown as intentional before stopping the process so the
-        # exit watcher stays quiet.
-        stopping.set()
+        # Only classify a running process as an intentional shutdown. The lock
+        # lets the watcher report a process that already exited before teardown
+        # began, even if its thread has not run yet.
+        with lifecycle_lock:
+            if process.poll() is None:
+                stopping.set()
         with _TEMP_DIR_LOCK:
             record = _TEMP_DIRS.get(key)
         if record is not None:
@@ -422,15 +422,18 @@ def node() -> Iterator[dict[str, str]]:
                 _terminate_process(process)
             except Exception as exc:
                 _LOGGER.warning("failed to terminate leaked tenzir-node (key=%s): %s", key, exc)
-        # The pumps close their streams themselves once they hit EOF; only
-        # close streams that were never handed to a pump.
-        for pump in pumps:
-            pump.join(_PUMP_JOIN_TIMEOUT)
-        if not pumps:
-            if process.stdout:
-                process.stdout.close()
-            if process.stderr:
-                process.stderr.close()
+        # The pumps close their streams themselves once they hit EOF. Close
+        # only streams that were never handed to a pump.
+        if stdout_pump is not None:
+            stdout_pump.join(_PUMP_JOIN_TIMEOUT)
+        elif process.stdout:
+            process.stdout.close()
+        if stderr_pump is not None:
+            stderr_pump.join(_PUMP_JOIN_TIMEOUT)
+        elif process.stderr:
+            process.stderr.close()
+        if watcher is not None:
+            watcher.join(_PUMP_JOIN_TIMEOUT)
 
 
 register("node", node, replace=True)
