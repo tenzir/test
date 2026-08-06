@@ -84,6 +84,12 @@ class ShellRunner(ExtRunner):
                 else:
                     stderr_bytes = stderr_data or b""
 
+                # Rewrite absolute paths in both streams as relative ones,
+                # consistent with run_simple_test behavior.
+                prefixes = run_mod.output_path_prefixes(test)
+                stdout_bytes = run_mod.strip_output_path_prefixes(stdout_bytes, prefixes)
+                stderr_bytes = run_mod.strip_output_path_prefixes(stderr_bytes, prefixes)
+
                 good = completed.returncode == 0
                 if expect_error == good:
                     suppressed = run_mod.should_suppress_failure_output()
@@ -128,9 +134,6 @@ class ShellRunner(ExtRunner):
                             return False
                     run_mod.success(test)
                     return True
-
-                root_prefix: bytes = (str(run_mod.ROOT) + "/").encode()
-                stdout_bytes = stdout_bytes.replace(root_prefix, b"")
 
                 stdout_path = test.with_suffix(".txt")
 

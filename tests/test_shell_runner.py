@@ -385,3 +385,57 @@ def test_shell_runner_no_stdin_when_file_missing(
         run.apply_settings(original_settings)
 
     assert captured["stdin_data"] is None
+
+
+def test_shell_runner_normalizes_paths_per_package(tmp_path: Path) -> None:
+    package = tmp_path / "microsoft"
+    tests_dir = package / "tests"
+    tests_dir.mkdir(parents=True)
+    (package / "operators").mkdir()
+    (package / "package.yaml").write_text("name: microsoft\n", encoding="utf-8")
+    (tmp_path / "okta").mkdir()
+    (tmp_path / "okta" / "package.yaml").write_text("name: okta\n", encoding="utf-8")
+
+    script = tests_dir / "paths.sh"
+    script.write_text(
+        f'echo "{package / "operators" / "map.tql"}"\n'
+        f'echo "{tmp_path / "okta" / "operators" / "map.tql"}"\n'
+        f'echo "{script}" >&2\n',
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    baselines: dict[str, str] = {}
+    try:
+        # The recorded baseline must not depend on whether the harness runs on
+        # the library, the package, or the package's test directory.
+        for root in (tmp_path, package, tests_dir):
+            run.apply_settings(
+                config.Settings(
+                    root=root,
+                    tenzir_binary=run.TENZIR_BINARY,
+                    tenzir_node_binary=run.TENZIR_NODE_BINARY,
+                )
+            )
+            runner = run.ShellRunner()
+            assert runner.run(script, update=True, coverage=False)
+            baselines[str(root)] = script.with_suffix(".txt").read_text(encoding="utf-8")
+    finally:
+        run.apply_settings(original_settings)
+        run.refresh_runner_metadata()
+
+    # Paths inside the package that owns the test are package-relative on
+    # stdout and stderr alike; a sibling package stays project-relative.
+    assert baselines[str(tmp_path)] == (
+        "operators/map.tql\nokta/operators/map.tql\ntests/paths.sh\n"
+    )
+    assert baselines[str(package)] == baselines[str(tests_dir)]
+    assert baselines[str(package)] == (
+        f"operators/map.tql\n{tmp_path / 'okta' / 'operators' / 'map.tql'}\ntests/paths.sh\n"
+    )
