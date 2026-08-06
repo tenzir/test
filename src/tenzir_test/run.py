@@ -4435,6 +4435,52 @@ def apply_pre_compare(output: bytes, transforms: tuple[str, ...]) -> bytes:
     return output
 
 
+def _encloses_project(package_root: Path) -> bool:
+    """Return True when `package_root` is a package this project runs tests for.
+
+    That is either a package inside the project, such as one of a library's
+    packages, or the package the project itself is a subtree invocation of, such
+    as running the harness on a package's `tests` directory. An unrelated
+    package that merely happens to sit above the project root does not count.
+    """
+
+    if package_root.is_relative_to(ROOT):
+        return True
+    detected = _DETECTED_PACKAGE_ROOT
+    return detected is not None and package_root == detected.resolve()
+
+
+def output_path_prefixes(test: Path) -> tuple[bytes, ...]:
+    """Return the directory prefixes to strip from a test's captured output.
+
+    Tenzir reports absolute paths in diagnostics, so the harness rewrites them
+    to relative ones before comparing against a baseline. Anchoring them at the
+    project root alone would make baselines depend on how the harness was
+    invoked: a package reached through its surrounding library yields
+    `<package>/operators/map.tql`, whereas the same package reached directly
+    yields `operators/map.tql`. Strip the package that owns the test first, so
+    paths inside it are always package-relative, then fall back to the project
+    root for everything else, such as sibling packages of a library.
+    """
+
+    prefixes: list[bytes] = []
+    package_root = packages.find_package_root(test.parent)
+    if package_root is not None and _encloses_project(package_root):
+        prefixes.append(str(package_root).encode() + b"/")
+    root_prefix = str(ROOT).encode() + b"/"
+    if root_prefix not in prefixes:
+        prefixes.append(root_prefix)
+    return tuple(prefixes)
+
+
+def strip_output_path_prefixes(output: bytes, prefixes: tuple[bytes, ...]) -> bytes:
+    """Rewrite absolute paths in `output` as relative ones."""
+
+    for prefix in prefixes:
+        output = output.replace(prefix, b"")
+    return output
+
+
 def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
     if should_suppress_failure_output():
         return
@@ -4625,11 +4671,9 @@ def run_simple_test(
             output = b""
             stderr_output = b""
             if not passthrough_mode:
-                root_bytes = str(ROOT).encode() + b"/"
-                captured_stdout = completed.stdout or b""
-                output = captured_stdout.replace(root_bytes, b"")
-                captured_stderr = completed.stderr or b""
-                stderr_output = captured_stderr.replace(root_bytes, b"")
+                prefixes = output_path_prefixes(test)
+                output = strip_output_path_prefixes(completed.stdout or b"", prefixes)
+                stderr_output = strip_output_path_prefixes(completed.stderr or b"", prefixes)
 
             if expect_error == good:
                 interrupted = _is_interrupt_exit(completed.returncode) or interrupt_requested()

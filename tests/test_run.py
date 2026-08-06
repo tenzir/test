@@ -4176,6 +4176,69 @@ class TestNormalizePreCompareValue:
         assert "expected string or list" in str(exc_info.value)
 
 
+class TestOutputPathPrefixes:
+    @staticmethod
+    def _library(tmp_path: Path) -> Path:
+        """Create a two-package library and return a test inside the first one."""
+
+        for name in ("microsoft", "okta"):
+            package = tmp_path / name
+            (package / "tests" / "asim").mkdir(parents=True)
+            (package / "operators").mkdir()
+            (package / "package.yaml").write_text(f"name: {name}\n", encoding="utf-8")
+        return tmp_path / "microsoft" / "tests" / "asim" / "map.tql"
+
+    def _strip(self, root: Path, test: Path, output: bytes) -> bytes:
+        original_root = run.ROOT
+        try:
+            # Go through the regular entry point so that the execution mode and
+            # the detected package root match what a real invocation sees.
+            run._set_project_root(root.resolve())
+            return run.strip_output_path_prefixes(output, run.output_path_prefixes(test))
+        finally:
+            run._set_project_root(original_root)
+
+    def test_package_paths_are_package_relative_for_every_root(self, tmp_path: Path) -> None:
+        test = self._library(tmp_path)
+        package = tmp_path / "microsoft"
+        output = f"  --> {package / 'operators' / 'map.tql'}:61:12\n  --> {test}:24:1\n".encode()
+        expected = b"  --> operators/map.tql:61:12\n  --> tests/asim/map.tql:24:1\n"
+        # The baseline must not depend on whether the harness runs on the
+        # library, the package, or the package's test directory.
+        for root in (tmp_path, package, package / "tests"):
+            assert self._strip(root, test, output) == expected
+
+    def test_sibling_packages_stay_project_relative(self, tmp_path: Path) -> None:
+        test = self._library(tmp_path)
+        output = f"  --> {tmp_path / 'okta' / 'operators' / 'map.tql'}:1:1\n".encode()
+        assert self._strip(tmp_path, test, output) == b"  --> okta/operators/map.tql:1:1\n"
+
+    def test_tests_outside_packages_stay_project_relative(self, tmp_path: Path) -> None:
+        test = tmp_path / "tests" / "example.tql"
+        test.parent.mkdir(parents=True)
+        output = f"  --> {test}:1:1\n".encode()
+        assert self._strip(tmp_path, test, output) == b"  --> tests/example.tql:1:1\n"
+
+    def test_packages_outside_the_project_are_ignored(self, tmp_path: Path) -> None:
+        test = self._library(tmp_path)
+        package = tmp_path / "microsoft"
+        root = tmp_path / "project"
+        (root / "tests").mkdir(parents=True)
+        output = f"  --> {package / 'operators' / 'map.tql'}:1:1\n".encode()
+        # Anchoring at an unrelated package would leak paths from outside the
+        # project into the baseline.
+        assert self._strip(root, test, output) == output
+
+    def test_unrelated_package_above_the_project_is_ignored(self, tmp_path: Path) -> None:
+        # A project nested below a package that does not own it, for example a
+        # test project vendored into a package's repository.
+        (tmp_path / "package.yaml").write_text("name: outer\n", encoding="utf-8")
+        test = tmp_path / "project" / "tests" / "example.tql"
+        test.parent.mkdir(parents=True)
+        output = f"  --> {test}:1:1\n".encode()
+        assert self._strip(tmp_path / "project", test, output) == b"  --> tests/example.tql:1:1\n"
+
+
 class TestApplyPreCompare:
     def test_empty_transforms_returns_unchanged(self):
         """TST-6: Test apply_pre_compare with empty tuple returns unchanged output."""
