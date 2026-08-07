@@ -38,10 +38,8 @@ jobs:
 
       - name: Check package
         run: |
-          uv venv
-          uv pip install check-wheel-contents twine
-          uv run check-wheel-contents dist/*.whl
-          uv run twine check dist/*
+          uvx check-wheel-contents dist/*.whl
+          uvx twine check dist/*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
