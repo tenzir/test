@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tenzir_test import fixtures
+from tenzir_test import fixtures, run
 from tenzir_test.runners import diff_runner
 from tenzir_test.runners.diff_runner import DiffRunner
 
@@ -55,6 +55,8 @@ def test_diff_runner_uses_node_endpoint_for_fixture_spec(
         TENZIR_BINARY=("/usr/bin/tenzir",),
         TENZIR_NODE_BINARY=("/usr/bin/tenzir-node",),
         ROOT=tmp_path,
+        output_path_prefixes=lambda _test: (str(tmp_path).encode() + b"/",),
+        strip_output_path_prefixes=run.strip_output_path_prefixes,
         TEST_TMP_ENV_VAR="TENZIR_TMP_DIR",
         cleanup_test_tmp_dir=lambda _tmp: None,
         interrupt_requested=lambda: False,
@@ -113,6 +115,8 @@ def test_diff_runner_runs_fixture_assertions_while_fixtures_are_active(
         TENZIR_BINARY=("/usr/bin/tenzir",),
         TENZIR_NODE_BINARY=("/usr/bin/tenzir-node",),
         ROOT=tmp_path,
+        output_path_prefixes=lambda _test: (str(tmp_path).encode() + b"/",),
+        strip_output_path_prefixes=run.strip_output_path_prefixes,
         TEST_TMP_ENV_VAR="TENZIR_TMP_DIR",
         cleanup_test_tmp_dir=lambda _tmp: None,
         interrupt_requested=lambda: False,

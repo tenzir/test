@@ -101,11 +101,13 @@ class DiffRunner(TqlRunner):
                     force_capture=True,
                 )
 
-                # Strip the ROOT prefix from paths in output to make them relative,
-                # consistent with run_simple_test behavior.
-                root_bytes = str(run_mod.ROOT).encode() + b"/"
-                unoptimized_stdout = unoptimized.stdout.replace(root_bytes, b"")
-                optimized_stdout = optimized.stdout.replace(root_bytes, b"")
+                # Rewrite absolute paths in output as relative ones, consistent
+                # with run_simple_test behavior.
+                prefixes = run_mod.output_path_prefixes(test)
+                unoptimized_stdout = run_mod.strip_output_path_prefixes(
+                    unoptimized.stdout, prefixes
+                )
+                optimized_stdout = run_mod.strip_output_path_prefixes(optimized.stdout, prefixes)
                 diff_chunks = list(
                     difflib.diff_bytes(
                         difflib.unified_diff,
