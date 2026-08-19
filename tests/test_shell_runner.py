@@ -431,11 +431,11 @@ def test_shell_runner_normalizes_paths_per_package(tmp_path: Path) -> None:
         run.refresh_runner_metadata()
 
     # Paths inside the package that owns the test are package-relative on
-    # stdout and stderr alike; a sibling package stays project-relative.
+    # stderr and stdout alike; a sibling package stays project-relative.
     assert baselines[str(tmp_path)] == (
-        "operators/map.tql\nokta/operators/map.tql\ntests/paths.sh\n"
+        "tests/paths.sh\noperators/map.tql\nokta/operators/map.tql\n"
     )
     assert baselines[str(package)] == baselines[str(tests_dir)]
     assert baselines[str(package)] == (
-        f"operators/map.tql\n{tmp_path / 'okta' / 'operators' / 'map.tql'}\ntests/paths.sh\n"
+        f"tests/paths.sh\noperators/map.tql\n{tmp_path / 'okta' / 'operators' / 'map.tql'}\n"
     )

@@ -137,11 +137,7 @@ class ShellRunner(ExtRunner):
 
                 stdout_path = test.with_suffix(".txt")
 
-                combined_bytes = stdout_bytes
-                if stderr_bytes:
-                    if combined_bytes and not combined_bytes.endswith(b"\n"):
-                        combined_bytes += b"\n"
-                    combined_bytes += stderr_bytes
+                combined_bytes = run_mod.combine_captured_output(stdout_bytes, stderr_bytes)
 
                 if update:
                     stdout_path.write_bytes(combined_bytes)

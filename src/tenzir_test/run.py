@@ -4481,6 +4481,14 @@ def strip_output_path_prefixes(output: bytes, prefixes: tuple[bytes, ...]) -> by
     return output
 
 
+def combine_captured_output(stdout: bytes, stderr: bytes) -> bytes:
+    """Return baseline output with stderr before stdout."""
+
+    if stderr and stdout and not stderr.endswith(b"\n"):
+        stderr += b"\n"
+    return stderr + stdout
+
+
 def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
     if should_suppress_failure_output():
         return
@@ -4648,7 +4656,7 @@ def run_simple_test(
             cmd: list[str] = [
                 *TENZIR_BINARY,
                 "--bare-mode",
-                "--console-verbosity=warning",
+                "--console-verbosity=quiet",
                 "--multi",
                 *config_args,
                 *node_args,
@@ -4719,12 +4727,13 @@ def run_simple_test(
                         return False
                 success(test)
                 return True
+            baseline_output = combine_captured_output(output, stderr_output)
             if not good:
                 output_ext = "txt"
             ref_path = test.with_suffix(f".{output_ext}")
             if update:
                 with ref_path.open("wb") as f:
-                    f.write(output)
+                    f.write(baseline_output)
             else:
                 if not ref_path.exists():
                     report_failure(
@@ -4735,7 +4744,7 @@ def run_simple_test(
                 expected = ref_path.read_bytes()
                 pre_compare = cast(tuple[str, ...], test_config.get("pre_compare", tuple()))
                 expected_transformed = apply_pre_compare(expected, pre_compare)
-                output_transformed = apply_pre_compare(output, pre_compare)
+                output_transformed = apply_pre_compare(baseline_output, pre_compare)
                 if expected_transformed != output_transformed:
                     if interrupt_requested():
                         report_interrupted_test(test)
@@ -6711,7 +6720,6 @@ def run_cli(
                 )
                 project_view = _project_view(selection)
                 project_env = os.environ.copy()
-                project_env["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
                 project_path = _env_path(project_env)
                 next_selection = next(
                     (
@@ -6947,7 +6955,6 @@ def run_cli(
                         _invoke_project_finish()
                         continue
 
-                    os.environ["TENZIR_EXEC__DUMP_DIAGNOSTICS"] = "true"
                     if not TENZIR_BINARY:
                         raise HarnessError(
                             f"error: could not find TENZIR_BINARY executable `{TENZIR_BINARY}`"
