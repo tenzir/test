@@ -468,19 +468,22 @@ def test_hook_environment_clear_removes_path() -> None:
     assert list(hook_env) == []
 
 
-def test_project_env_keeps_diagnostics_flag(tmp_path: Path, monkeypatch) -> None:
+def test_project_env_does_not_dump_diagnostics(tmp_path: Path, monkeypatch) -> None:
     original_settings = run._settings  # type: ignore[attr-defined]
     original_root = run.ROOT
     original_env = dict(os.environ)
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
     (tests_dir / "diagnostics.sh").write_text(
-        "printf '%s\\n' \"$TENZIR_EXEC__DUMP_DIAGNOSTICS\"\n",
+        'test -z "${TENZIR_EXEC__DUMP_DIAGNOSTICS+x}"\n',
         encoding="utf-8",
     )
-    (tests_dir / "diagnostics.txt").write_text("true\n", encoding="utf-8")
-    monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
+    tenzir_binary = tmp_path / "tenzir"
+    tenzir_binary.write_text("#!/bin/sh\nprintf '1.0\\n'\n", encoding="utf-8")
+    tenzir_binary.chmod(0o755)
+    monkeypatch.delenv("TENZIR_EXEC__DUMP_DIAGNOSTICS", raising=False)
+    monkeypatch.setenv("TENZIR_BINARY", str(tenzir_binary))
+    monkeypatch.setenv("TENZIR_NODE_BINARY", str(tenzir_binary))
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 

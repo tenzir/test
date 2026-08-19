@@ -1001,6 +1001,76 @@ def test_run_simple_test_reports_stderr_on_failure(
     assert "got unexpected exit code 13" in lines[4]
 
 
+def test_run_simple_test_writes_stderr_before_stdout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    test_file = tmp_path / "case.tql"
+    test_file.write_text("version\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=(sys.executable,),
+            tenzir_node_binary=None,
+        )
+    )
+
+    class FakeCompletedProcess:
+        returncode = 0
+        stdout = b"events"
+        stderr = b"warning"
+
+    monkeypatch.setattr(run, "run_subprocess", lambda *args, **kwargs: FakeCompletedProcess())
+
+    try:
+        assert run.run_simple_test(test_file, update=True, output_ext="txt") is True
+        assert run.run_simple_test(test_file, update=False, output_ext="txt") is True
+    finally:
+        run.apply_settings(original_settings)
+
+    assert test_file.with_suffix(".txt").read_bytes() == b"warning\nevents"
+
+
+def test_run_simple_test_writes_stderr_for_expected_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    test_file = tmp_path / "case.tql"
+    test_file.write_text("---\nerror: true\n---\nversion\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+    run.apply_settings(
+        config.Settings(
+            root=tmp_path,
+            tenzir_binary=(sys.executable,),
+            tenzir_node_binary=None,
+        )
+    )
+
+    class FakeCompletedProcess:
+        returncode = 1
+        stdout = b""
+        stderr = b"expected error\n"
+
+    monkeypatch.setattr(run, "run_subprocess", lambda *args, **kwargs: FakeCompletedProcess())
+
+    try:
+        assert run.run_simple_test(test_file, update=True, output_ext="json") is True
+        assert run.run_simple_test(test_file, update=False, output_ext="json") is True
+    finally:
+        run.apply_settings(original_settings)
+
+    assert test_file.with_suffix(".txt").read_bytes() == b"expected error\n"
+
+
 def test_run_simple_test_suppresses_diff_on_interrupt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
