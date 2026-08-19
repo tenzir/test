@@ -1,0 +1,10 @@
+created: 2026-08-19
+title: Deterministic test diagnostics and node reporting
+intro: >-
+  This release makes test baselines deterministic by recording diagnostics before
+  pipeline output, so update baselines that contain both channels. It also retains
+  node fixture output and crash details to make failing integration tests easier to
+  diagnose.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.10.3
