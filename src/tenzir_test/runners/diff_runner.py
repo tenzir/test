@@ -104,15 +104,19 @@ class DiffRunner(TqlRunner):
                 # Rewrite absolute paths in output as relative ones, consistent
                 # with run_simple_test behavior.
                 prefixes = run_mod.output_path_prefixes(test)
-                unoptimized_stdout = run_mod.strip_output_path_prefixes(
-                    unoptimized.stdout, prefixes
+                unoptimized_output = run_mod.combine_captured_output(
+                    run_mod.strip_output_path_prefixes(unoptimized.stdout, prefixes),
+                    run_mod.strip_output_path_prefixes(unoptimized.stderr, prefixes),
                 )
-                optimized_stdout = run_mod.strip_output_path_prefixes(optimized.stdout, prefixes)
+                optimized_output = run_mod.combine_captured_output(
+                    run_mod.strip_output_path_prefixes(optimized.stdout, prefixes),
+                    run_mod.strip_output_path_prefixes(optimized.stderr, prefixes),
+                )
                 diff_chunks = list(
                     difflib.diff_bytes(
                         difflib.unified_diff,
-                        unoptimized_stdout.splitlines(keepends=True),
-                        optimized_stdout.splitlines(keepends=True),
+                        unoptimized_output.splitlines(keepends=True),
+                        optimized_output.splitlines(keepends=True),
                         n=2**31 - 1,
                     )
                 )[3:]
@@ -120,7 +124,7 @@ class DiffRunner(TqlRunner):
                     diff_bytes = b"".join(diff_chunks)
                 else:
                     diff_bytes = b"".join(
-                        b" " + line for line in unoptimized_stdout.splitlines(keepends=True)
+                        b" " + line for line in unoptimized_output.splitlines(keepends=True)
                     )
                 ref_path = test.with_suffix(".diff")
                 if update:

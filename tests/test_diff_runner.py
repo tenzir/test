@@ -12,9 +12,9 @@ from tenzir_test.runners.diff_runner import DiffRunner
 
 
 class _DummyCompleted:
-    def __init__(self, stdout: bytes = b"") -> None:
+    def __init__(self, stdout: bytes = b"", stderr: bytes = b"") -> None:
         self.stdout = stdout
-        self.stderr = b""
+        self.stderr = stderr
         self.returncode = 0
 
 
@@ -35,7 +35,7 @@ def test_diff_runner_uses_node_endpoint_for_fixture_spec(
 
     def fake_run_subprocess(cmd, **_kwargs):  # noqa: ANN001
         calls.append([str(part) for part in cmd])
-        return _DummyCompleted(stdout=b"ok\n")
+        return _DummyCompleted(stdout=b"ok\n", stderr=b"warning")
 
     def fake_apply_fixture_env(env, requested):  # noqa: ANN001
         if requested:
@@ -55,6 +55,7 @@ def test_diff_runner_uses_node_endpoint_for_fixture_spec(
         TENZIR_BINARY=("/usr/bin/tenzir",),
         TENZIR_NODE_BINARY=("/usr/bin/tenzir-node",),
         ROOT=tmp_path,
+        combine_captured_output=run.combine_captured_output,
         output_path_prefixes=lambda _test: (str(tmp_path).encode() + b"/",),
         strip_output_path_prefixes=run.strip_output_path_prefixes,
         TEST_TMP_ENV_VAR="TENZIR_TMP_DIR",
@@ -69,6 +70,7 @@ def test_diff_runner_uses_node_endpoint_for_fixture_spec(
 
     runner = DiffRunner(a="unoptimized", b="optimized", name="diff")
     assert runner.run(test_file, update=True, coverage=False) is True
+    assert test_file.with_suffix(".diff").read_bytes() == b" warning\n ok\n"
     assert len(calls) == 2
     assert f"--endpoint={endpoint}" in calls[0]
     assert f"--endpoint={endpoint}" in calls[1]
@@ -115,6 +117,7 @@ def test_diff_runner_runs_fixture_assertions_while_fixtures_are_active(
         TENZIR_BINARY=("/usr/bin/tenzir",),
         TENZIR_NODE_BINARY=("/usr/bin/tenzir-node",),
         ROOT=tmp_path,
+        combine_captured_output=run.combine_captured_output,
         output_path_prefixes=lambda _test: (str(tmp_path).encode() + b"/",),
         strip_output_path_prefixes=run.strip_output_path_prefixes,
         TEST_TMP_ENV_VAR="TENZIR_TMP_DIR",
