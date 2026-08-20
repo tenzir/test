@@ -3,6 +3,8 @@ title: Reliable compiler diagnostic baselines
 type: bugfix
 authors:
   - tobim
+prs:
+  - 57
 created: 2026-08-20T07:29:44.499969Z
 ---
 
