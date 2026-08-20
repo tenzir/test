@@ -1,6 +1,8 @@
 ---
 title: Deterministic diagnostic baselines
 type: breaking
+authors:
+  - tobim
 prs:
   - 56
 created: 2026-08-19T13:15:18.184165Z
