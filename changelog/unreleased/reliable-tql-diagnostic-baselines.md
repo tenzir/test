@@ -3,6 +3,8 @@ title: Reliable TQL diagnostic baselines
 type: bugfix
 authors:
   - tobim
+prs:
+  - 59
 created: 2026-08-20T08:10:32.607818Z
 ---
 
