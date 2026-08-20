@@ -4656,7 +4656,7 @@ def run_simple_test(
             cmd: list[str] = [
                 *TENZIR_BINARY,
                 "--bare-mode",
-                "--console-verbosity=quiet",
+                "--console-verbosity=warning",
                 "--multi",
                 *config_args,
                 *node_args,

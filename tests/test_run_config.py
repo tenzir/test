@@ -1025,7 +1025,13 @@ def test_run_simple_test_writes_stderr_before_stdout(
         stdout = b"events"
         stderr = b"warning"
 
-    monkeypatch.setattr(run, "run_subprocess", lambda *args, **kwargs: FakeCompletedProcess())
+    commands: list[list[str]] = []
+
+    def fake_run_subprocess(command, **_kwargs):  # noqa: ANN001
+        commands.append(command)
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(run, "run_subprocess", fake_run_subprocess)
 
     try:
         assert run.run_simple_test(test_file, update=True, output_ext="txt") is True
@@ -1034,6 +1040,7 @@ def test_run_simple_test_writes_stderr_before_stdout(
         run.apply_settings(original_settings)
 
     assert test_file.with_suffix(".txt").read_bytes() == b"warning\nevents"
+    assert all("--console-verbosity=warning" in command for command in commands)
 
 
 def test_run_simple_test_writes_stderr_for_expected_error(
