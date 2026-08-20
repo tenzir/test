@@ -1,0 +1,8 @@
+created: 2026-08-20
+title: Reliable diff runner baselines
+intro: >-
+  This patch preserves compiler diagnostics in diff-runner baselines, so expected
+  errors continue to be validated consistently with pipeline output.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.0.0
