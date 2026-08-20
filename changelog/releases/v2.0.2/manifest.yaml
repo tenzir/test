@@ -1,0 +1,8 @@
+created: 2026-08-20
+title: Reliable TQL diagnostic baselines
+intro: >-
+  This patch preserves structured TQL diagnostics in test baselines while keeping
+  regular logging output out of them.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.0.1
