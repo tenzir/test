@@ -3,20 +3,20 @@ fixtures: [node]
 timeout: 60
 ---
 
-pipeline::detach {
+pipeline_detach {
   every 10ms {
     from {id: 1}, {id: 2}
   }
   publish "foo"
 }
 
-pipeline::detach {
+pipeline_detach {
   subscribe "foo"
   where id == 1
   publish "bar"
 }
 
-pipeline::detach {
+pipeline_detach {
   subscribe "foo"
   where id == 2
   publish "bar"
