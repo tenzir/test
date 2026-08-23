@@ -133,3 +133,48 @@ def test_diff_runner_runs_fixture_assertions_while_fixtures_are_active(
     runner = DiffRunner(a="unoptimized", b="optimized", name="diff")
     assert runner.run(test_file, update=True, coverage=False) is True
     assert assertion_states == [True]
+
+
+def test_diff_runner_applies_pre_compare_transforms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    test_file = tmp_path / "case.tql"
+    test_file.write_text("version\nwrite_json\n", encoding="utf-8")
+    # Baseline holds the same diff lines in a different order.
+    test_file.with_suffix(".diff").write_bytes(b" apple\n zebra\n")
+
+    def fake_run_subprocess(cmd, **_kwargs):  # noqa: ANN001
+        return _DummyCompleted(stdout=b"zebra\napple\n", stderr=b"")
+
+    fake_run_mod = SimpleNamespace(
+        parse_test_config=lambda _test, coverage=False: {
+            "fixtures": (),
+            "timeout": 30,
+            "pre_compare": ("sort",),
+        },
+        get_test_env_and_config_args=lambda _test, inputs=None: ({}, []),
+        _apply_fixture_env=lambda _env, _requested: None,
+        _build_fixture_assertions=lambda _assertions: {},
+        _run_fixture_assertions_for_test=lambda **_kwargs: None,
+        _fixture_assertion_failure_message=lambda exc: f"fixture assertion failed: {exc}",
+        run_subprocess=fake_run_subprocess,
+        apply_pre_compare=run.apply_pre_compare,
+        TENZIR_BINARY=("/usr/bin/tenzir",),
+        TENZIR_NODE_BINARY=("/usr/bin/tenzir-node",),
+        ROOT=tmp_path,
+        combine_captured_output=run.combine_captured_output,
+        output_path_prefixes=lambda _test: (str(tmp_path).encode() + b"/",),
+        strip_output_path_prefixes=run.strip_output_path_prefixes,
+        TEST_TMP_ENV_VAR="TENZIR_TMP_DIR",
+        cleanup_test_tmp_dir=lambda _tmp: None,
+        interrupt_requested=lambda: False,
+        report_interrupted_test=lambda _test: None,
+        report_failure=lambda _test, _msg: None,
+        print_diff=lambda _expected, _actual, _path: None,
+        log_comparison=lambda *_args, **_kwargs: None,
+        success=lambda _test: None,
+    )
+    monkeypatch.setattr(diff_runner, "get_run_module", lambda: fake_run_mod)
+
+    runner = DiffRunner(a="unoptimized", b="optimized", name="diff")
+    assert runner.run(test_file, update=False, coverage=False) is True

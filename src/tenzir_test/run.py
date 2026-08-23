@@ -4402,26 +4402,36 @@ def _split_sort_units(lines: list[str]) -> list[str]:
     """Group lines into sortable units, keeping record blocks intact.
 
     A unit is either a single line or a top-level pretty-printed record block:
-    a line that is exactly ``{`` at column zero up to and including the next
-    line that is exactly ``}`` at column zero. This keeps multiline TQL output
+    a line that is exactly ``{`` at column zero up to and including the line
+    that is exactly ``}`` at column zero. This keeps multiline TQL output
     intact while degenerating to plain line sorting for text and NDJSON
-    output. An unterminated block falls back to individual lines so malformed
-    output never gets swallowed into one giant unit.
+    output.
+
+    A block ends at the first column-zero ``}``; a nested column-zero ``{``
+    means the outer block was never terminated, so its lines fall back to
+    individual units. This keeps malformed output from collapsing into one
+    giant unit, at the cost of a single pass over the lines.
+
+    Multiline diagnostics are not grouped: they still sort line by line, so
+    ``pre-compare: sort`` is unsuitable for tests whose baseline contains
+    diagnostics.
     """
     units: list[str] = []
-    index = 0
-    while index < len(lines):
-        line = lines[index]
+    pending: list[str] = []
+    for line in lines:
         if line == "{":
-            end = index + 1
-            while end < len(lines) and lines[end] != "}":
-                end += 1
-            if end < len(lines):
-                units.append("\n".join(lines[index : end + 1]))
-                index = end + 1
-                continue
-        units.append(line)
-        index += 1
+            # A second opener means the pending block never closed.
+            units.extend(pending)
+            pending = [line]
+            continue
+        if not pending:
+            units.append(line)
+            continue
+        pending.append(line)
+        if line == "}":
+            units.append("\n".join(pending))
+            pending = []
+    units.extend(pending)
     return units
 
 
@@ -4429,15 +4439,18 @@ def _transform_sort(output: bytes) -> bytes:
     """Sort output units lexicographically in a format-aware manner.
 
     Multiline record blocks (as printed by TQL's default output format) sort
-    as single units; all other content sorts line by line. Uses
-    surrogateescape to preserve undecodable bytes as surrogate escapes,
+    as single units; all other content sorts line by line. Only ``\n`` splits
+    units, so carriage returns and other control bytes stay inside their unit.
+    Uses surrogateescape to preserve undecodable bytes as surrogate escapes,
     allowing the transform to handle binary data gracefully.
     """
     if not output:
         return output
     has_trailing_newline = output.endswith(b"\n")
     text = output.decode("utf-8", errors="surrogateescape")
-    lines = text.splitlines(keepends=False)
+    lines = text.split("\n")
+    if has_trailing_newline:
+        lines.pop()
     units = _split_sort_units(lines)
     result = "\n".join(sorted(units))
     if has_trailing_newline:

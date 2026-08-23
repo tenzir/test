@@ -130,13 +130,19 @@ class DiffRunner(TqlRunner):
                 if update:
                     ref_path.write_bytes(diff_bytes)
                 else:
-                    expected = ref_path.read_bytes()
-                    if diff_bytes != expected:
+                    pre_compare = typing.cast(
+                        tuple[str, ...], test_config.get("pre_compare", tuple())
+                    )
+                    expected_transformed = run_mod.apply_pre_compare(
+                        ref_path.read_bytes(), pre_compare
+                    )
+                    output_transformed = run_mod.apply_pre_compare(diff_bytes, pre_compare)
+                    if output_transformed != expected_transformed:
                         if run_mod.interrupt_requested():
                             run_mod.report_interrupted_test(test)
                         else:
                             run_mod.report_failure(test, "")
-                            run_mod.print_diff(expected, diff_bytes, ref_path)
+                            run_mod.print_diff(expected_transformed, output_transformed, ref_path)
                         return False
                 if not fixture_api.is_suite_scope_active(fixtures):
                     try:

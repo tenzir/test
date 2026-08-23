@@ -169,16 +169,18 @@ class ShellRunner(ExtRunner):
                     pre_compare = typing.cast(
                         tuple[str, ...], test_config.get("pre_compare", tuple())
                     )
-                    expected_stdout = run_mod.apply_pre_compare(
+                    expected_transformed = run_mod.apply_pre_compare(
                         stdout_path.read_bytes(), pre_compare
                     )
-                    combined_transformed = run_mod.apply_pre_compare(combined_bytes, pre_compare)
-                    if expected_stdout != combined_transformed:
+                    output_transformed = run_mod.apply_pre_compare(combined_bytes, pre_compare)
+                    if expected_transformed != output_transformed:
                         if run_mod.interrupt_requested():
                             run_mod.report_interrupted_test(test)
                         else:
                             run_mod.report_failure(test, "")
-                            run_mod.print_diff(expected_stdout, combined_transformed, stdout_path)
+                            run_mod.print_diff(
+                                expected_transformed, output_transformed, stdout_path
+                            )
                         return False
                 elif stdout_path.exists():
                     expected_stdout = stdout_path.read_bytes()

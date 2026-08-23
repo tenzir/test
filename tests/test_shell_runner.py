@@ -469,9 +469,13 @@ def test_shell_runner_applies_pre_compare_sort(tmp_path: Path) -> None:
         )
         runner = run.ShellRunner()
         assert runner.run(script, update=False, coverage=False)
-        # Without the transform, the same baseline must fail.
-        script.write_text('printf "zebra\\napple\\n"\n', encoding="utf-8")
-        assert not runner.run(script, update=False, coverage=False)
+        # Without the transform, the same baseline must fail. Use a distinct
+        # script path so a per-path config cache cannot mask the difference.
+        plain = script_dir / "unordered_plain.sh"
+        plain.write_text('printf "zebra\\napple\\n"\n', encoding="utf-8")
+        plain.chmod(0o755)
+        plain.with_suffix(".txt").write_text("apple\nzebra\n", encoding="utf-8")
+        assert not runner.run(plain, update=False, coverage=False)
     finally:
         run.apply_settings(original_settings)
         run.refresh_runner_metadata()
