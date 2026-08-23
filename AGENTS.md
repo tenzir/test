@@ -1,69 +1,20 @@
-# Repository Architecture
+# Tenzir Test
 
-This document describes the architecture of `tenzir-test`, a reusable test harness for Tenzir.
+A flexible integration test framework.
 
-## Core Concepts
+## Setup
 
-The framework discovers test scenarios, executes them through pluggable runners, captures output, and compares against baseline files.
+Install Lefthook once per clone:
 
-**Test Execution Flow:**
-
-1. **CLI** parses arguments and invokes the execution engine
-2. **Config** discovers settings from environment and CLI flags
-3. **Engine** orchestrates the lifecycle: discovers tests, registers plugins, spawns workers, runs scenarios, and reports results
-4. **Runners** execute tests based on file type (TQL, shell, Python)
-5. **Fixtures** provide managed resources (Tenzir nodes, HTTP servers) with automatic lifecycle handling
-
-## Package Layout
-
-- `src/tenzir_test/` contains the core package with CLI, config, execution engine, runners, and fixtures
-- `tests/` mirrors the package structure for unit tests
-- `example-*/` directories provide reference implementations for different use cases
-
-## Extension Points
-
-**Runners** implement test execution for different file types. The framework includes runners for TQL queries, shell scripts, Python tests, and external commands. Projects can register custom runners.
-
-**Fixtures** provide shared resources across tests. The built-in node fixture manages Tenzir processes. Projects define custom fixtures in a `fixtures/` directory that get auto-registered on discovery.
-
-## Test Discovery
-
-The engine walks directory trees looking for test files matching registered runner patterns. Each test pairs with a `.txt` baseline file for output comparison. A `test.yaml` file in any directory configures suite-level settings like timeouts and required fixtures.
-
-## Multi-Project Support
-
-The framework supports satellite projects that inherit fixtures and runners from a parent project, and package directories containing multiple Tenzir packages with cross-dependencies.
-
-## Documentation
-
-Primary documentation lives at <https://docs.tenzir.com/reference/test.md>.
-
-## Logging
-
-Use the harness logging facilities for diagnostic output. Reserve `print()` for
-intentional user-facing test results and summaries.
-
-## Development Workflow
-
-Use `uv` for dependencies and virtual environments. Install the shared Git hooks
-after syncing dependencies:
-
-```sh
-uv sync --dev
-uv run lefthook install
+```bash
+uvx lefthook install
 ```
 
-Run the shared formatting gate before pushing:
+Pushing runs the quality gates automatically. No need to run checks manually.
 
-```sh
-uv run lefthook run pre-push --all-files
-```
+## Release engineering
 
-CI runs the full validation suite, including type checks, unit tests, and
-package builds.
-
-Use the explicit fix hook for formatting and safe lint rewrites:
-
-```sh
-uv run lefthook run fix --all-files
-```
+- Use `tenzir-ship` for changelog management and releasing
+- Add changelog entries for user facing changes
+- Before releasing, ensure `main` is in sync with `origin/main`
+- To release, dispatch .github/workflows/release.yaml with a title & intro
