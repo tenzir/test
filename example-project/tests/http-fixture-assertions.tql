@@ -14,6 +14,8 @@ timeout: 30
 ---
 
 from {foo: "bar"}
-http f"{env("HTTP_FIXTURE_URL")}/status/not-found", body=this {
-  read_json
+each {
+  from_http f"{env("HTTP_FIXTURE_URL")}/status/not-found", body=$this {
+    read_json
+  }
 }
