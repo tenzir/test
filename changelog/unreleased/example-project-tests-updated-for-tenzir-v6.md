@@ -3,6 +3,8 @@ title: Example project tests updated for Tenzir v6
 type: bugfix
 authors:
   - mavam
+prs:
+  - 61
 created: 2026-08-23T13:09:16.47158Z
 ---
 
