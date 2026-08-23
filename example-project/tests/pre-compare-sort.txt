@@ -1,0 +1,12 @@
+{
+  severity: 3,
+  events: 1,
+}
+{
+  severity: 5,
+  events: 1,
+}
+{
+  severity: 7,
+  events: 1,
+}

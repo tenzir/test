@@ -50,6 +50,7 @@ example-project/
     │   └── check.{sh,txt}
     ├── hex/hello.{xxd,txt}
     ├── read-inputs.{tql,txt}
+    ├── pre-compare-sort.{tql,txt}
     ├── http-fixture.{tql,txt}
     ├── http-fixture-assertions.{tql,txt}
     ├── node-fixture.{tql,txt}
@@ -64,6 +65,7 @@ example-project/
     │   ├── executor-with-node-fixture/context-manager.{py,txt}
     │   └── fixture-driving/manual_control.{py,txt}
     └── shell/
+        ├── pre-compare-sort.{sh,txt}
         ├── http-fixture-check.sh
         └── tmp-dir.{sh,txt}
 
@@ -109,6 +111,14 @@ example-project/
 - **Nested fixture options** (`tests/shell/server-fixture-options.sh`): shows a
   nested frontmatter record (`server.message.greeting`) flowing into fixture
   options and exported as `SERVER_GREETING`.
+- **Unstable output order** (`tests/pre-compare-sort.{tql,txt}`,
+  `tests/shell/pre-compare-sort.{sh,txt}`): `summarize` emits groups in an
+  unspecified order and `find` lists files in filesystem order, so both
+  baselines would be flaky. `pre-compare: sort` sorts baseline and actual output
+  before comparing, so the ordering requirement stays out of the pipeline and
+  the script. Whole events sort as units, so multiline records keep their
+  fields together. The shell variant shows that runners other than `tenzir`
+  apply the transform too.
 - **Skip demo** (`tests/lazy.tql`): uses `skip:` frontmatter to illustrate how
   the harness reports intentionally skipped tests along with custom messages.
 - **Fixture unavailability** (`tests/container`): the `container` fixture

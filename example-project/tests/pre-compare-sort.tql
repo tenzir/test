@@ -1,0 +1,11 @@
+---
+pre-compare: sort
+---
+// `summarize` emits groups in an unspecified order, so the baseline would be
+// flaky without help. `pre-compare: sort` sorts both the baseline and the
+// actual output before comparing, which keeps the ordering requirement out of
+// the pipeline under test. Records stay intact: whole events sort as units.
+from_file f"{env("TENZIR_INPUTS")}/events.ndjson" {
+  read_ndjson
+}
+summarize severity, events=count()
