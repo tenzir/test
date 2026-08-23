@@ -1,0 +1,9 @@
+created: 2026-08-23
+title: Format-aware test output sorting
+intro: >-
+  Tenzir Test now keeps multiline record blocks intact when sorting test output, making
+  nondeterministic event order easier to stabilize. The shell, Python fixture, and
+  diff runners also apply pre-compare transforms consistently before comparing baselines.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.0.2
