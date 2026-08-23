@@ -4128,6 +4128,78 @@ class TestTransformSort:
         assert b"valid" in result
         assert b"\xff\xfe" in result
 
+    def test_record_blocks_sort_as_units(self):
+        output = b"{\n  b: 2,\n}\n{\n  a: 1,\n}\n"
+        expected = b"{\n  a: 1,\n}\n{\n  b: 2,\n}\n"
+        assert run._transform_sort(output) == expected
+
+    def test_record_blocks_preserve_internal_order(self):
+        # Field order inside a record must survive the sort untouched.
+        output = b"{\n  z: 1,\n  a: 2,\n}\n{\n  a: 0,\n}\n"
+        expected = b"{\n  a: 0,\n}\n{\n  z: 1,\n  a: 2,\n}\n"
+        assert run._transform_sort(output) == expected
+
+    def test_nested_records_stay_within_block(self):
+        # Nested closing braces are indented, so only column-zero `}` ends a block.
+        block_b = b"{\n  x: {\n    n: 2,\n  },\n}"
+        block_a = b"{\n  x: {\n    n: 1,\n  },\n}"
+        output = block_b + b"\n" + block_a + b"\n"
+        expected = block_a + b"\n" + block_b + b"\n"
+        assert run._transform_sort(output) == expected
+
+    def test_ndjson_lines_sort_individually(self):
+        output = b'{"b": 2}\n{"a": 1}\n'
+        assert run._transform_sort(output) == b'{"a": 1}\n{"b": 2}\n'
+
+    def test_mixed_lines_and_blocks(self):
+        output = b"warning: z\n{\n  a: 1,\n}\nwarning: a\n"
+        expected = b"warning: a\nwarning: z\n{\n  a: 1,\n}\n"
+        assert run._transform_sort(output) == expected
+
+    def test_unterminated_block_falls_back_to_lines(self):
+        output = b"{\n  a: 1,\n"
+        assert run._transform_sort(output) == b"  a: 1,\n{\n"
+
+    def test_unterminated_block_does_not_swallow_later_block(self):
+        # A second column-zero `{` ends the unterminated candidate, so the
+        # complete block that follows still sorts as its own unit.
+        output = b"{\n  zzz: 1,\n{\n  a: 2,\n}\n"
+        expected = b"  zzz: 1,\n{\n{\n  a: 2,\n}\n"
+        assert run._transform_sort(output) == expected
+
+    def test_many_unterminated_openers_stay_linear(self):
+        # Guards against quadratic rescanning of the remaining lines.
+        output = b"{\n" * 20000
+        assert run._transform_sort(output) == output
+
+    def test_exotic_line_separators_stay_inside_units(self):
+        # Only \n delimits units: \v, \f and CR must survive untouched.
+        block_x = b'{\n  a: "x\x0by",\n}'
+        block_p = b'{\n  a: "p\x0cq\rr",\n}'
+        output = block_x + b"\n" + block_p + b"\n"
+        assert run._transform_sort(output) == block_p + b"\n" + block_x + b"\n"
+
+    def test_crlf_output_is_not_normalized(self):
+        output = b"b\r\na\r\n"
+        # Units are "b\r" and "a\r", so the CRs stay put.
+        assert run._transform_sort(output) == b"a\r\nb\r\n"
+
+    def test_binary_bytes_preserved_exactly(self):
+        output = b"{\n  a: \xff\xfe,\n}\naaa\n"
+        assert run._transform_sort(output) == b"aaa\n{\n  a: \xff\xfe,\n}\n"
+
+    def test_block_without_trailing_newline(self):
+        output = b"{\n  b: 1,\n}\n{\n  a: 2,\n}"
+        expected = b"{\n  a: 2,\n}\n{\n  b: 1,\n}"
+        result = run._transform_sort(output)
+        assert result == expected
+        assert not result.endswith(b"\n")
+
+    def test_duplicate_blocks_preserved(self):
+        block = b"{\n  a: 1,\n}"
+        output = block + b"\n" + block + b"\n"
+        assert run._transform_sort(output) == output
+
     def test_mixed_line_endings(self):
         """TST-3: Test _transform_sort with mixed line endings (CRLF, LF, CR)."""
         # Input with various line ending styles

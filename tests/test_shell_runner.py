@@ -439,3 +439,43 @@ def test_shell_runner_normalizes_paths_per_package(tmp_path: Path) -> None:
     assert baselines[str(package)] == (
         f"tests/paths.sh\noperators/map.tql\n{tmp_path / 'okta' / 'operators' / 'map.tql'}\n"
     )
+
+
+def test_shell_runner_applies_pre_compare_sort(tmp_path: Path) -> None:
+    script_dir = tmp_path / "tests" / "shell"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    script = script_dir / "unordered.sh"
+    script.write_text(
+        '# pre-compare: sort\nprintf "zebra\\napple\\n"\n',
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    # Baseline stored in a different order than the script emits.
+    script.with_suffix(".txt").write_text("apple\nzebra\n", encoding="utf-8")
+
+    original_settings = config.Settings(
+        root=run.ROOT,
+        tenzir_binary=run.TENZIR_BINARY,
+        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    )
+
+    try:
+        run.apply_settings(
+            config.Settings(
+                root=tmp_path,
+                tenzir_binary=run.TENZIR_BINARY,
+                tenzir_node_binary=run.TENZIR_NODE_BINARY,
+            )
+        )
+        runner = run.ShellRunner()
+        assert runner.run(script, update=False, coverage=False)
+        # Without the transform, the same baseline must fail. Use a distinct
+        # script path so a per-path config cache cannot mask the difference.
+        plain = script_dir / "unordered_plain.sh"
+        plain.write_text('printf "zebra\\napple\\n"\n', encoding="utf-8")
+        plain.chmod(0o755)
+        plain.with_suffix(".txt").write_text("apple\nzebra\n", encoding="utf-8")
+        assert not runner.run(plain, update=False, coverage=False)
+    finally:
+        run.apply_settings(original_settings)
+        run.refresh_runner_metadata()

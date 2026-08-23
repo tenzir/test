@@ -387,6 +387,72 @@ def test_python_runner_accepts_matching_output(
     assert runner.run(script, update=False, coverage=False)
 
 
+def test_python_runner_applies_pre_compare_sort(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = python_fixture_root / "python" / "fixture.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    _fixture_script(script)
+    script.parent.joinpath("test.yaml").write_text(
+        "timeout: 30\nfixtures:\n  - sink\npre-compare: sort\n",
+        encoding="utf-8",
+    )
+    reference = script.with_suffix(".txt")
+    # Baseline stored in a different record order than the script emits.
+    reference.write_bytes(b"{\n  a: 1,\n}\n{\n  b: 2,\n}\n")
+
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
+        return _DummyCompleted(stdout=b"{\n  b: 2,\n}\n{\n  a: 1,\n}\n")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    runner = run.CustomPythonFixture()
+    assert runner.run(script, update=False, coverage=False)
+
+
+def test_python_runner_without_pre_compare_detects_reordering(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Counterpart to the test above: the same baseline must fail without
+    # `pre-compare: sort`, so the transform is what makes it pass.
+    script = python_fixture_root / "python" / "fixture.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    _fixture_script(script)
+    script.with_suffix(".txt").write_bytes(b"{\n  a: 1,\n}\n{\n  b: 2,\n}\n")
+
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
+        return _DummyCompleted(stdout=b"{\n  b: 2,\n}\n{\n  a: 1,\n}\n")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    runner = run.CustomPythonFixture()
+    assert runner.run(script, update=False, coverage=False) is False
+
+
+def test_python_runner_update_writes_untransformed_output(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = python_fixture_root / "python" / "fixture.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    _fixture_script(script)
+    script.parent.joinpath("test.yaml").write_text(
+        "timeout: 30\nfixtures:\n  - sink\npre-compare: sort\n",
+        encoding="utf-8",
+    )
+
+    output = b"zebra\napple\n"
+
+    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
+        return _DummyCompleted(stdout=output)
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+    runner = run.CustomPythonFixture()
+    assert runner.run(script, update=True, coverage=False)
+    # Baselines record raw output; transforms only apply at comparison time.
+    assert script.with_suffix(".txt").read_bytes() == output
+
+
 def test_python_runner_passthrough_streams_output(
     python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
