@@ -4398,10 +4398,39 @@ def _format_lines_changed(total: int) -> str:
     return f"{_BLOCK_INDENT}└ {total} {line} changed"
 
 
-def _transform_sort(output: bytes) -> bytes:
-    """Sort output lines lexicographically.
+def _split_sort_units(lines: list[str]) -> list[str]:
+    """Group lines into sortable units, keeping record blocks intact.
 
-    Uses surrogateescape to preserve undecodable bytes as surrogate escapes,
+    A unit is either a single line or a top-level pretty-printed record block:
+    a line that is exactly ``{`` at column zero up to and including the next
+    line that is exactly ``}`` at column zero. This keeps multiline TQL output
+    intact while degenerating to plain line sorting for text and NDJSON
+    output. An unterminated block falls back to individual lines so malformed
+    output never gets swallowed into one giant unit.
+    """
+    units: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line == "{":
+            end = index + 1
+            while end < len(lines) and lines[end] != "}":
+                end += 1
+            if end < len(lines):
+                units.append("\n".join(lines[index : end + 1]))
+                index = end + 1
+                continue
+        units.append(line)
+        index += 1
+    return units
+
+
+def _transform_sort(output: bytes) -> bytes:
+    """Sort output units lexicographically in a format-aware manner.
+
+    Multiline record blocks (as printed by TQL's default output format) sort
+    as single units; all other content sorts line by line. Uses
+    surrogateescape to preserve undecodable bytes as surrogate escapes,
     allowing the transform to handle binary data gracefully.
     """
     if not output:
@@ -4409,8 +4438,8 @@ def _transform_sort(output: bytes) -> bytes:
     has_trailing_newline = output.endswith(b"\n")
     text = output.decode("utf-8", errors="surrogateescape")
     lines = text.splitlines(keepends=False)
-    sorted_lines = sorted(lines)
-    result = "\n".join(sorted_lines)
+    units = _split_sort_units(lines)
+    result = "\n".join(sorted(units))
     if has_trailing_newline:
         result += "\n"
     return result.encode("utf-8", errors="surrogateescape")
