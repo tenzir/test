@@ -4699,7 +4699,6 @@ def run_simple_test(
                 *TENZIR_BINARY,
                 "--bare-mode",
                 "--console-verbosity=warning",
-                "--multi",
                 *config_args,
                 *node_args,
                 *package_args,
