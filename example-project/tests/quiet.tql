@@ -1,0 +1,6 @@
+---
+quiet: true
+---
+from {time: "not a timestamp"}
+time = time.parse_time("%Y-%m-%d")
+to_stdout { write_ndjson }
