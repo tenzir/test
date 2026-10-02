@@ -1,0 +1,9 @@
+created: 2026-10-02
+title: Selective runtime warning suppression
+intro: >-
+  You can now silence runtime warnings that are irrelevant to your Tenzir tests while
+  keeping errors and compilation diagnostics visible. This release also updates the
+  example project for Tenzir v6 and removes the deprecated `--multi` option.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.1.0
