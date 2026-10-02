@@ -3,7 +3,9 @@ title: Runtime warning suppression for Tenzir tests
 type: feature
 authors:
   - mavam
-created: 2026-10-02T13:51:41.567099Z
+prs:
+  - 63
+created: 2026-10-02T14:36:48.777292Z
 ---
 
 You can now suppress runtime warnings from selected Tenzir tests with
