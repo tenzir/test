@@ -1693,6 +1693,7 @@ class _DirectoryConfig:
 def _default_test_config() -> TestConfig:
     return {
         "error": False,
+        "quiet": False,
         "timeout": 30,
         "runner": None,
         "skip": None,
@@ -2234,6 +2235,7 @@ def _assign_config_option(
     canonical = _canonical_config_key(key)
     valid_keys: set[str] = {
         "error",
+        "quiet",
         "timeout",
         "runner",
         "skip",
@@ -2286,7 +2288,7 @@ def _assign_config_option(
         config[canonical] = parsed_requires
         return
 
-    if canonical == "error":
+    if canonical in {"error", "quiet"}:
         if isinstance(value, bool):
             config[canonical] = value
             return
@@ -4597,6 +4599,33 @@ def check_group_is_empty(pgid: int) -> None:
     raise ValueError("leftover child processes!")
 
 
+def _prepare_quiet_test(test: Path, tmp_dir: Path) -> Path:
+    """Wrap a test in TQL's quiet scope, leaving its metadata and directives outside."""
+    lines = test.read_text(encoding="utf-8").splitlines(keepends=True)
+    start = 1 if lines and lines[0].startswith("#!") else 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    if start < len(lines) and lines[start].strip() == "---":
+        start += 1
+        while start < len(lines) and lines[start].strip() != "---":
+            start += 1
+        start += 1
+    # In particular, keep leading // parallelism: directives at the top level.
+    while start < len(lines) and (
+        not lines[start].strip() or lines[start].lstrip().startswith("//")
+    ):
+        start += 1
+    if start >= len(lines):
+        return test
+    header = "".join(lines[:start])
+    pipeline = "".join(lines[start:])
+    if not pipeline.endswith("\n"):
+        pipeline += "\n"
+    wrapped = tmp_dir / test.name
+    wrapped.write_text(f"{header}quiet {{\n{pipeline}}}\n", encoding="utf-8")
+    return wrapped
+
+
 def run_simple_test(
     test: Path,
     *,
@@ -4695,6 +4724,9 @@ def run_simple_test(
 
             if not TENZIR_BINARY:
                 raise RuntimeError("TENZIR_BINARY must be configured before running tests")
+            pipeline_test = test
+            if test_config.get("quiet", False):
+                pipeline_test = _prepare_quiet_test(test, Path(env[TEST_TMP_ENV_VAR]))
             cmd: list[str] = [
                 *TENZIR_BINARY,
                 "--bare-mode",
@@ -4704,7 +4736,7 @@ def run_simple_test(
                 *package_args,
                 *args,
                 "-f",
-                str(test),
+                str(pipeline_test),
             ]
             stdin_content = get_stdin_content(env)
             completed = run_subprocess(
@@ -4721,8 +4753,16 @@ def run_simple_test(
             stderr_output = b""
             if not passthrough_mode:
                 prefixes = output_path_prefixes(test)
-                output = strip_output_path_prefixes(completed.stdout or b"", prefixes)
-                stderr_output = strip_output_path_prefixes(completed.stderr or b"", prefixes)
+                raw_output = completed.stdout or b""
+                raw_stderr = completed.stderr or b""
+                if pipeline_test != test:
+                    # Don't expose the randomized wrapper path in baselines.
+                    wrapper_path = os.fsencode(pipeline_test)
+                    test_path = os.fsencode(test)
+                    raw_output = raw_output.replace(wrapper_path, test_path)
+                    raw_stderr = raw_stderr.replace(wrapper_path, test_path)
+                output = strip_output_path_prefixes(raw_output, prefixes)
+                stderr_output = strip_output_path_prefixes(raw_stderr, prefixes)
 
             if expect_error == good:
                 interrupted = _is_interrupt_exit(completed.returncode) or interrupt_requested()

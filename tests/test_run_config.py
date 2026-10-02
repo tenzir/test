@@ -533,6 +533,7 @@ print("ok")
 
     assert config == {
         "error": False,
+        "quiet": False,
         "timeout": 45,
         "runner": "python",
         "skip": None,
