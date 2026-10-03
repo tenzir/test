@@ -50,7 +50,6 @@ include = [
   "/LICENSE",
   "/README.md",
   "/changelog",
-  "/docs",
   "/example-library",
   "/example-package",
   "/example-project",

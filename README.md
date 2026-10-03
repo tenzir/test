@@ -26,18 +26,6 @@ uvx tenzir-test --help
 `uvx` downloads the newest compatible release, runs it in an isolated
 environment, and caches subsequent invocations for fast reuse.
 
-## 📊 CI reports
-
-Write a versioned JSON report with failed test paths, diagnostics, and diffs:
-
-```sh
-tenzir-test --root test --report-json artifacts/tests.json
-```
-
-For sandboxed builds, `--report-json -` emits tagged JSON lines that your CI
-wrapper can consume alongside build logs. See the [report format](docs/reports.md)
-for the schema, path handling, and partial-run behavior.
-
 ## 📚 Documentation
 
 Consult our [user guide](https://docs.tenzir.com/guides/testing/write-tests)
