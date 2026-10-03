@@ -152,6 +152,11 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     help="Show an aggregate table and detailed failure summary after execution.",
 )
 @click.option(
+    "--report-json",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Write a versioned JSON report. Use '-' for tagged JSON lines in stdout.",
+)
+@click.option(
     "--diff/--no-diff",
     "show_diff_output",
     default=True,
@@ -282,6 +287,7 @@ def cli(
     runner_summary: bool,
     fixture_summary: bool,
     show_summary: bool,
+    report_json: Path | None,
     show_diff_output: bool,
     show_diff_stat: bool,
     keep_tmp_dirs: bool,
@@ -336,6 +342,9 @@ def cli(
     jobs_source = ctx.get_parameter_source("jobs")
     jobs_overridden = jobs_source is not click.core.ParameterSource.DEFAULT
 
+    if fixtures and report_json is not None:
+        raise click.UsageError("--report-json cannot be used with --fixture mode")
+
     try:
         with _inline_dependency_install_scope(disable_inline_dependency_install):
             if fixtures:
@@ -364,6 +373,7 @@ def cli(
                 runner_summary=runner_summary,
                 fixture_summary=fixture_summary,
                 show_summary=show_summary,
+                report_json=report_json,
                 show_diff_output=show_diff_output,
                 show_diff_stat=show_diff_stat,
                 keep_tmp_dirs=keep_tmp_dirs,

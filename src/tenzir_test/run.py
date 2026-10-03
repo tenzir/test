@@ -35,6 +35,7 @@ import yaml
 import tenzir_test.fixtures as fixtures_impl
 from . import hooks as hooks_impl
 from . import packages
+from .report import Report
 from .config import Settings, discover_settings
 from .inline_dependencies import extract_inline_dependencies, install_inline_dependencies
 from .runners import (
@@ -51,6 +52,7 @@ from .runners import (
 
 
 TestConfig = dict[str, object]
+_REPORT: Report | None = None
 
 #: YAML value for the ``skip.on`` key that opts in to skipping a suite
 #: when a fixture raises :class:`FixtureUnavailable`.
@@ -1081,15 +1083,23 @@ def run_subprocess(
             cwd_segment = ""
         _CLI_LOGGER.debug("exec %s%s", cmd_display, cwd_segment)
 
-    return subprocess.run(
-        args,
-        check=check,
-        stdout=stdout,
-        stderr=stderr,
-        text=text,
-        input=stdin_data,
-        **kwargs,
-    )
+    try:
+        result = subprocess.run(
+            args,
+            check=check,
+            stdout=stdout,
+            stderr=stderr,
+            text=text,
+            input=stdin_data,
+            **kwargs,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        if _REPORT is not None:
+            _REPORT.output(exc.stdout, exc.stderr, getattr(exc, "returncode", None))
+        raise
+    if _REPORT is not None:
+        _REPORT.output(result.stdout, result.stderr, result.returncode)
+    return result
 
 
 def _resolve_tmp_base() -> Path:
@@ -2835,6 +2845,13 @@ def _invoke_hooks(
     test_path: Path | None = None,
     debug: bool = False,
 ) -> None:
+    # Reporting is built in, not a project hook: --no-hooks must not disable it.
+    if _REPORT is not None:
+        if event == "test_start" and isinstance(context, hooks_impl.TestStartContext):
+            _REPORT.start_test(context.test)
+        elif event == "test_finish" and isinstance(context, hooks_impl.TestFinishContext):
+            with stdout_lock:
+                _REPORT.finish_test(context)
     _HOOK_INVOKER.invoke(
         hook_chain,
         event,
@@ -2999,6 +3016,8 @@ class TestScope:
         return self._tmp_deferral.last
 
     def record_attempt(self) -> int:
+        if _REPORT is not None:
+            _REPORT.start_attempt(self._test_path)
         self.state.attempts += 1
         return self.state.attempts
 
@@ -3330,6 +3349,8 @@ def log_comparison(test: Path, ref_path: Path, *, mode: str) -> None:
 
 
 def report_failure(test: Path, message: str) -> None:
+    if _REPORT is not None:
+        _REPORT.failure(test, message)
     if should_suppress_failure_output():
         return
     with stdout_lock:
@@ -4342,6 +4363,8 @@ def success(test: Path) -> None:
 # handle_skip() respect the verbose setting since passed/skipped tests are
 # expected outcomes that can be summarized at the end.
 def fail(test: Path) -> None:
+    if _REPORT is not None:
+        _REPORT.start_test(test)
     with stdout_lock:
         rel_test = _relativize_path(test)
         attempt_suffix = _format_attempt_suffix()
@@ -4544,6 +4567,9 @@ def print_diff(expected: bytes, actual: bytes, path: Path) -> None:
             n=2,
         )
     )
+    if _REPORT is not None:
+        reference = os.fsencode(_relativize_path(path))
+        _REPORT.diff(b"--- " + reference + b"\n+++ actual\n" + b"".join(diff[2:]))
     added = sum(
         1
         for index, line in enumerate(diff)
@@ -6599,6 +6625,7 @@ def run_cli(
     fixture_names: Sequence[str] = (),
     fixture_tags: Sequence[str] = (),
     no_hooks: bool = False,
+    report_json: Path | None = None,
 ) -> ExecutionResult:
     """Execute the harness and return a structured result for library consumers.
 
@@ -6625,6 +6652,12 @@ def run_cli(
     """
     from tenzir_test.engine import state as engine_state
 
+    global _REPORT
+    reporter = Report(report_json) if report_json is not None else None
+    _REPORT = reporter
+    report_exit_code = 1
+    report_interrupted = False
+    report_error: str | None = None
     debug_enabled = bool(debug or _default_debug_logging)
     root_path = Path(root or os.environ.get("TENZIR_TEST_ROOT") or Path.cwd()).resolve()
     root_hooks = hooks_impl.HookSet()
@@ -7208,6 +7241,9 @@ def run_cli(
             engine_state.refresh()
 
             def _finish_result(result: ExecutionResult) -> ExecutionResult:
+                nonlocal report_exit_code, report_interrupted
+                report_exit_code = result.exit_code
+                report_interrupted = result.interrupted
                 shutdown_once.invoke(
                     (root_hooks,),
                     "shutdown",
@@ -7279,6 +7315,9 @@ def run_cli(
             )
 
     except BaseException as exc:
+        report_exit_code = _exception_exit_code(exc)
+        report_interrupted = _exception_is_interrupt(exc) or interrupt_requested()
+        report_error = str(exc)
         if startup_succeeded and not shutdown_once.attempted:
             shutdown_root = settings.root if settings is not None else root_path
             try:
@@ -7312,6 +7351,14 @@ def run_cli(
         _CURRENT_PROJECT_VIEW = None
         _CURRENT_HOOK_CHAIN = tuple()
         _HOOKS_DISABLED = _hooks_disabled(False)
+        _REPORT = None
+        if reporter is not None:
+            try:
+                reporter.finish(
+                    exit_code=report_exit_code, interrupted=report_interrupted, error=report_error
+                )
+            except OSError as exc:
+                raise HarnessError(f"cannot write test report to {report_json}: {exc}") from exc
 
 
 def execute(
@@ -7340,6 +7387,7 @@ def execute(
     fixture_names: Sequence[str] = (),
     fixture_tags: Sequence[str] = (),
     no_hooks: bool = False,
+    report_json: Path | None = None,
 ) -> ExecutionResult:
     """Library-oriented wrapper around `run_cli` with defaulted parameters.
 
@@ -7390,6 +7438,7 @@ def execute(
         fixture_names=fixture_names,
         fixture_tags=fixture_tags,
         no_hooks=no_hooks,
+        report_json=report_json,
     )
 
 
