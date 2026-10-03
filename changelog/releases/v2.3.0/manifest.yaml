@@ -1,0 +1,9 @@
+created: 2026-10-03
+title: Structured CI test reports
+intro: >-
+  You can now export final test outcomes, failure diagnostics, and plain diffs as
+  versioned JSON reports. Tagged log records let your CI surface failures from sandboxed
+  builds without parsing terminal output.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.2.0
