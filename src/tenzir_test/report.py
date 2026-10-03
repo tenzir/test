@@ -64,9 +64,9 @@ class _Diagnostics:
 
 
 class Report:
-    def __init__(self, destination: Path, root: Path) -> None:
+    def __init__(self, destination: Path) -> None:
         self.destination = destination
-        self.root = root.resolve()
+        self.root = Path.cwd()
         self._lock = threading.Lock()
         self._local = threading.local()
         self._diagnostics: dict[Path, _Diagnostics] = {}

@@ -14,6 +14,7 @@ from tenzir_test.report import STREAM_PREFIX
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path / "project"
     (root / "tests").mkdir(parents=True)
+    monkeypatch.chdir(root)
     monkeypatch.setenv("TENZIR_BINARY", sys.executable)
     monkeypatch.setenv("TENZIR_NODE_BINARY", sys.executable)
     monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
@@ -34,9 +35,7 @@ def _script(root: Path, name: str, body: str, expected: str = "") -> Path:
 
 
 def _execute(root: Path, report: Path, **kwargs):
-    return run.execute(
-        root=root, jobs=4, no_hooks=True, report_json=report, report_root=root, **kwargs
-    )
+    return run.execute(root=root, jobs=4, no_hooks=True, report_json=report, **kwargs)
 
 
 def test_file_report_contains_final_outcomes_and_plain_diffs(project: Path, tmp_path: Path):
@@ -138,11 +137,32 @@ def test_cli_report_options(project: Path, tmp_path: Path):
     report = tmp_path / "cli.json"
     assert cli.main(["--root", str(project), "--report-json", str(report)]) == 0
     assert json.loads(report.read_text())["exit_code"] == 0
-    assert cli.main(["--report-root", str(project)]) == 2
+    assert (
+        cli.main(
+            ["--root", str(project), "--report-json", str(report), "--report-root", str(project)]
+        )
+        == 2
+    )
     assert cli.main(["--fixture", "node", "--report-json", str(report)]) == 2
 
 
-def test_satellite_paths_are_relative_to_report_root(project: Path, tmp_path: Path):
+def test_report_paths_use_invocation_directory_not_report_destination(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _script(project, "pass.sh", "echo yes\n", "yes\n")
+    monkeypatch.chdir(tmp_path)
+    report = Path("artifacts/result.json")
+    assert _execute(project, report).exit_code == 0
+    document = json.loads(report.read_text())
+    assert document["root"] == str(tmp_path)
+    assert document["tests"][0]["path"] == "project/tests/pass.sh"
+    assert document["tests"][0]["project"] == "project"
+
+
+def test_satellite_paths_are_relative_to_invocation_directory(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.chdir(tmp_path)
     satellite = tmp_path / "satellite"
     _script(project, "same.sh", "echo root\n", "root\n")
     _script(satellite, "same.sh", "echo satellite\n", "satellite\n")
@@ -153,7 +173,6 @@ def test_satellite_paths_are_relative_to_report_root(project: Path, tmp_path: Pa
         no_hooks=True,
         jobs=2,
         report_json=report,
-        report_root=tmp_path,
     )
     assert result.exit_code == 0
     tests = json.loads(report.read_text())["tests"]

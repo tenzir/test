@@ -6626,7 +6626,6 @@ def run_cli(
     fixture_tags: Sequence[str] = (),
     no_hooks: bool = False,
     report_json: Path | None = None,
-    report_root: Path | None = None,
 ) -> ExecutionResult:
     """Execute the harness and return a structured result for library consumers.
 
@@ -6654,7 +6653,7 @@ def run_cli(
     from tenzir_test.engine import state as engine_state
 
     global _REPORT
-    reporter = Report(report_json, report_root or Path.cwd()) if report_json is not None else None
+    reporter = Report(report_json) if report_json is not None else None
     _REPORT = reporter
     report_exit_code = 1
     report_interrupted = False
@@ -7389,7 +7388,6 @@ def execute(
     fixture_tags: Sequence[str] = (),
     no_hooks: bool = False,
     report_json: Path | None = None,
-    report_root: Path | None = None,
 ) -> ExecutionResult:
     """Library-oriented wrapper around `run_cli` with defaulted parameters.
 
@@ -7441,7 +7439,6 @@ def execute(
         fixture_tags=fixture_tags,
         no_hooks=no_hooks,
         report_json=report_json,
-        report_root=report_root,
     )
 
 

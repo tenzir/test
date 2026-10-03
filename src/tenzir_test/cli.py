@@ -157,11 +157,6 @@ Documentation: https://docs.tenzir.com/reference/test-framework/
     help="Write a versioned JSON report. Use '-' for tagged JSON lines in stdout.",
 )
 @click.option(
-    "--report-root",
-    type=click.Path(path_type=Path, file_okay=False, exists=True),
-    help="Base directory for report paths (default: current working directory).",
-)
-@click.option(
     "--diff/--no-diff",
     "show_diff_output",
     default=True,
@@ -293,7 +288,6 @@ def cli(
     fixture_summary: bool,
     show_summary: bool,
     report_json: Path | None,
-    report_root: Path | None,
     show_diff_output: bool,
     show_diff_stat: bool,
     keep_tmp_dirs: bool,
@@ -348,8 +342,6 @@ def cli(
     jobs_source = ctx.get_parameter_source("jobs")
     jobs_overridden = jobs_source is not click.core.ParameterSource.DEFAULT
 
-    if report_root is not None and report_json is None:
-        raise click.UsageError("--report-root requires --report-json")
     if fixtures and report_json is not None:
         raise click.UsageError("--report-json cannot be used with --fixture mode")
 
@@ -382,7 +374,6 @@ def cli(
                 fixture_summary=fixture_summary,
                 show_summary=show_summary,
                 report_json=report_json,
-                report_root=report_root,
                 show_diff_output=show_diff_output,
                 show_diff_stat=show_diff_stat,
                 keep_tmp_dirs=keep_tmp_dirs,
