@@ -2563,22 +2563,20 @@ def test_node_fixture_deduplicates_package_dirs(monkeypatch):
 
     monkeypatch.setattr(node_fixture.os, "killpg", fake_killpg)
 
-    # Simulate the scenario where /pkg appears in all three sources:
-    # - TENZIR_PACKAGE_ROOT
-    # - TENZIR_PACKAGE_DIRS (which already includes the root)
-    # - config_args (via --package-dirs)
+    # Root, environment, and context flags merge in that order, retaining
+    # only the first occurrence even when a duplicate has a different spelling.
     env = {
         "TENZIR_NODE_BINARY": "/usr/bin/tenzir-node",
         "TENZIR_BINARY": "/usr/bin/tenzir",
         "TENZIR_PACKAGE_ROOT": "/pkg",
-        "TENZIR_PACKAGE_DIRS": "/pkg,/other",
+        "TENZIR_PACKAGE_DIRS": "/env,/pkg,/other",
     }
     context = fixture_api.FixtureContext(
         test=Path("/tmp/dedup-test.tql"),
         config={"timeout": 30},
         coverage=False,
         env=env,
-        config_args=("--package-dirs=/pkg,/other",),
+        config_args=("--package-dirs=/config,/other,/pkg/../pkg,/env",),
         tenzir_binary=("/usr/bin/tenzir",),
         tenzir_node_binary=("/usr/bin/tenzir-node",),
     )
@@ -2592,67 +2590,122 @@ def test_node_fixture_deduplicates_package_dirs(monkeypatch):
 
     cmd = captured["cmd"]
     package_flags = [arg for arg in cmd if arg.startswith("--package-dirs=")]
-    # Should only have one --package-dirs argument with deduplicated entries.
-    assert len(package_flags) == 1
-    dirs = package_flags[0].split("=", 1)[1].split(",")
-    # /pkg should appear only once despite being in all three sources.
-    assert dirs.count("/pkg") == 1
-    assert dirs.count("/other") == 1
-    assert set(dirs) == {"/pkg", "/other"}
+    assert package_flags == ["--package-dirs=/pkg,/env,/other,/config"]
 
 
-def test_node_fixture_in_suite_receives_package_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
-    package_root = Path(__file__).resolve().parent.parent / "example-package"
+@pytest.mark.parametrize("mode", ["sequential", "parallel"])
+def test_node_fixture_in_suite_receives_package_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    import json
+
+    from tenzir_test.runners.custom_python_fixture_runner import CustomPythonFixture
+
+    package_root = tmp_path / "pkg"
     suite_dir = package_root / "tests" / "context"
-    original_settings = config.Settings(
-        root=run.ROOT,
-        tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
+    tests = [suite_dir / name / "case.py" for name in ("01-first", "02-second")]
+    for index, test in enumerate(tests):
+        test.parent.mkdir(parents=True)
+        test.write_text("pass\n")
+        (test.parent / "test.yaml").write_text(
+            f"package_dirs: [../member-{index}]\ninputs: ../member-inputs-{index}\n"
+        )
+    (package_root / "package.yaml").write_text("name: pkg\n")
+    (suite_dir / "test.yaml").write_text(
+        f"suite:\n  name: context\n  mode: {mode}\nfixtures: [node]\n"
+        "package_dirs: [./suite-deps]\ninputs: ./suite-inputs\n"
     )
+    general_config = tests[0].parent / "tenzir.yaml"
+    general_config.write_text("{}\n")
+    node_config = tests[0].parent / "tenzir-node.yaml"
+    node_config.write_text("{}\n")
+    cli = tmp_path / "cli-deps"
+    suite_dirs = f"{package_root},{suite_dir / 'suite-deps'},{cli}"
+    original_settings = run._settings
+    assert original_settings is not None
     run.apply_settings(
         config.Settings(
-            root=package_root,
-            tenzir_binary=("tenzir",),
-            tenzir_node_binary=("tenzir-node",),
+            root=tmp_path, tenzir_binary=("tenzir",), tenzir_node_binary=("tenzir-node",)
         )
     )
+    monkeypatch.setattr(run, "_CLI_PACKAGES", [cli])
+    monkeypatch.setattr(run, "_CURRENT_PROJECT_ENV", None)
+    monkeypatch.setenv("TENZIR_PACKAGE_DIRS", "ambient-must-be-replaced")
     run._clear_directory_config_cache()
-
-    captured: dict[str, object] = {}
+    counts = {"start": 0, "stop": 0}
+    stopped = threading.Event()
+    barrier = threading.Barrier(len(tests)) if mode == "parallel" else None
+    children: dict[Path, dict[str, str]] = {}
 
     def fake_popen(cmd, **kwargs):
-        captured["node_cmd"] = list(cmd)
-        captured["node_kwargs"] = kwargs
+        counts["start"] += 1
+        context = fixture_api.current_context()
+        assert context is not None
+        assert context.test == tests[0]  # Anchor at the first member, not the suite directory.
+        assert context.config["package_dirs"] == (str(suite_dir / "suite-deps"),)
+        assert context.config_args == (f"--config={general_config}", f"--package-dirs={suite_dirs}")
+        assert kwargs["cwd"] == tests[0].parent
+        assert kwargs["env"]["TENZIR_PACKAGE_DIRS"] == suite_dirs
+        assert kwargs["env"]["TENZIR_INPUTS"] == str(suite_dir / "suite-inputs")
+        assert [arg for arg in cmd if arg.startswith("--package-dirs=")] == [
+            f"--package-dirs={suite_dirs}"
+        ]
+        assert [arg for arg in cmd if arg.startswith("--config=")] == [f"--config={node_config}"]
+
+        def wait(timeout=None):
+            assert stopped.wait(timeout=5 if timeout is None else timeout)
+            return 0
+
         return SimpleNamespace(
             stdout=io.StringIO("localhost:10000\n"),
             stderr=io.StringIO(""),
-            pid=101,
-            terminate=lambda: None,
-            wait=lambda timeout=None: None,
-            kill=lambda: None,
+            wait=wait,
+            poll=lambda: 0 if stopped.is_set() else None,
         )
 
-    monkeypatch.setattr(run, "run_simple_test", lambda *args, **kwargs: True)
-    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
-    monkeypatch.setenv("TENZIR_TEST_DEBUG", "1")
+    def terminate(process):
+        counts["stop"] += 1
+        stopped.set()
+        process.wait()
 
+    def execute(cmd, *, env, **kwargs):
+        test = Path(cmd[-1])
+        index = tests.index(test)
+        member_dirs = f"{package_root},{suite_dir / f'member-{index}'},{cli}"
+        assert counts == {"start": 1, "stop": 0}
+        assert env["TENZIR_PACKAGE_ROOT"] == str(package_root)
+        assert env["TENZIR_PACKAGE_DIRS"] == member_dirs
+        assert env["TENZIR_INPUTS"] == str(suite_dir / f"member-inputs-{index}")
+        assert env["TENZIR_NODE_CLIENT_ENDPOINT"] == "localhost:10000"
+        payload = json.loads(env["TENZIR_PYTHON_FIXTURE_CONTEXT"])
+        assert payload["config_args"] == [f"--package-dirs={member_dirs}"]
+        children[test] = dict(env)
+        if barrier is not None:
+            barrier.wait(timeout=5)
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    runner = CustomPythonFixture()
+    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
+    monkeypatch.setattr(run, "run_subprocess", execute)
+    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(node_fixture, "_terminate_process", terminate)
     try:
-        suite_tests = sorted((suite_dir).glob("*.tql"))
-        queue = run._build_queue_from_paths(suite_tests, coverage=False)
-        worker = run.Worker(queue, update=False, coverage=False)
+        queue = run._build_queue_from_paths(tests, coverage=False)
+        assert len(queue) == 1
+        worker = run.Worker(queue, update=True, coverage=False, jobs=len(tests))
         worker.start()
         summary = worker.join()
-        assert summary.total == 3
+        assert summary.total == len(tests)
+        assert summary.failed == 0
+        assert counts == {"start": 1, "stop": 1}
+        assert set(children) == set(tests)
+        for env in children.values():
+            assert not Path(env[run.TEST_TMP_ENV_VAR]).exists()
+        assert fixture_api.current_context() is None
     finally:
+        stopped.set()
         run.apply_settings(original_settings)
         run._clear_directory_config_cache()
-
-    node_cmd = captured.get("node_cmd")
-    assert isinstance(node_cmd, list)
-    assert any(
-        arg == f"--package-dirs={package_root}"
-        for arg in node_cmd  # type: ignore[no-untyped-call]
-    )
 
 
 def test_worker_prints_passthrough_header(

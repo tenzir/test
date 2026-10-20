@@ -10,6 +10,7 @@ import typing
 import pytest
 
 from tenzir_test import config, run
+from tenzir_test import fixtures as fixture_api
 from tenzir_test.fixtures import FixtureSpec  # noqa: F811
 from tenzir_test.run import ExecutionMode
 
@@ -61,7 +62,7 @@ class _AssertionPayload:
 
 
 @pytest.fixture()
-def configured_root(tmp_path: Path) -> Path:
+def configured_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> typing.Iterator[Path]:
     """Point the runner helpers at an isolated temporary directory."""
     original = config.Settings(
         root=run.ROOT,
@@ -71,11 +72,17 @@ def configured_root(tmp_path: Path) -> Path:
     test_settings = config.Settings(
         root=tmp_path, tenzir_binary=run.TENZIR_BINARY, tenzir_node_binary=run.TENZIR_NODE_BINARY
     )
+    monkeypatch.setattr(run, "_CLI_PACKAGES", [])
+    monkeypatch.setattr(run, "_CURRENT_PROJECT_ENV", None)
     run.apply_settings(test_settings)
+    run._clear_directory_config_cache()
     inputs_dir = tmp_path / "inputs"
     inputs_dir.mkdir(parents=True, exist_ok=True)
-    yield tmp_path
-    run.apply_settings(original)
+    try:
+        yield tmp_path
+    finally:
+        run.apply_settings(original)
+        run._clear_directory_config_cache()
 
 
 def test_parse_test_config_defaults(tmp_path: Path, configured_root: Path) -> None:
@@ -792,6 +799,22 @@ def test_run_simple_test_injects_package_dirs(
     finally:
         run.apply_settings(original_settings)
 
+    assert captured["cmd"] == [
+        sys.executable,
+        "--bare-mode",
+        "--console-verbosity=warning",
+        f"--package-dirs={package_root}",
+        "-f",
+        str(test_file),
+    ]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["TENZIR_PACKAGE_ROOT"] == str(package_root)
+    assert env["TENZIR_PACKAGE_DIRS"] == str(package_root)
+    assert env["TENZIR_INPUTS"] == str(tests_dir / "inputs")
+    assert env["TENZIR_TEST_ROOT"] == str(package_root)
+    assert not Path(env[run.TEST_TMP_ENV_VAR]).exists()
+
 
 def test_run_simple_test_merges_package_dirs_from_directory_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -805,7 +828,12 @@ def test_run_simple_test_merges_package_dirs_from_directory_config(
     test_config = tests_dir / "test.yaml"
     shared_dir = (tests_dir / ".." / "shared").resolve()
     other_dir = Path("/opt/other/pkg")
-    test_config.write_text(f"package_dirs:\n  - {shared_dir}\n  - {other_dir}\n", encoding="utf-8")
+    test_config.write_text(
+        f"package_dirs:\n  - {shared_dir}\n  - {package_root}\n  - {other_dir}\n  - {shared_dir}\n",
+        encoding="utf-8",
+    )
+    cli_dir = tmp_path / "cli-package"
+    monkeypatch.setattr(run, "_CLI_PACKAGES", [other_dir, cli_dir, shared_dir])
 
     original_settings = config.Settings(
         root=run.ROOT,
@@ -844,11 +872,12 @@ def test_run_simple_test_merges_package_dirs_from_directory_config(
     cmd = captured["cmd"]
     flags = [arg for arg in cmd if arg.startswith("--package-dirs=")]
     assert len(flags) == 1
-    expected_dirs = {str(package_root), str(shared_dir), str(other_dir)}
-    assert set(flags[0].split("=", 1)[1].split(",")) == expected_dirs
+    expected_dirs = ",".join(map(str, (package_root, shared_dir, other_dir, cli_dir)))
+    assert flags == [f"--package-dirs={expected_dirs}"]
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["TENZIR_PACKAGE_ROOT"] == str(package_root)
+    assert env["TENZIR_PACKAGE_DIRS"] == expected_dirs
     expected_inputs = package_root / "tests" / "inputs"
     assert env["TENZIR_INPUTS"] == str(expected_inputs)
     scratch_value = env[run.TEST_TMP_ENV_VAR]
@@ -2075,3 +2104,188 @@ def test_current_assertions_returns_empty_without_context() -> None:
     from tenzir_test.fixtures import current_assertions
 
     assert current_assertions("nonexistent") == {}
+
+
+@pytest.mark.parametrize(
+    "replacement", [None, "package_dirs: [../child-deps]\n", "package_dirs: []\n"]
+)
+def test_package_dirs_inherit_declaration_site_or_replace(
+    configured_root: Path, replacement: str | None
+) -> None:
+    parent = configured_root / "tests"
+    child = parent / "nested"
+    child.mkdir(parents=True)
+    (parent / "test.yaml").write_text("package_dirs: [../parent-deps]\n")
+    if replacement is not None:
+        (child / "test.yaml").write_text(replacement)
+    test = child / "case.tql"
+    test.write_text("version\n")
+    expected = (str(configured_root / "parent-deps"),)
+    if replacement is not None:
+        expected = (str(parent / "child-deps"),) if "child-deps" in replacement else ()
+    assert run.parse_test_config(test)["package_dirs"] == expected
+
+
+@pytest.mark.parametrize("exists", [False, True], ids=["missing", "no-package-children"])
+def test_expand_package_dirs_falls_back_to_hint(tmp_path: Path, exists: bool) -> None:
+    hint = tmp_path / "hint"
+    if exists:
+        (hint / "not-a-package").mkdir(parents=True)
+    assert run._expand_package_dirs(hint / ".." / "hint") == [str(hint)]
+
+
+def test_prepare_package_environment_preserves_expansion_and_merge_order(
+    configured_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = configured_root / "owner"
+    test = owner / "tests" / "case.tql"
+    test.parent.mkdir(parents=True)
+    test.write_text("version\n")
+    (owner / "package.yaml").write_text("name: owner\n")
+    yaml_library, cli_library = configured_root / "yaml-lib", configured_root / "cli-lib"
+    z, a, b = (configured_root / name for name in ("z", "a", "b"))
+    (test.parent / "test.yaml").write_text("package_dirs: [../../yaml-lib]\n")
+    expanded: list[Path] = []
+
+    def iter_packages(path: Path) -> typing.Iterator[Path]:
+        expanded.append(path)
+        yield from {yaml_library: [z, owner, a, z], cli_library: [b, a, z]}.get(path, [])
+
+    monkeypatch.setattr(run.packages, "iter_package_dirs", iter_packages)
+    monkeypatch.setattr(run, "_CLI_PACKAGES", [cli_library, yaml_library])
+    env = {"TENZIR_PACKAGE_DIRS": "ambient", "TENZIR_PACKAGE_ROOT": "ambient-root"}
+    result = run._prepare_package_environment(test, run.parse_test_config(test), env)
+    assert result == tuple(map(str, (owner, z, a, b)))
+    assert expanded == [yaml_library, cli_library, yaml_library]
+    assert env["TENZIR_PACKAGE_DIRS"] == ",".join(result)
+    assert env["TENZIR_PACKAGE_ROOT"] == str(owner)
+    assert run._get_cli_packages() == [cli_library, yaml_library]
+
+
+@pytest.mark.parametrize("harness_root", ["library", "package", "tests"])
+@pytest.mark.parametrize("inputs", ["fallback", "package", "nearest", "override"])
+def test_prepare_package_environment_inputs_across_roots(
+    configured_root: Path, harness_root: str, inputs: str
+) -> None:
+    owner = configured_root / "pkg"
+    test = owner / "tests" / "nested" / "case.tql"
+    test.parent.mkdir(parents=True)
+    test.write_text("version\n")
+    (owner / "package.yaml").write_text("name: pkg\n")
+    root = {"library": configured_root, "package": owner, "tests": owner / "tests"}[harness_root]
+    run.apply_settings(
+        config.Settings(
+            root=root, tenzir_binary=run.TENZIR_BINARY, tenzir_node_binary=run.TENZIR_NODE_BINARY
+        )
+    )
+    expected = owner / "tests" / "inputs"
+    if inputs in {"package", "nearest"}:
+        expected.mkdir()
+    if inputs == "nearest":
+        expected = test.parent / "inputs"
+        expected.mkdir()
+    if inputs == "override":
+        expected = owner / "explicit-missing"
+        (test.parent / "test.yaml").write_text("inputs: ../../explicit-missing\n")
+    test_config = run.parse_test_config(test)
+    env, _ = run.get_test_env_and_config_args(test, inputs=test_config["inputs"])
+    try:
+        assert run._prepare_package_environment(test, test_config, env) == (str(owner),)
+        assert env["TENZIR_INPUTS"] == str(expected)
+        assert env["TENZIR_TEST_ROOT"] == str(root)
+        assert env["TENZIR_PACKAGE_ROOT"] == str(owner)
+        if inputs in {"fallback", "override"}:
+            assert not expected.exists()
+    finally:
+        run.cleanup_test_tmp_dir(env[run.TEST_TMP_ENV_VAR])
+
+
+@pytest.mark.parametrize("ambient", [None, "", "/ambient/packages"])
+def test_no_computed_package_dirs_preserves_ambient_without_tql_flag(
+    configured_root: Path, monkeypatch: pytest.MonkeyPatch, ambient: str | None
+) -> None:
+    test = configured_root / "case.tql"
+    test.write_text("version\n")
+    env = {"TENZIR_INPUTS": "original-inputs", "TENZIR_PACKAGE_ROOT": "ambient-root"}
+    if ambient is not None:
+        env["TENZIR_PACKAGE_DIRS"] = ambient
+    before = env.copy()
+    assert run._prepare_package_environment(test, run.parse_test_config(test), env) == ()
+    assert env == before
+    if ambient is None:
+        monkeypatch.delenv("TENZIR_PACKAGE_DIRS", raising=False)
+    else:
+        monkeypatch.setenv("TENZIR_PACKAGE_DIRS", ambient)
+    monkeypatch.setattr(run, "TENZIR_BINARY", ("engine", "prefix"))
+
+    def execute(cmd, *, env, **kwargs):
+        assert cmd == [
+            "engine",
+            "prefix",
+            "--bare-mode",
+            "--console-verbosity=warning",
+            "-f",
+            str(test),
+        ]
+        assert env.get("TENZIR_PACKAGE_DIRS") == ambient
+        return run.subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(run, "run_subprocess", execute)
+    assert run.run_simple_test(test, update=True, output_ext="txt")
+
+
+def test_tql_package_flag_order_and_fixture_overlay(
+    configured_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    owner = configured_root / "pkg"
+    test = owner / "tests" / "case.tql"
+    test.parent.mkdir(parents=True)
+    (owner / "package.yaml").write_text("name: pkg\n")
+    (test.parent / "test.yaml").write_text("fixtures: [node]\npackage_dirs: [../shared]\n")
+    test.write_text("version\n")
+    general = test.parent / "tenzir.yaml"
+    general.write_text("{}\n")
+    monkeypatch.setattr(run, "TENZIR_BINARY", ("engine", "--prefix-flag"))
+    monkeypatch.setenv("TENZIR_PACKAGE_DIRS", "ambient")
+    package_flag = f"--package-dirs={owner},{owner / 'shared'}"
+    counts = {"start": 0, "stop": 0}
+
+    @contextmanager
+    def node():
+        context = fixture_api.current_context()
+        assert context is not None
+        assert context.env["TENZIR_PACKAGE_DIRS"] == f"{owner},{owner / 'shared'}"
+        assert context.config_args == (f"--config={general}",)
+        counts["start"] += 1
+        try:
+            yield {
+                "TENZIR_NODE_CLIENT_ENDPOINT": "localhost:1234",
+                "TENZIR_PACKAGE_DIRS": "overlay",
+            }
+        finally:
+            counts["stop"] += 1
+
+    monkeypatch.setitem(fixture_api._FACTORIES, "node", node)
+
+    def execute(cmd, *, env, **kwargs):
+        assert cmd == [
+            "engine",
+            "--prefix-flag",
+            "--bare-mode",
+            "--console-verbosity=warning",
+            f"--config={general}",
+            "--endpoint=localhost:1234",
+            package_flag,
+            "--runner-flag",
+            "-f",
+            str(test),
+        ]
+        assert env["TENZIR_PACKAGE_DIRS"] == "overlay"
+        return run.subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(run, "run_subprocess", execute)
+    assert run.run_simple_test(test, update=True, args=("--runner-flag",), output_ext="txt")
+    assert counts == {"start": 1, "stop": 1}
+    assert fixture_api.current_context() is None

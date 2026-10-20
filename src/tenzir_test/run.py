@@ -2639,6 +2639,31 @@ def _find_nearest_inputs_dir(test: Path, root: Path) -> Path | None:
     return None
 
 
+def _prepare_package_environment(
+    test: Path, test_config: TestConfig, env: dict[str, str]
+) -> tuple[str, ...]:
+    """Prepare package variables and return computed, not ambient, directories."""
+
+    candidates: list[str] = []
+    package_root = packages.find_package_root(test)
+    if package_root is not None:
+        env["TENZIR_PACKAGE_ROOT"] = str(package_root)
+        if test_config.get("inputs") is None:
+            nearest = _find_nearest_inputs_dir(test, package_root)
+            env["TENZIR_INPUTS"] = str(
+                nearest.resolve() if nearest is not None else package_root / "tests" / "inputs"
+            )
+        candidates.append(str(package_root))
+    for entry in cast(tuple[str, ...], test_config.get("package_dirs", tuple())):
+        candidates.extend(_expand_package_dirs(Path(entry)))
+    for cli_path in _get_cli_packages():
+        candidates.extend(_expand_package_dirs(cli_path))
+    package_dirs = tuple(_deduplicate_package_dirs(candidates))
+    if package_dirs:
+        env["TENZIR_PACKAGE_DIRS"] = ",".join(package_dirs)
+    return package_dirs
+
+
 def _looks_like_project_root(path: Path) -> bool:
     """Return True when the path or one of its parents resembles a project root."""
 
@@ -4680,32 +4705,8 @@ def run_simple_test(
     expect_error = bool(test_config.get("error", False))
     passthrough_mode = is_passthrough_enabled()
 
-    config_package_dirs = cast(tuple[str, ...], test_config.get("package_dirs", tuple()))
-    additional_package_dirs: list[str] = []
-    for entry in config_package_dirs:
-        additional_package_dirs.extend(_expand_package_dirs(Path(entry)))
-
-    package_root = packages.find_package_root(test)
-    package_args: list[str] = []
-    package_dir_candidates: list[str] = []
-    if package_root is not None:
-        env["TENZIR_PACKAGE_ROOT"] = str(package_root)
-        package_tests_root = package_root / "tests"
-        if inputs_override is None:
-            # Try nearest inputs/ directory, fall back to package-level
-            nearest = _find_nearest_inputs_dir(test, package_root)
-            if nearest is not None:
-                env["TENZIR_INPUTS"] = str(nearest.resolve())
-            else:
-                env["TENZIR_INPUTS"] = str(package_tests_root / "inputs")
-        package_dir_candidates.append(str(package_root))
-    package_dir_candidates.extend(additional_package_dirs)
-    for cli_path in _get_cli_packages():
-        package_dir_candidates.extend(_expand_package_dirs(cli_path))
-    if package_dir_candidates:
-        merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
-        env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
-        package_args.append(f"--package-dirs={','.join(merged_dirs)}")
+    package_dirs = _prepare_package_environment(test, test_config, env)
+    package_args = [f"--package-dirs={','.join(package_dirs)}"] if package_dirs else []
 
     fixture_options = _build_fixture_options(fixture_specs)
     fixture_assertions = _build_fixture_assertions(fixture_assertions_raw)
@@ -5723,29 +5724,9 @@ class Worker:
                 return
             inputs_override = typing.cast(str | None, suite_config.get("inputs"))
             env, config_args = get_test_env_and_config_args(primary_test, inputs=inputs_override)
-            config_package_dirs = cast(tuple[str, ...], suite_config.get("package_dirs", tuple()))
-            additional_package_dirs: list[str] = []
-            for entry in config_package_dirs:
-                additional_package_dirs.extend(_expand_package_dirs(Path(entry)))
-            package_root = packages.find_package_root(primary_test)
-            package_dir_candidates: list[str] = []
-            if package_root is not None:
-                env["TENZIR_PACKAGE_ROOT"] = str(package_root)
-                if inputs_override is None:
-                    # Try nearest inputs/ directory, fall back to package-level
-                    nearest = _find_nearest_inputs_dir(primary_test, package_root)
-                    if nearest is not None:
-                        env["TENZIR_INPUTS"] = str(nearest.resolve())
-                    else:
-                        env["TENZIR_INPUTS"] = str((package_root / "tests" / "inputs"))
-                package_dir_candidates.append(str(package_root))
-            package_dir_candidates.extend(additional_package_dirs)
-            for cli_path in _get_cli_packages():
-                package_dir_candidates.extend(_expand_package_dirs(cli_path))
-            if package_dir_candidates:
-                merged_dirs = _deduplicate_package_dirs(package_dir_candidates)
-                env["TENZIR_PACKAGE_DIRS"] = ",".join(merged_dirs)
-                config_args = list(config_args) + [f"--package-dirs={','.join(merged_dirs)}"]
+            package_dirs = _prepare_package_environment(primary_test, suite_config, env)
+            if package_dirs:
+                config_args = list(config_args) + [f"--package-dirs={','.join(package_dirs)}"]
             skip_cfg = cast(SkipConfig | None, suite_config.get("skip"))
             requires_cfg = cast(RequiresConfig | None, suite_config.get("requires"))
             if isinstance(requires_cfg, RequiresConfig) and requires_cfg.has_requirements:

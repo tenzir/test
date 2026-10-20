@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import os
+import shlex
 import shutil
+import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -981,3 +984,240 @@ print('ok')
     runner.run(script, update=True, coverage=False)
     # Verify no stdin was passed
     assert captured["input"] is None
+
+
+@pytest.mark.parametrize("overlay", [None, "/fixture/package dir"])
+def test_python_runner_transports_prepared_packages_to_real_child(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch, overlay: str | None
+) -> None:
+    root = python_fixture_root
+    yaml_package = root / "yaml package"
+    cli_package = root / "cli package"
+    for package in (yaml_package, cli_package):
+        package.mkdir()
+        (package / "package.yaml").write_text("name: dependency\n", encoding="utf-8")
+    monkeypatch.setattr(run, "_CLI_PACKAGES", [yaml_package, cli_package])
+    monkeypatch.setattr(run, "_DIRECTORY_CONFIG_CACHE", {})
+    monkeypatch.setattr(run, "is_passthrough_enabled", lambda: False)
+    project_env = dict(os.environ, TENZIR_PACKAGE_DIRS="/ambient", UNRELATED="preserved")
+    monkeypatch.setattr(run, "_CURRENT_PROJECT_ENV", project_env)
+    original_project_env = project_env.copy()
+    original_parent_env = dict(os.environ)
+    original_context = fixtures.current_context()
+
+    engine = root / "fake engine.py"
+    engine.write_text(
+        "import json, os, sys\n"
+        "print(json.dumps({'argv': sys.argv[1:], "
+        "'packages': os.environ.get('TENZIR_PACKAGE_DIRS')}))\n",
+        encoding="utf-8",
+    )
+    binary = (sys.executable, str(engine), "--prefix=two words")
+    monkeypatch.setattr(run, "TENZIR_BINARY", binary)
+    snapshots: list[tuple[dict[str, str], tuple[str, ...]]] = []
+    lifecycle: list[str] = []
+
+    @contextmanager
+    def package_probe():
+        context = fixtures.current_context()
+        assert context is not None
+        snapshots.append((dict(context.env), tuple(context.config_args)))
+        lifecycle.append("start")
+        try:
+            yield {"TENZIR_PACKAGE_DIRS": overlay} if overlay is not None else {}
+        finally:
+            assert fixtures.current_context() is context
+            lifecycle.append("stop")
+
+    @contextmanager
+    def package_observer():
+        context = fixtures.current_context()
+        assert context is not None
+        snapshots.append((dict(context.env), tuple(context.config_args)))
+        lifecycle.append("observer start")
+        try:
+            yield {}
+        finally:
+            lifecycle.append("observer stop")
+
+    monkeypatch.setitem(fixtures._FACTORIES, "package_probe", package_probe)
+    monkeypatch.setitem(fixtures._FACTORIES, "package_observer", package_observer)
+    # Two invocations must not retain the previous owning package or fixture overlay.
+    for name in ("first", "second"):
+        owning = root / name
+        tests_dir = owning / "tests"
+        tests_dir.mkdir(parents=True)
+        (owning / "package.yaml").write_text(f"name: {name}\n", encoding="utf-8")
+        (tests_dir / "inputs").mkdir()
+        (tests_dir / "tenzir.yaml").write_text("{}\n", encoding="utf-8")
+        (tests_dir / "test.yaml").write_text(
+            "timeout: 30\nfixtures: [package_probe, package_observer]\n"
+            "package-dirs: [../../yaml package, ..]\n",
+            encoding="utf-8",
+        )
+        script = tests_dir / "probe.py"
+        script.write_text(
+            "import json, os\n"
+            "context = fixtures_module.current_context()\n"
+            "assert context is not None\n"
+            "result = Executor().run('from package_operator')\n"
+            "result.check_returncode()\n"
+            "print(json.dumps({\n"
+            "    'args': list(context.config_args),\n"
+            "    'env': context.env,\n"
+            "    'payload': json.loads(os.environ['TENZIR_PYTHON_FIXTURE_CONTEXT']),\n"
+            "    'binary': list(context.tenzir_binary),\n"
+            "    'engine': json.loads(result.stdout),\n"
+            "}))\n",
+            encoding="utf-8",
+        )
+        expected_packages = ",".join(map(str, (owning, yaml_package, cli_package)))
+        expected_flag = f"--package-dirs={expected_packages}"
+        assert run.CustomPythonFixture().run(script, update=True)
+        # Both factories start before overlays are merged into the child environment.
+        assert snapshots[-2] == snapshots[-1]
+        snapshot_env, snapshot_args = snapshots[-1]
+        assert snapshot_env["TENZIR_PACKAGE_ROOT"] == str(owning)
+        assert snapshot_env["TENZIR_PACKAGE_DIRS"] == expected_packages
+        assert snapshot_env["TENZIR_INPUTS"] == str(tests_dir / "inputs")
+        assert snapshot_env["TENZIR_CONFIG"] == str(tests_dir / "tenzir.yaml")
+        assert snapshot_args == (expected_flag,)
+        child = json.loads(script.with_suffix(".txt").read_text(encoding="utf-8"))
+        assert child["args"] == child["payload"]["config_args"] == [expected_flag]
+        assert child["payload"]["test"] == str(script)
+        assert child["binary"] == list(binary)
+        child_packages = overlay if overlay is not None else expected_packages
+        assert child["env"]["TENZIR_PACKAGE_DIRS"] == child_packages
+        assert child["env"]["TENZIR_PACKAGE_ROOT"] == str(owning)
+        assert child["env"]["UNRELATED"] == "preserved"
+        assert child["engine"] == {
+            "argv": [
+                "--prefix=two words",
+                "--bare-mode",
+                "--console-verbosity=warning",
+                "--multi",
+                f"--package-dirs={child_packages}",
+                "from package_operator",
+            ],
+            "packages": child_packages,
+        }
+        assert not Path(snapshot_env[run.TEST_TMP_ENV_VAR]).exists()
+        assert fixtures.current_context() is original_context
+        assert project_env == original_project_env
+        assert dict(os.environ) == original_parent_env
+    assert lifecycle == ["start", "observer start", "observer stop", "stop"] * 2
+
+
+@pytest.mark.parametrize("ambient", [None, "", "/ambient/package dir"])
+def test_python_runner_without_computed_packages_keeps_ambient_environment(
+    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch, ambient: str | None
+) -> None:
+    script = python_fixture_root / "test.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    (script.parent / "tenzir.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(run, "_CLI_PACKAGES", [])
+    monkeypatch.setattr(run, "_DIRECTORY_CONFIG_CACHE", {})
+    source = dict(os.environ)
+    source.pop("TENZIR_PACKAGE_ROOT", None)
+    source.pop("TENZIR_PACKAGE_DIRS", None)
+    if ambient is not None:
+        source["TENZIR_PACKAGE_DIRS"] = ambient
+    monkeypatch.setattr(run, "_CURRENT_PROJECT_ENV", source)
+    monkeypatch.setattr(run, "is_passthrough_enabled", lambda: False)
+    original_source = source.copy()
+    original_context = fixtures.current_context()
+
+    def fake_run_subprocess(cmd, *, env, **kwargs):  # noqa: ANN001
+        context = fixtures.current_context()
+        assert context is not None
+        assert context.config_args == ()
+        assert json.loads(env["TENZIR_PYTHON_FIXTURE_CONTEXT"])["config_args"] == []
+        assert env.get("TENZIR_PACKAGE_DIRS") == ambient
+        assert ("TENZIR_PACKAGE_DIRS" in env) == (ambient is not None)
+        assert "TENZIR_PACKAGE_ROOT" not in env
+        assert env["TENZIR_INPUTS"] == str(python_fixture_root / "inputs")
+        assert env["TENZIR_CONFIG"] == str(script.parent / "tenzir.yaml")
+        assert not any(arg.startswith("--package-dirs=") for arg in cmd)
+        return _DummyCompleted(b"ok\n")
+
+    monkeypatch.setattr(run, "run_subprocess", fake_run_subprocess)
+    assert run.CustomPythonFixture().run(script, update=True)
+    assert source == original_source
+    assert fixtures.current_context() is original_context
+
+
+@pytest.mark.parametrize("source_kind", ["mapping", "ambient", "empty-mapping"])
+@pytest.mark.parametrize("package_dirs", [None, "", "/one package,/two"])
+def test_executor_snapshots_package_dirs_from_its_binary_source(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    source_kind: str,
+    package_dirs: str | None,
+) -> None:
+    prefix = ("wrapped engine", "--label", "two words", "--package-dirs=/prefix")
+    source = {
+        "TENZIR_NODE_CLIENT_BINARY": shlex.join(prefix),
+        "TENZIR_NODE_CLIENT_TIMEOUT": "5",
+    }
+    endpoint = "localhost:1234" if package_dirs else None
+    if endpoint is not None:
+        source["TENZIR_NODE_CLIENT_ENDPOINT"] = endpoint
+    if package_dirs is not None:
+        source["TENZIR_PACKAGE_DIRS"] = package_dirs
+    if source_kind == "mapping":
+        monkeypatch.setenv("TENZIR_NODE_CLIENT_BINARY", "ambient-engine")
+        monkeypatch.setenv("TENZIR_PACKAGE_DIRS", "/ambient")
+        before = source.copy()
+        executor = fixtures.Executor.from_env(source)
+        assert source == before
+    else:
+        for key in (
+            "TENZIR_NODE_CLIENT_BINARY",
+            "TENZIR_NODE_CLIENT_TIMEOUT",
+            "TENZIR_NODE_CLIENT_ENDPOINT",
+            "TENZIR_PACKAGE_DIRS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in source.items():
+            monkeypatch.setenv(key, value)
+        executor = fixtures.Executor({}) if source_kind == "empty-mapping" else fixtures.Executor()
+    # Neither later mapping changes nor process-environment changes affect the command.
+    source.update(
+        TENZIR_NODE_CLIENT_BINARY="changed-engine",
+        TENZIR_PACKAGE_DIRS="/changed-mapping",
+        TENZIR_NODE_CLIENT_ENDPOINT="changed:1",
+        TENZIR_NODE_CLIENT_TIMEOUT="1",
+    )
+    monkeypatch.setenv("TENZIR_NODE_CLIENT_BINARY", "changed-ambient-engine")
+    monkeypatch.setenv("TENZIR_PACKAGE_DIRS", "/changed-ambient")
+    monkeypatch.setenv("TENZIR_NODE_CLIENT_ENDPOINT", "changed:2")
+    monkeypatch.setenv("TENZIR_NODE_CLIENT_TIMEOUT", "2")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        calls.append((list(cmd), kwargs))
+        return subprocess.CompletedProcess(cmd, 0, b"ok", b"diagnostic")
+
+    monkeypatch.setattr(fixtures.subprocess, "run", fake_run)
+    ticks = iter((0.0, 3.0, 3.0, 5.0))
+    monkeypatch.setattr(fixtures.time, "process_time", lambda: next(ticks))
+    for mirror in (False, True):
+        result = executor.run("from operator", desired_timeout=3, mirror=mirror)
+        assert result.stdout == b"ok"
+        assert result.stderr == b"diagnostic"
+        output = capsys.readouterr()
+        assert output.out == ("ok\n" if mirror else "")
+        assert output.err == ("diagnostic\n" if mirror else "")
+    expected = [*prefix, "--bare-mode", "--console-verbosity=warning", "--multi"]
+    if endpoint is not None:
+        expected.append(f"--endpoint={endpoint}")
+    if package_dirs:
+        expected.append(f"--package-dirs={package_dirs}")
+    expected.append("from operator")
+    assert calls == [
+        (expected, {"timeout": 3, "capture_output": True}),
+        (expected, {"timeout": 2, "capture_output": True}),
+    ]
+    assert executor.remaining_timeout == 0
+    assert executor.binary == prefix
+    assert executor.endpoint == endpoint
