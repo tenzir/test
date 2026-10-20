@@ -3,6 +3,8 @@ title: Automatic package loading in Python tests
 type: bugfix
 authors:
   - mavam
+prs:
+  - 65
 created: 2026-10-20T18:57:07.637828Z
 ---
 
