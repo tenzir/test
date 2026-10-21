@@ -17,4 +17,6 @@ executor = Executor()
 executor.run("from {message: \"hello\"}")
 ```
 
+Python tests in a package also receive `TENZIR_PACKAGE_ROOT` and use the nearest `inputs/` directory within that package, falling back to `<package>/tests/inputs`. Explicit `inputs` overrides still take precedence.
+
 The `Executor.from_env(mapping)` helper now also captures `TENZIR_PACKAGE_DIRS` from the supplied mapping when it is constructed, so its package selection remains stable if the environment changes later.
