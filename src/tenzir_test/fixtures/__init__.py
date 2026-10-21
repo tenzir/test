@@ -135,6 +135,7 @@ class Executor:
             self.binary: tuple[str, ...] = tuple(shlex.split(source["TENZIR_NODE_CLIENT_BINARY"]))
         except KeyError as exc:  # pragma: no cover - defensive guard
             raise RuntimeError("TENZIR_NODE_CLIENT_BINARY is not configured") from exc
+        self.package_dirs: str | None = source.get("TENZIR_PACKAGE_DIRS")
         self.endpoint: str | None = source.get("TENZIR_NODE_CLIENT_ENDPOINT")
         timeout_raw = source.get("TENZIR_NODE_CLIENT_TIMEOUT")
         self.remaining_timeout: float = float(timeout_raw) if timeout_raw is not None else 0.0
@@ -154,6 +155,8 @@ class Executor:
         ]
         if self.endpoint is not None:
             cmd.append(f"--endpoint={self.endpoint}")
+        if self.package_dirs:
+            cmd.append(f"--package-dirs={self.package_dirs}")
         cmd.append(source)
         start = time.process_time()
         requested_timeout = (

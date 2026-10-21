@@ -60,6 +60,8 @@ class CustomPythonFixture(ExtRunner):
             ]
             inputs_override = typing.cast(str | None, test_config.get("inputs"))
             env, _config_args = run_mod.get_test_env_and_config_args(test, inputs=inputs_override)
+            package_dirs = run_mod._prepare_package_environment(test, test_config, env)
+            package_args = (f"--package-dirs={','.join(package_dirs)}",) if package_dirs else ()
             fixtures = typing.cast(
                 tuple[fixture_api.FixtureSpec, ...], test_config.get("fixtures", tuple())
             )
@@ -83,7 +85,7 @@ class CustomPythonFixture(ExtRunner):
                 config=typing.cast(dict[str, typing.Any], test_config),
                 coverage=coverage,
                 env=env,
-                config_args=tuple(),
+                config_args=package_args,
                 tenzir_binary=run_mod.TENZIR_BINARY,
                 tenzir_node_binary=run_mod.TENZIR_NODE_BINARY,
                 fixture_assertions=fixture_assertions,
