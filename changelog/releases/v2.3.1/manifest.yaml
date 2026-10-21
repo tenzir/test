@@ -1,0 +1,9 @@
+created: 2026-10-21
+title: Automatic package loading in Python tests
+intro: >-
+  Python tests now automatically load their enclosing package and configured package
+  directories, matching TQL tests. Python executors also capture package settings
+  at construction, so explicit environment mappings select packages reliably.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.3.0
