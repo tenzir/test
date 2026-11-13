@@ -10,6 +10,7 @@ import sys
 import typing
 from pathlib import Path
 
+from tenzir_test import _project_fixtures as project_fixtures
 from tenzir_test import fixtures as fixture_api
 from tenzir_test.inline_dependencies import (
     extract_inline_dependencies,
@@ -107,6 +108,13 @@ class CustomPythonFixture(ExtRunner):
             if existing_pythonpath:
                 pythonpath_entries.append(existing_pythonpath)
 
+            fixture_roots = run_mod._python_fixture_roots()
+            if fixture_roots:
+                env[project_fixtures.FIXTURE_ROOTS_ENV_VAR] = project_fixtures.encode_fixture_roots(
+                    fixture_roots
+                )
+            else:
+                env.pop(project_fixtures.FIXTURE_ROOTS_ENV_VAR, None)
             env["TENZIR_PYTHON_FIXTURE_CONTEXT"] = json.dumps(
                 {
                     "test": str(test),

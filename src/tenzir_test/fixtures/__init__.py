@@ -851,6 +851,34 @@ def get_tags(name: str) -> frozenset[str]:
     return _FIXTURE_TAGS.get(name, frozenset())
 
 
+_DEFINITION_SITE_ATTR = "_tenzir_definition_site"
+
+
+def _definition_site(factory: object) -> tuple[str, str, int] | None:
+    """Return where `factory` is defined: its qualified name, file, and line.
+
+    Importing the same fixture module twice, for example once by the harness
+    and once through an explicit `import fixtures` in a test, defines the same
+    factory again at the same place.
+    """
+    try:
+        unwrapped = inspect.unwrap(typing.cast(Callable[..., Any], factory))
+    except (TypeError, ValueError):
+        unwrapped = factory
+    code = getattr(unwrapped, "__code__", None)
+    if code is None:
+        return None
+    qualname = getattr(unwrapped, "__qualname__", "")
+    return (qualname, os.path.realpath(code.co_filename), code.co_firstlineno)
+
+
+def _redefines_registered(name: str, factory: object) -> bool:
+    site = _definition_site(factory)
+    if site is None:
+        return False
+    return getattr(_FACTORIES[name], _DEFINITION_SITE_ATTR, None) == site
+
+
 def register(
     name: str | None,
     factory: _FactoryCallable,
@@ -860,8 +888,17 @@ def register(
     assertions: type | None = None,
     tags: Iterable[str] | str | None = None,
 ) -> None:
+    """Register a fixture factory under `name`.
+
+    Registering a name twice fails unless `replace` is set, or the factory is
+    the same definition again, as when its module is imported a second time.
+    """
     resolved_name = _infer_name(factory, name)
-    if resolved_name in _FACTORIES and not replace:
+    if (
+        resolved_name in _FACTORIES
+        and not replace
+        and not _redefines_registered(resolved_name, factory)
+    ):
         raise ValueError(f"fixture '{resolved_name}' already registered")
     if options is not None:
         if not isinstance(options, type) or not dataclasses.is_dataclass(options):
@@ -876,7 +913,9 @@ def register(
                 f"got {type(assertions).__name__}"
             )
     normalized_tags = _normalize_tags(tags) | _infer_tags_from_callable(factory)
-    _FACTORIES[resolved_name] = _normalize_factory(factory)
+    normalized = _normalize_factory(factory)
+    setattr(normalized, _DEFINITION_SITE_ATTR, _definition_site(factory))
+    _FACTORIES[resolved_name] = normalized
     if normalized_tags:
         _FIXTURE_TAGS[resolved_name] = normalized_tags
     else:

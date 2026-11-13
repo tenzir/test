@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, cast
 
 from . import fixtures as _fixtures
+from ._project_fixtures import import_fixture_roots
 from .fixtures import acquire_fixture as _acquire_fixture
 
 
@@ -68,6 +69,9 @@ def _push_context_from_env() -> Token[Any] | None:
 
 def _run_script(script_path: Path, args: list[str]) -> None:
     sys.argv = [str(script_path), *args]
+    # Register the project fixtures that the harness has, so that tests can
+    # acquire them without importing them first.
+    import_fixture_roots(os.environ)
     init_globals = _build_init_globals()
     token = _push_context_from_env()
     try:

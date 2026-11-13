@@ -12,7 +12,6 @@ import dataclasses
 import difflib
 import enum
 import fnmatch
-import importlib.util
 import logging
 import os
 import re
@@ -34,6 +33,7 @@ import yaml
 
 import tenzir_test.fixtures as fixtures_impl
 from . import hooks as hooks_impl
+from . import _project_fixtures as project_fixtures_impl
 from . import packages
 from .report import Report
 from .config import Settings, discover_settings, platform_command
@@ -2834,21 +2834,7 @@ def apply_settings(settings: Settings) -> None:
 
 
 def _import_module_from_path(module_name: str, path: Path, *, package: bool = False) -> ModuleType:
-    if package:
-        search_locations = [str(path.parent)]
-    else:
-        search_locations = None
-    spec = importlib.util.spec_from_file_location(
-        module_name,
-        path,
-        submodule_search_locations=search_locations,
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(f"could not load fixture module from {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
+    return project_fixtures_impl.import_module_from_path(module_name, path, package=package)
 
 
 def _hooks_disabled(no_hooks: bool = False) -> bool:
@@ -3278,9 +3264,6 @@ def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
     if resolved_root in _FIXTURE_LOAD_ROOTS:
         return
 
-    fixtures_package = root / "fixtures"
-    fixtures_file = root / "fixtures.py"
-
     def _import_fixture_module(
         module_name: str, path: Path, *, package: bool = False
     ) -> ModuleType:
@@ -3304,20 +3287,12 @@ def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
             context="project fixtures",
         )
 
-        alias_target = None
-        if fixtures_package.is_dir():
-            init_file = fixtures_package / "__init__.py"
-            if init_file.exists():
-                alias_target = _import_fixture_module(
-                    "_tenzir_project_fixtures", init_file, package=True
-                )
-            else:
-                for candidate in sorted(fixtures_package.glob("*.py")):
-                    alias_target = _import_fixture_module(
-                        f"_tenzir_project_fixture_{candidate.stem}", candidate
-                    )
-        elif fixtures_file.exists():
-            alias_target = _import_fixture_module("_tenzir_project_fixtures", fixtures_file)
+        alias_target = project_fixtures_impl.import_project_fixtures(
+            root,
+            importer=lambda name, path, package: _import_fixture_module(
+                name, path, package=package
+            ),
+        )
         if alias_target is not None and expose_namespace:
             if "fixtures" not in sys.modules:
                 sys.modules["fixtures"] = alias_target
@@ -3329,6 +3304,26 @@ def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
         raise RuntimeError(f"failed to load fixtures from {resolved_root}: {exc}") from exc
 
     _FIXTURE_LOAD_ROOTS.add(resolved_root)
+
+
+def _python_fixture_roots() -> tuple[Path, ...]:
+    """Return the projects whose fixtures a Python test process imports.
+
+    These are the root project and, for a satellite, the satellite itself, as
+    far as the harness imported their fixtures. The test's own project comes
+    last.
+    """
+    candidates = [ROOT] if _settings is None else [_settings.root, ROOT]
+    roots: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in _FIXTURE_LOAD_ROOTS and resolved not in roots:
+            roots.append(resolved)
+    own = ROOT.resolve()
+    if own in roots:
+        roots.remove(own)
+        roots.append(own)
+    return tuple(roots)
 
 
 def _load_project_runners(root: Path, *, expose_namespace: bool) -> None:
