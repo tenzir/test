@@ -2679,9 +2679,10 @@ def _select_workspace(
     """Choose the workspace that Tenzir runs the test's pipelines in.
 
     The `tenzir run` command looks for a workspace from its working directory
-    and then ignores `--package-dirs`. A package whose dependencies Tenzir must
-    load from its lock runs in its workspace, and every other test with package
-    directories runs in none, so that the directories load.
+    and then ignores `--package-dirs`. A workspace, or a package with a lock,
+    runs in its workspace, so that Tenzir loads the locked dependencies. Every
+    other test with package directories runs in none, so that the directories
+    load.
     """
     if env.get(WORKSPACE_ENV_VAR):
         return
@@ -2709,8 +2710,8 @@ def _warn_ignored_package_dirs(root: Path, ignored: Sequence[str]) -> None:
     with stdout_lock:
         print(
             f"{INFO} warning: ignoring package directories for {_describe_workspace(root)}, "
-            f"which has dependencies and therefore runs in its workspace: {names}; list these "
-            f"packages under `dependencies` in its {packages.PACKAGE_MANIFEST} instead"
+            f"which runs in its workspace because it has a {packages.PACKAGE_LOCKFILE}: "
+            f"{names}; lock these packages as dependencies instead"
         )
 
 

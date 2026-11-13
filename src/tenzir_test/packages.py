@@ -84,18 +84,20 @@ def workspace_root(package_root: Path) -> Path:
 
 
 def uses_dependencies(root: Path) -> bool:
-    """Return True when the workspace at `root` needs its dependencies loaded.
+    """Return True when the tests at `root` must run in its workspace.
 
-    That is the case for a workspace, and for a package with a `name` that
-    lists `dependencies` or has a `package.lock`. Tenzir loads dependencies only
-    when it runs a pipeline in a workspace, not from `--package-dirs`.
+    That is the case for a workspace, and for a package with a `name` and a
+    `package.lock`, whose locked dependencies Tenzir loads only in a workspace,
+    not from `--package-dirs`. A package that lists `dependencies` without a
+    lock keeps loading them from package directories, such as sibling packages
+    in the same repository.
     """
     if is_workspace_manifest(root):
         return True
     parsed, manifest = _load_yaml(root / PACKAGE_MANIFEST)
     if not parsed or not isinstance(manifest, dict) or "name" not in manifest:
         return False
-    return bool(manifest.get("dependencies")) or (root / PACKAGE_LOCKFILE).is_file()
+    return (root / PACKAGE_LOCKFILE).is_file()
 
 
 @dataclass(frozen=True, slots=True)

@@ -76,7 +76,9 @@ def test_workspace_root_of_workspace(tmp_path: Path) -> None:
     [
         ("name: Acme\n", False, False),
         ("name: Acme\ndependencies: {}\n", False, False),
-        ("name: Acme\ndependencies:\n  stix: ^1.0.0\n", False, True),
+        # Without a lock, dependencies load from package directories.
+        ("name: Acme\ndependencies:\n  stix: ^1.0.0\n", False, False),
+        ("name: Acme\ndependencies:\n  stix: ^1.0.0\n", True, True),
         ("name: Acme\n", True, True),
         ("dependencies:\n  stix: ^1.0.0\n", False, True),
         ("", False, True),

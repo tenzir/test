@@ -2294,13 +2294,14 @@ def test_package_with_lock_runs_in_its_workspace(
     assert env["TENZIR_WORKSPACE"] == str(owner)
 
 
-def test_package_with_dependencies_warns_about_ignored_package_dirs(
+def test_locked_package_warns_about_ignored_package_dirs(
     configured_root: Path,
     no_ambient_workspace: None,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     owner = configured_root / "pkg"
     test = _make_package(owner, "name: Package\ndependencies:\n  stix: ^0.0.1\n")
+    (owner / "package.lock").write_text(_LOCK)
     other = configured_root / "other"
     _make_package(other)
     (test.parent / "test.yaml").write_text("package-dirs: [../../other]\n")
@@ -2312,8 +2313,26 @@ def test_package_with_dependencies_warns_about_ignored_package_dirs(
     warnings = [line for line in capsys.readouterr().out.splitlines() if "warning" in line]
     assert len(warnings) == 1
     assert "ignoring package directories for pkg" in warnings[0]
-    assert warnings[0].endswith("under `dependencies` in its package.yaml instead")
-    assert ": other;" in warnings[0]
+    assert "because it has a package.lock: other;" in warnings[0]
+    assert warnings[0].endswith("lock these packages as dependencies instead")
+
+
+def test_unlocked_dependencies_load_from_package_dirs(
+    configured_root: Path,
+    no_ambient_workspace: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without a lock, sibling packages from package-dirs satisfy dependencies."""
+    owner = configured_root / "pkg"
+    test = _make_package(owner, "name: Package\ndependencies:\n  stix: ^0.0.1\n")
+    stix = configured_root / "stix"
+    _make_package(stix)
+    (test.parent / "test.yaml").write_text("package-dirs: [../../stix]\n")
+    env: dict[str, str] = {}
+    result = run._prepare_package_environment(test, run.parse_test_config(test), env)
+    assert result == (str(owner), str(stix))
+    assert env["TENZIR_WORKSPACE"] == "none"
+    assert "warning" not in capsys.readouterr().out
 
 
 def test_local_package_runs_in_enclosing_workspace(
