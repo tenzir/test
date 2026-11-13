@@ -1,4 +1,0 @@
-suite: context
-timeout: 60
-fixtures:
-  - node

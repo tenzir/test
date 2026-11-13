@@ -14,7 +14,6 @@ def _restore_runtime(original_settings: object, original_root: Path) -> None:
     else:
         run._settings = None  # type: ignore[attr-defined]
         run.TENZIR_BINARY = None
-        run.TENZIR_NODE_BINARY = None
         run._set_project_root(original_root)  # type: ignore[attr-defined]
 
 
@@ -29,19 +28,16 @@ def test_startup_hook_can_set_binary_before_settings_discovery(tmp_path: Path, m
         "from tenzir_test import hooks\n"
         "@hooks.startup\n"
         "def configure(ctx):\n"
-        "    ctx.env['TENZIR_BINARY'] = '/usr/bin/true'\n"
-        "    ctx.env['TENZIR_NODE_BINARY'] = '/usr/bin/true'\n",
+        "    ctx.env['TENZIR_BINARY'] = '/usr/bin/true'\n",
         encoding="utf-8",
     )
     monkeypatch.delenv("TENZIR_BINARY", raising=False)
-    monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
     try:
         result = run.execute(root=tmp_path, tests=[])
         tenzir_binary = run.TENZIR_BINARY
-        tenzir_node_binary = run.TENZIR_NODE_BINARY
     finally:
         run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
         os.environ.clear()
@@ -50,7 +46,6 @@ def test_startup_hook_can_set_binary_before_settings_discovery(tmp_path: Path, m
 
     assert result.exit_code == 0
     assert tenzir_binary == ("/usr/bin/true",)
-    assert tenzir_node_binary == ("/usr/bin/true",)
 
 
 def test_startup_hook_path_updates_binary_discovery(tmp_path: Path, monkeypatch) -> None:
@@ -60,9 +55,7 @@ def test_startup_hook_path_updates_binary_discovery(tmp_path: Path, monkeypatch)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "tenzir").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    (bin_dir / "tenzir-node").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     (bin_dir / "tenzir").chmod(0o755)
-    (bin_dir / "tenzir-node").chmod(0o755)
     (tmp_path / "tests").mkdir()
     hooks_dir = tmp_path / "hooks"
     hooks_dir.mkdir()
@@ -74,7 +67,6 @@ def test_startup_hook_path_updates_binary_discovery(tmp_path: Path, monkeypatch)
         encoding="utf-8",
     )
     monkeypatch.delenv("TENZIR_BINARY", raising=False)
-    monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin")
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
@@ -82,7 +74,6 @@ def test_startup_hook_path_updates_binary_discovery(tmp_path: Path, monkeypatch)
     try:
         result = run.execute(root=tmp_path, tests=[])
         tenzir_binary = run.TENZIR_BINARY
-        tenzir_node_binary = run.TENZIR_NODE_BINARY
     finally:
         run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
         os.environ.clear()
@@ -90,8 +81,7 @@ def test_startup_hook_path_updates_binary_discovery(tmp_path: Path, monkeypatch)
         _restore_runtime(original_settings, original_root)
 
     assert result.exit_code == 0
-    assert tenzir_binary == (str(bin_dir / "tenzir"),)
-    assert tenzir_node_binary == (str(bin_dir / "tenzir-node"),)
+    assert tenzir_binary == (str(bin_dir / "tenzir"), "run")
 
 
 def test_startup_hook_rejects_env_path_mutation(tmp_path: Path, monkeypatch) -> None:
@@ -213,7 +203,6 @@ def test_no_hooks_disables_startup_hook(tmp_path: Path, monkeypatch) -> None:
         encoding="utf-8",
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -425,7 +414,6 @@ def test_project_finish_and_shutdown_run_after_project_setup_failure(
         "@hooks.startup\n"
         "def startup(ctx):\n"
         "    ctx.env['TENZIR_BINARY'] = '/definitely/missing/tenzir'\n"
-        "    ctx.env['TENZIR_NODE_BINARY'] = '/usr/bin/true'\n"
         "@hooks.project_start\n"
         "def start(ctx):\n"
         f"    open({str(log_path)!r}, 'a').write('start\\n')\n"
@@ -483,7 +471,6 @@ def test_project_env_does_not_dump_diagnostics(tmp_path: Path, monkeypatch) -> N
     tenzir_binary.chmod(0o755)
     monkeypatch.delenv("TENZIR_EXEC__DUMP_DIAGNOSTICS", raising=False)
     monkeypatch.setenv("TENZIR_BINARY", str(tenzir_binary))
-    monkeypatch.setenv("TENZIR_NODE_BINARY", str(tenzir_binary))
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -585,7 +572,6 @@ def test_satellite_test_hooks_keep_invocation_root(tmp_path: Path, monkeypatch) 
         encoding="utf-8",
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(root)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -633,7 +619,6 @@ def test_shutdown_after_late_failure_receives_accumulated_summary(
         encoding="utf-8",
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(root)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -701,7 +686,6 @@ def test_project_finish_hook_failure_is_not_retried(tmp_path: Path, monkeypatch)
         encoding="utf-8",
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -734,7 +718,6 @@ def test_shutdown_hook_failure_is_not_retried(tmp_path: Path, monkeypatch) -> No
         encoding="utf-8",
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -881,7 +864,6 @@ def test_interrupted_test_before_first_attempt_balances_test_hooks(
     tests_dir.mkdir()
     (tests_dir / "interrupted.tql").write_text("version\n", encoding="utf-8")
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -929,7 +911,6 @@ def test_worker_hook_failure_preserves_partial_summary_for_teardown(
     (tests_dir / "ok.sh").write_text("true\n", encoding="utf-8")
     (tests_dir / "ok.txt").write_text("", encoding="utf-8")
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -967,7 +948,6 @@ def test_suite_static_skip_finish_hook_keeps_suite_context(tmp_path: Path, monke
     for name in ("one.tql", "two.tql"):
         (suite_dir / name).write_text("---\nskip: static\n---\nversion\n", encoding="utf-8")
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -994,12 +974,10 @@ def test_project_start_can_override_test_binary_environment(tmp_path: Path, monk
         "from tenzir_test import hooks\n"
         "@hooks.project_start\n"
         "def project_start(ctx):\n"
-        "    ctx.env['TENZIR_BINARY'] = '/project/bin/tenzir'\n"
-        "    ctx.env['TENZIR_NODE_BINARY'] = '/project/bin/tenzir-node'\n",
+        "    ctx.env['TENZIR_BINARY'] = '/project/bin/tenzir'\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -1028,7 +1006,6 @@ def test_hook_base_exception_is_reported_from_worker(tmp_path: Path, monkeypatch
         encoding="utf-8",
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -1060,7 +1037,6 @@ def test_deferred_tmp_dir_cleanup_runs_when_teardown_hook_fails(
         encoding="utf-8",
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(tmp_path)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 
@@ -1107,7 +1083,6 @@ def test_project_finish_runs_after_later_project_start_hook_fails(
         encoding="utf-8",
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/true")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/true")
     monkeypatch.chdir(root)
     run._HOOK_LOAD_CACHE.clear()  # type: ignore[attr-defined]
 

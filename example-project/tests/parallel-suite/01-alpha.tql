@@ -1,0 +1,6 @@
+from {member: "alpha"}
+each {
+  from_http env("HTTP_FIXTURE_URL"), body=$this {
+    read_json
+  }
+}

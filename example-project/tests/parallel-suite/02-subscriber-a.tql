@@ -1,3 +1,0 @@
-subscribe "parallel-suite-events"
-where stream == "parallel-suite"
-head 1

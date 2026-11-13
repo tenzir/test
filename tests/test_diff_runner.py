@@ -18,23 +18,25 @@ class _DummyCompleted:
         self.returncode = 0
 
 
-def test_diff_runner_uses_node_endpoint_for_fixture_spec(
+def test_diff_runner_runs_both_variants_with_fixture_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     test_file = tmp_path / "case.tql"
     test_file.write_text("version\nwrite_json\n", encoding="utf-8")
 
-    endpoint = "localhost:19100"
+    url = "http://localhost:19100"
     calls: list[list[str]] = []
+    envs: list[dict[str, str]] = []
 
     @contextmanager
     def fake_activate(_specs):  # noqa: ANN001
-        yield {"TENZIR_NODE_CLIENT_ENDPOINT": endpoint}
+        yield {"SINK_URL": url}
 
     monkeypatch.setattr(diff_runner.fixture_api, "activate", fake_activate)
 
-    def fake_run_subprocess(cmd, **_kwargs):  # noqa: ANN001
+    def fake_run_subprocess(cmd, **kwargs):  # noqa: ANN001
         calls.append([str(part) for part in cmd])
+        envs.append(dict(kwargs["env"]))
         return _DummyCompleted(stdout=b"ok\n", stderr=b"warning")
 
     def fake_apply_fixture_env(env, requested):  # noqa: ANN001
@@ -43,7 +45,7 @@ def test_diff_runner_uses_node_endpoint_for_fixture_spec(
 
     fake_run_mod = SimpleNamespace(
         parse_test_config=lambda _test, coverage=False: {
-            "fixtures": (fixtures.FixtureSpec(name="node", options={"tls": True}),),
+            "fixtures": (fixtures.FixtureSpec(name="sink", options={"tls": True}),),
             "timeout": 30,
         },
         get_test_env_and_config_args=lambda _test, inputs=None: ({}, []),
@@ -53,7 +55,6 @@ def test_diff_runner_uses_node_endpoint_for_fixture_spec(
         _fixture_assertion_failure_message=lambda exc: f"fixture assertion failed: {exc}",
         run_subprocess=fake_run_subprocess,
         TENZIR_BINARY=("/usr/bin/tenzir",),
-        TENZIR_NODE_BINARY=("/usr/bin/tenzir-node",),
         ROOT=tmp_path,
         combine_captured_output=run.combine_captured_output,
         output_path_prefixes=lambda _test: (str(tmp_path).encode() + b"/",),
@@ -71,9 +72,12 @@ def test_diff_runner_uses_node_endpoint_for_fixture_spec(
     runner = DiffRunner(a="unoptimized", b="optimized", name="diff")
     assert runner.run(test_file, update=True, coverage=False) is True
     assert test_file.with_suffix(".diff").read_bytes() == b" warning\n ok\n"
-    assert len(calls) == 2
-    assert f"--endpoint={endpoint}" in calls[0]
-    assert f"--endpoint={endpoint}" in calls[1]
+    assert calls == [
+        ["/usr/bin/tenzir", "unoptimized", "-f", str(test_file)],
+        ["/usr/bin/tenzir", "optimized", "-f", str(test_file)],
+    ]
+    assert [env["SINK_URL"] for env in envs] == [url, url]
+    assert [env["TENZIR_TEST_FIXTURES"] for env in envs] == ["sink", "sink"]
 
 
 def test_diff_runner_runs_fixture_assertions_while_fixtures_are_active(
@@ -115,7 +119,6 @@ def test_diff_runner_runs_fixture_assertions_while_fixtures_are_active(
         _fixture_assertion_failure_message=lambda exc: f"fixture assertion failed: {exc}",
         run_subprocess=fake_run_subprocess,
         TENZIR_BINARY=("/usr/bin/tenzir",),
-        TENZIR_NODE_BINARY=("/usr/bin/tenzir-node",),
         ROOT=tmp_path,
         combine_captured_output=run.combine_captured_output,
         output_path_prefixes=lambda _test: (str(tmp_path).encode() + b"/",),
@@ -160,7 +163,6 @@ def test_diff_runner_applies_pre_compare_transforms(
         run_subprocess=fake_run_subprocess,
         apply_pre_compare=run.apply_pre_compare,
         TENZIR_BINARY=("/usr/bin/tenzir",),
-        TENZIR_NODE_BINARY=("/usr/bin/tenzir-node",),
         ROOT=tmp_path,
         combine_captured_output=run.combine_captured_output,
         output_path_prefixes=lambda _test: (str(tmp_path).encode() + b"/",),

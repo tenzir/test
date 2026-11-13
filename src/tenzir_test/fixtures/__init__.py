@@ -113,7 +113,6 @@ class FixtureContext:
     env: dict[str, str]
     config_args: Sequence[str]
     tenzir_binary: tuple[str, ...] | None
-    tenzir_node_binary: tuple[str, ...] | None
     fixture_options: Mapping[str, Any] = field(default_factory=dict)
     fixture_assertions: Mapping[str, Any] = field(default_factory=dict)
 
@@ -129,15 +128,25 @@ logger = logging.getLogger(__name__)
 
 
 class Executor:
+    """Run Tenzir pipelines from Python tests with the harness's `tenzir` command.
+
+    The configuration comes from `env`, or from the process environment when
+    `env` is empty: the command from `TENZIR_PYTHON_FIXTURE_BINARY`, else
+    `TENZIR_BINARY`, the time budget from `TENZIR_PYTHON_FIXTURE_TIMEOUT`, the
+    package directories from `TENZIR_PACKAGE_DIRS`, and an optional
+    `--endpoint` from `TENZIR_PYTHON_FIXTURE_ENDPOINT`, which a project fixture
+    can provide.
+    """
+
     def __init__(self, env: Mapping[str, str] | None = None) -> None:
         source = env or os.environ
-        try:
-            self.binary: tuple[str, ...] = tuple(shlex.split(source["TENZIR_NODE_CLIENT_BINARY"]))
-        except KeyError as exc:  # pragma: no cover - defensive guard
-            raise RuntimeError("TENZIR_NODE_CLIENT_BINARY is not configured") from exc
+        binary = source.get("TENZIR_PYTHON_FIXTURE_BINARY") or source.get("TENZIR_BINARY")
+        if not binary:  # pragma: no cover - defensive guard
+            raise RuntimeError("TENZIR_PYTHON_FIXTURE_BINARY is not configured")
+        self.binary: tuple[str, ...] = tuple(shlex.split(binary))
         self.package_dirs: str | None = source.get("TENZIR_PACKAGE_DIRS")
-        self.endpoint: str | None = source.get("TENZIR_NODE_CLIENT_ENDPOINT")
-        timeout_raw = source.get("TENZIR_NODE_CLIENT_TIMEOUT")
+        self.endpoint: str | None = source.get("TENZIR_PYTHON_FIXTURE_ENDPOINT") or None
+        timeout_raw = source.get("TENZIR_PYTHON_FIXTURE_TIMEOUT")
         self.remaining_timeout: float = float(timeout_raw) if timeout_raw is not None else 0.0
 
     @classmethod
@@ -989,7 +998,7 @@ def suite_scope(names: Iterable[FixtureSpec | str]) -> Iterator[dict[str, str]]:
 
 
 # Import built-in fixtures so they self-register on package import.
-from . import docker_compose, node  # noqa: F401,E402
+from . import docker_compose  # noqa: F401,E402
 
 
 __all__ = [

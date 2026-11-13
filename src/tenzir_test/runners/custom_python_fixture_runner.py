@@ -71,7 +71,6 @@ class CustomPythonFixture(ExtRunner):
                     test_config.get("assertions"),
                 )
             )
-            node_requested = any(spec.name == "node" for spec in fixtures)
             timeout = typing.cast(int, test_config["timeout"])
             script_dependencies = extract_inline_dependencies(test)
             install_inline_dependencies(
@@ -87,7 +86,6 @@ class CustomPythonFixture(ExtRunner):
                 env=env,
                 config_args=package_args,
                 tenzir_binary=run_mod.TENZIR_BINARY,
-                tenzir_node_binary=run_mod.TENZIR_NODE_BINARY,
                 fixture_assertions=fixture_assertions,
             )
             context_token = fixture_api.push_context(fixture_context)
@@ -121,22 +119,10 @@ class CustomPythonFixture(ExtRunner):
                 with fixture_api.activate(fixtures) as fixture_env:
                     env.update(fixture_env)
                     run_mod._apply_fixture_env(env, fixtures)
-                    if node_requested:
-                        endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
-                        if not endpoint:
-                            raise RuntimeError(
-                                "node fixture did not provide TENZIR_NODE_CLIENT_ENDPOINT"
-                            )
-                    else:
-                        endpoint = None
                     new_pythonpath = os.pathsep.join(pythonpath_entries)
                     env["PYTHONPATH"] = new_pythonpath
-                    env["TENZIR_NODE_CLIENT_BINARY"] = shlex.join(binary)
-                    env["TENZIR_NODE_CLIENT_TIMEOUT"] = str(timeout)
                     env.setdefault("TENZIR_PYTHON_FIXTURE_BINARY", shlex.join(binary))
                     env["TENZIR_PYTHON_FIXTURE_TIMEOUT"] = str(timeout)
-                    if node_requested and endpoint:
-                        env["TENZIR_PYTHON_FIXTURE_ENDPOINT"] = endpoint
                     stdin_content = run_mod.get_stdin_content(env)
                     completed = run_mod.run_subprocess(
                         cmd,

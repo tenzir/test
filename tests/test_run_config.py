@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses as dc
 from pathlib import Path
 import shlex
@@ -67,11 +68,8 @@ def configured_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> typing.I
     original = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
-    test_settings = config.Settings(
-        root=tmp_path, tenzir_binary=run.TENZIR_BINARY, tenzir_node_binary=run.TENZIR_NODE_BINARY
-    )
+    test_settings = config.Settings(root=tmp_path, tenzir_binary=run.TENZIR_BINARY)
     monkeypatch.setattr(run, "_CLI_PACKAGES", [])
     monkeypatch.setattr(run, "_CURRENT_PROJECT_ENV", None)
     run.apply_settings(test_settings)
@@ -414,9 +412,6 @@ def test_get_test_env_and_config_args(configured_root: Path) -> None:
     assert args_override == [f"--config={config_file}"]
     if run.TENZIR_BINARY:
         assert env["TENZIR_BINARY"] == shlex.join(run.TENZIR_BINARY)
-    if run.TENZIR_NODE_BINARY:
-        assert env["TENZIR_NODE_BINARY"] == shlex.join(run.TENZIR_NODE_BINARY)
-    assert "TENZIR_NODE_CONFIG" not in env
     assert args == [f"--config={config_file}"]
 
 
@@ -445,22 +440,6 @@ def test_tmp_base_directory_removed_when_empty(configured_root: Path) -> None:
     expected_container = configured_root / run._TMP_ROOT_NAME
     if container_dir == expected_container:
         assert not container_dir.exists()
-
-
-def test_get_test_env_prefers_node_specific_config(configured_root: Path) -> None:
-    test_dir = configured_root / "suite"
-    test_dir.mkdir()
-    test_file = test_dir / "case.tql"
-    test_file.touch()
-    node_config = test_dir / "tenzir-node.yaml"
-    node_config.write_text("console-verbosity: warning\n", encoding="utf-8")
-    tenzir_config = test_dir / "tenzir.yaml"
-    tenzir_config.write_text("console-verbosity: info\n", encoding="utf-8")
-
-    env, args = run.get_test_env_and_config_args(test_file)
-
-    assert env["TENZIR_NODE_CONFIG"] == str(node_config)
-    assert args == [f"--config={tenzir_config}"]
 
 
 def test_directory_inputs_override(tmp_path: Path, configured_root: Path) -> None:
@@ -766,13 +745,11 @@ def test_run_simple_test_injects_package_dirs(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=package_root,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -838,13 +815,11 @@ def test_run_simple_test_merges_package_dirs_from_directory_config(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=package_root,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -901,13 +876,11 @@ def test_run_simple_test_respects_inputs_override(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=package_root,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -952,13 +925,11 @@ def test_run_simple_test_passthrough_streams_output(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -998,13 +969,11 @@ def test_run_simple_test_reports_stderr_on_failure(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -1040,13 +1009,11 @@ def test_run_simple_test_writes_stderr_before_stdout(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -1082,13 +1049,11 @@ def test_run_simple_test_writes_stderr_for_expected_error(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -1119,13 +1084,11 @@ def test_run_simple_test_suppresses_diff_on_interrupt(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -2173,11 +2136,7 @@ def test_prepare_package_environment_inputs_across_roots(
     test.write_text("version\n")
     (owner / "package.yaml").write_text("name: pkg\n")
     root = {"library": configured_root, "package": owner, "tests": owner / "tests"}[harness_root]
-    run.apply_settings(
-        config.Settings(
-            root=root, tenzir_binary=run.TENZIR_BINARY, tenzir_node_binary=run.TENZIR_NODE_BINARY
-        )
-    )
+    run.apply_settings(config.Settings(root=root, tenzir_binary=run.TENZIR_BINARY))
     expected = owner / "tests" / "inputs"
     if inputs in {"package", "nearest"}:
         expected.mkdir()
@@ -2261,7 +2220,7 @@ def test_tql_package_flag_order_and_fixture_overlay(
         counts["start"] += 1
         try:
             yield {
-                "TENZIR_NODE_CLIENT_ENDPOINT": "localhost:1234",
+                "TENZIR_ENDPOINT": "localhost:1234",
                 "TENZIR_PACKAGE_DIRS": "overlay",
             }
         finally:
@@ -2276,13 +2235,14 @@ def test_tql_package_flag_order_and_fixture_overlay(
             "--bare-mode",
             "--console-verbosity=warning",
             f"--config={general}",
-            "--endpoint=localhost:1234",
             package_flag,
             "--runner-flag",
             "-f",
             str(test),
         ]
         assert env["TENZIR_PACKAGE_DIRS"] == "overlay"
+        # A project fixture named `node` gets no special treatment.
+        assert env["TENZIR_ENDPOINT"] == "localhost:1234"
         return run.subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(run, "run_subprocess", execute)
@@ -2533,3 +2493,19 @@ def test_get_version_runs_outside_workspaces(monkeypatch: pytest.MonkeyPatch) ->
     assert run.get_version() == "7.0.0"
     assert seen["cmd"][:3] == ["tenzir", "run", "--bare-mode"]
     assert seen["workspace"] == "none"
+
+
+def test_project_fixture_may_register_as_node() -> None:
+    """No built-in fixture claims `node`, so a project can provide one."""
+    assert "node" not in fixture_api._FACTORIES  # type: ignore[attr-defined]
+
+    @contextlib.contextmanager
+    def node() -> typing.Iterator[dict[str, str]]:
+        yield {"TENZIR_ENDPOINT": "localhost:5158"}
+
+    fixture_api.register("node", node)
+    try:
+        with fixture_api.activate((FixtureSpec(name="node"),)) as env:
+            assert env == {"TENZIR_ENDPOINT": "localhost:5158"}
+    finally:
+        fixture_api._FACTORIES.pop("node", None)  # type: ignore[attr-defined]

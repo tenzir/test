@@ -6,7 +6,6 @@ from ..config import Settings
 from tenzir_test import run
 
 TENZIR_BINARY: tuple[str, ...] | None = run.TENZIR_BINARY
-TENZIR_NODE_BINARY: tuple[str, ...] | None = run.TENZIR_NODE_BINARY
 ROOT: Path = run.ROOT
 INPUTS_DIR: Path = run.INPUTS_DIR
 
@@ -17,9 +16,8 @@ def apply_settings(settings: Settings) -> None:
 
 
 def _refresh() -> None:
-    global TENZIR_BINARY, TENZIR_NODE_BINARY, ROOT, INPUTS_DIR
+    global TENZIR_BINARY, ROOT, INPUTS_DIR
     TENZIR_BINARY = run.TENZIR_BINARY
-    TENZIR_NODE_BINARY = run.TENZIR_NODE_BINARY
     ROOT = run.ROOT
     INPUTS_DIR = run.INPUTS_DIR
 
@@ -34,7 +32,6 @@ def refresh() -> None:
 
 __all__ = [
     "TENZIR_BINARY",
-    "TENZIR_NODE_BINARY",
     "ROOT",
     "INPUTS_DIR",
     "apply_settings",

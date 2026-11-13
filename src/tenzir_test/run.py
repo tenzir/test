@@ -522,7 +522,6 @@ def detect_execution_mode(root: Path) -> tuple[ExecutionMode, Path | None]:
 
 _settings: Settings | None = None
 TENZIR_BINARY: tuple[str, ...] | None = None
-TENZIR_NODE_BINARY: tuple[str, ...] | None = None
 ROOT: Path = Path.cwd()
 INPUTS_DIR: Path = ROOT / "inputs"
 EXECUTION_MODE: ExecutionMode = ExecutionMode.PROJECT
@@ -2679,11 +2678,10 @@ def _select_workspace(
 ) -> None:
     """Choose the workspace that Tenzir runs the test's pipelines in.
 
-    With the unified command interface of Tenzir v7, `tenzir run` looks for a
-    workspace from its working directory and then ignores `--package-dirs`. A
-    package whose dependencies Tenzir must load from its lock runs in its
-    workspace, and every other test with package directories runs in none, so
-    that the directories load. Releases before v6.22 ignore the variable.
+    The `tenzir run` command looks for a workspace from its working directory
+    and then ignores `--package-dirs`. A package whose dependencies Tenzir must
+    load from its lock runs in its workspace, and every other test with package
+    directories runs in none, so that the directories load.
     """
     if env.get(WORKSPACE_ENV_VAR):
         return
@@ -2776,8 +2774,8 @@ def _fetch_locked_packages(
         return False
     print(f"{INFO} fetching locked packages of {rel_root}: {names}")
     fetch_env = dict(env)
-    # Releases before v7 reach the package commands only in the unified command
-    # interface, and v7 uses it anyway.
+    # The package commands exist only in the unified command interface, which
+    # is the default; this keeps a temporary opt-out from breaking the fetch.
     fetch_env["TENZIR_UNIFIED"] = "1"
     fetch_cmd = [*command, "package", "fetch", "--locked"]
     _CLI_LOGGER.debug("fetching locked packages: %s (cwd=%s)", shlex.join(fetch_cmd), root)
@@ -2827,11 +2825,10 @@ def ensure_settings() -> Settings:
 
 
 def apply_settings(settings: Settings) -> None:
-    global TENZIR_BINARY, TENZIR_NODE_BINARY
+    global TENZIR_BINARY
     global _settings
     _settings = settings
     TENZIR_BINARY = settings.tenzir_binary
-    TENZIR_NODE_BINARY = settings.tenzir_node_binary
     _set_project_root(settings.root)
 
 
@@ -3372,7 +3369,6 @@ def get_test_env_and_config_args(
     inputs: str | os.PathLike[str] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     config_file = test.parent / "tenzir.yaml"
-    node_config_file = test.parent / "tenzir-node.yaml"
     config_args = [f"--config={config_file}"] if config_file.exists() else []
     env = (os.environ if _CURRENT_PROJECT_ENV is None else _CURRENT_PROJECT_ENV).copy()
     if inputs is None:
@@ -3402,18 +3398,11 @@ def get_test_env_and_config_args(
         env["TENZIR_STDIN"] = str(validated_stdin)
     if config_file.exists():
         env.setdefault("TENZIR_CONFIG", str(config_file))
-    if node_config_file.exists():
-        env["TENZIR_NODE_CONFIG"] = str(node_config_file)
     if TENZIR_BINARY:
         if _CURRENT_PROJECT_ENV is None:
             env["TENZIR_BINARY"] = shlex.join(TENZIR_BINARY)
         else:
             env.setdefault("TENZIR_BINARY", shlex.join(TENZIR_BINARY))
-    if TENZIR_NODE_BINARY:
-        if _CURRENT_PROJECT_ENV is None:
-            env["TENZIR_NODE_BINARY"] = shlex.join(TENZIR_NODE_BINARY)
-        else:
-            env.setdefault("TENZIR_NODE_BINARY", shlex.join(TENZIR_NODE_BINARY))
     env["TENZIR_TEST_ROOT"] = str(ROOT)
     tmp_dir = _create_test_tmp_dir(test)
     env[TEST_TMP_ENV_VAR] = str(tmp_dir)
@@ -4501,18 +4490,11 @@ def get_version() -> str:
     # not fetched yet must not keep it from running.
     env = dict(os.environ)
     env[WORKSPACE_ENV_VAR] = _NO_WORKSPACE
-    # FIXME: Remove this fallback after tenzir/tenzir has bootstrapped onto a
-    # v6 release candidate and downstream consumers no longer need to run the
-    # harness against v5 binaries. The new probe is required by v6, but v5 only
-    # accepts it with --neo, and --neo no longer exists in v6.
-    for pipeline in (
-        "version | select version | to_stdout { write_lines }",
-        "version | select version | write_lines",
-    ):
-        try:
-            return subprocess.check_output([*command, pipeline], env=env).decode().strip()
-        except subprocess.CalledProcessError:
-            continue
+    pipeline = "version | select version | to_stdout { write_lines }"
+    try:
+        return subprocess.check_output([*command, pipeline], env=env).decode().strip()
+    except subprocess.CalledProcessError:
+        pass
     raise RuntimeError("failed to detect Tenzir version")
 
 
@@ -4861,7 +4843,6 @@ def run_simple_test(
             env=env,
             config_args=tuple(config_args),
             tenzir_binary=TENZIR_BINARY,
-            tenzir_node_binary=TENZIR_NODE_BINARY,
             fixture_options=fixture_options,
             fixture_assertions=fixture_assertions,
         )
@@ -4883,15 +4864,6 @@ def run_simple_test(
                 env["LLVM_PROFILE_FILE"] = profile_path
                 env["COVERAGE_SOURCE_DIR"] = source_dir
 
-            node_args: list[str] = []
-            fixture_names = _fixture_names(fixture_specs)
-            node_requested = "node" in fixture_names
-            if node_requested:
-                endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
-                if not endpoint:
-                    raise RuntimeError("node fixture did not provide TENZIR_NODE_CLIENT_ENDPOINT")
-                node_args.append(f"--endpoint={endpoint}")
-
             if not TENZIR_BINARY:
                 raise RuntimeError("TENZIR_BINARY must be configured before running tests")
             pipeline_test = test
@@ -4902,7 +4874,6 @@ def run_simple_test(
                 "--bare-mode",
                 "--console-verbosity=warning",
                 *config_args,
-                *node_args,
                 *package_args,
                 *args,
                 "-f",
@@ -5912,7 +5883,6 @@ class Worker:
                     env=env,
                     config_args=tuple(config_args),
                     tenzir_binary=TENZIR_BINARY,
-                    tenzir_node_binary=TENZIR_NODE_BINARY,
                     fixture_options=suite_fixture_options,
                 )
             )
@@ -6684,7 +6654,6 @@ def run_fixture_mode_cli(
                 env=env,
                 config_args=tuple(config_args),
                 tenzir_binary=TENZIR_BINARY,
-                tenzir_node_binary=TENZIR_NODE_BINARY,
                 fixture_options=fixture_options,
             )
         )

@@ -54,7 +54,6 @@ def _push_context_from_env() -> Token[Any] | None:
     config_args = tuple(str(arg) for arg in config_args_raw)
     env = dict(os.environ)
     tenzir_binary_str = env.get("TENZIR_PYTHON_FIXTURE_BINARY") or env.get("TENZIR_BINARY")
-    tenzir_node_binary_str = env.get("TENZIR_NODE_BINARY")
     context = _fixtures.FixtureContext(
         test=test_path,
         config=config,
@@ -62,9 +61,6 @@ def _push_context_from_env() -> Token[Any] | None:
         env=env,
         config_args=config_args,
         tenzir_binary=tuple(shlex.split(tenzir_binary_str)) if tenzir_binary_str else None,
-        tenzir_node_binary=tuple(shlex.split(tenzir_node_binary_str))
-        if tenzir_node_binary_str
-        else None,
     )
     token = _fixtures.push_context(context)
     return cast(Token[Any], token)

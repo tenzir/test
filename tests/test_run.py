@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import signal
 import subprocess
 import sys
@@ -14,7 +13,6 @@ import pytest
 
 from tenzir_test import config, hooks, run
 from tenzir_test import fixtures as fixture_api
-from tenzir_test.fixtures import node as node_fixture
 from tenzir_test.runners.runner import Runner
 
 
@@ -32,7 +30,6 @@ def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
     original_root = run.ROOT
     monkeypatch.setenv("TENZIR_TEST_ROOT", str(tmp_path))
     monkeypatch.delenv("TENZIR_BINARY", raising=False)
-    monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
 
     with pytest.raises(SystemExit) as exc:
         try:
@@ -43,7 +40,6 @@ def test_main_warns_when_outside_project_root(tmp_path, monkeypatch, capsys):
             else:
                 run._settings = None
                 run.TENZIR_BINARY = None
-                run.TENZIR_NODE_BINARY = None
                 run._set_project_root(original_root)
 
     assert exc.value.code == 1
@@ -58,7 +54,6 @@ def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, c
     original_root = run.ROOT
     monkeypatch.setenv("TENZIR_TEST_ROOT", str(tmp_path))
     monkeypatch.delenv("TENZIR_BINARY", raising=False)
-    monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
 
     with pytest.raises(SystemExit) as exc:
         try:
@@ -69,7 +64,6 @@ def test_main_warns_outside_project_root_with_selection(tmp_path, monkeypatch, c
             else:
                 run._settings = None
                 run.TENZIR_BINARY = None
-                run.TENZIR_NODE_BINARY = None
                 run._set_project_root(original_root)
 
     assert str(exc.value).startswith("error: test path `tests/sample.tql` does not exist")
@@ -89,7 +83,6 @@ def test_main_accepts_satellite_selection_without_project_root(tmp_path, monkeyp
 
     monkeypatch.setenv("TENZIR_TEST_ROOT", str(library_root))
     monkeypatch.delenv("TENZIR_BINARY", raising=False)
-    monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
     monkeypatch.chdir(library_root)
 
     try:
@@ -100,7 +93,6 @@ def test_main_accepts_satellite_selection_without_project_root(tmp_path, monkeyp
         else:
             run._settings = None
             run.TENZIR_BINARY = None
-            run.TENZIR_NODE_BINARY = None
             run._set_project_root(original_root)
 
     captured = capsys.readouterr()
@@ -122,7 +114,6 @@ def test_main_accepts_current_directory_selection_without_project_root(
 
     monkeypatch.setenv("TENZIR_TEST_ROOT", str(library_root))
     monkeypatch.delenv("TENZIR_BINARY", raising=False)
-    monkeypatch.delenv("TENZIR_NODE_BINARY", raising=False)
     monkeypatch.chdir(library_root)
 
     try:
@@ -133,7 +124,6 @@ def test_main_accepts_current_directory_selection_without_project_root(
         else:
             run._settings = None
             run.TENZIR_BINARY = None
-            run.TENZIR_NODE_BINARY = None
             run._set_project_root(original_root)
 
     captured = capsys.readouterr()
@@ -701,13 +691,11 @@ def test_worker_runs_suite_sequentially(monkeypatch: pytest.MonkeyPatch, tmp_pat
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "context"
@@ -794,13 +782,11 @@ def test_worker_suite_fixture_teardown_failure_is_reported_and_queue_continues(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "context"
@@ -877,13 +863,11 @@ def test_worker_suite_fixture_setup_failure_closes_already_entered_fixtures(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "context"
@@ -970,13 +954,11 @@ def test_worker_suite_fixture_teardown_failure_invokes_failure_hooks(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "context"
@@ -1079,13 +1061,11 @@ def test_worker_suite_hook_failure_propagates_instead_of_becoming_fixture_failur
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "context"
@@ -1146,13 +1126,11 @@ def test_worker_suite_body_exception_propagates_and_queue_stops(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "context"
@@ -1215,13 +1193,11 @@ def test_worker_runs_parallel_suite_concurrently(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "parallel"
@@ -1318,13 +1294,11 @@ def test_worker_parallel_suite_caps_executor_workers_to_jobs(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "parallel"
@@ -1400,13 +1374,11 @@ def test_worker_parallel_suite_min_jobs_guard_raises_when_underprovisioned(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "parallel"
@@ -1454,13 +1426,11 @@ def test_worker_parallel_suite_min_jobs_waits_for_required_reserved_workers(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "parallel"
@@ -1571,13 +1541,11 @@ def test_worker_parallel_suites_honor_shared_jobs_budget(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     tests_dir = tmp_path / "tests"
@@ -1674,13 +1642,11 @@ def test_worker_parallel_suite_caps_reservation_by_available_slots(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "parallel"
@@ -1773,13 +1739,11 @@ def test_workers_with_default_suite_state_do_not_stall_on_remaining_solo_tests(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     tests_dir = tmp_path / "tests"
@@ -1854,13 +1818,11 @@ def test_workers_prioritize_parallel_suites_before_standalone_tests(tmp_path: Pa
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     tests_dir = tmp_path / "tests"
@@ -1973,13 +1935,11 @@ def test_workers_hold_suite_priority_until_parallel_suite_reserves_slots(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     tests_dir = tmp_path / "tests"
@@ -2081,13 +2041,11 @@ def test_workers_do_not_start_sequential_suite_while_parallel_priority_is_pendin
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     tests_dir = tmp_path / "tests"
@@ -2207,13 +2165,11 @@ def test_worker_parallel_suite_interrupt_skips_unstarted_members(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     suite_dir = tmp_path / "tests" / "parallel"
@@ -2336,13 +2292,11 @@ def test_worker_parallel_suite_serializes_fixture_assertion_hooks(tmp_path: Path
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     run._clear_directory_config_cache()
@@ -2377,337 +2331,6 @@ def test_worker_parallel_suite_serializes_fixture_assertion_hooks(tmp_path: Path
     assert observed["max_active"] == 1
 
 
-def test_node_fixture_uses_explicit_node_config(tmp_path, monkeypatch):
-    test_path = tmp_path / "suite" / "case.tql"
-    test_path.parent.mkdir(parents=True)
-    test_path.touch()
-
-    node_config = tmp_path / "tenzir-node.yaml"
-    node_config.write_text("console-verbosity: warning\n", encoding="utf-8")
-
-    captured: dict[str, object] = {}
-
-    def fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["kwargs"] = kwargs
-        process = SimpleNamespace(
-            stdout=io.StringIO("localhost:14258\n"),
-            stderr=io.StringIO(""),
-            pid=42,
-            terminate=lambda: captured.setdefault("terminated", True),
-            wait=lambda timeout=None: captured.setdefault("waits", []).append(timeout),
-            poll=lambda: None,
-            kill=lambda: captured.setdefault("killed", True),
-        )
-        return process
-
-    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(node_fixture.os, "getpgid", lambda pid: 100)
-
-    def fake_killpg(pgid, sig):
-        raise ProcessLookupError()
-
-    monkeypatch.setattr(node_fixture.os, "killpg", fake_killpg)
-
-    env = {
-        "TENZIR_NODE_BINARY": "/usr/bin/tenzir-node",
-        "TENZIR_NODE_CONFIG": str(node_config),
-        "TENZIR_BINARY": "/usr/bin/tenzir",
-    }
-    context = fixture_api.FixtureContext(
-        test=test_path,
-        config={"timeout": 30},
-        coverage=False,
-        env=env,
-        config_args=("--config=/default/tenzir.yaml", "--package-dirs=/pkg"),
-        tenzir_binary=("/usr/bin/tenzir",),
-        tenzir_node_binary=("/usr/bin/tenzir-node",),
-    )
-
-    token = fixture_api.push_context(context)
-    try:
-        with node_fixture.node() as fixture_env:
-            assert fixture_env["TENZIR_NODE_CLIENT_ENDPOINT"] == "localhost:14258"
-            assert fixture_env["TENZIR_NODE_CLIENT_BINARY"] == "/usr/bin/tenzir"
-            assert fixture_env["TENZIR_NODE_CLIENT_TIMEOUT"] == "30"
-    finally:
-        fixture_api.pop_context(token)
-
-    cmd = captured["cmd"]
-    assert "--config=/default/tenzir.yaml" not in cmd
-    assert f"--config={node_config}" in cmd
-    assert "--package-dirs=/pkg" in cmd
-
-
-def test_node_fixture_skips_config_when_unset(monkeypatch):
-    captured: dict[str, object] = {}
-
-    def fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return SimpleNamespace(
-            stdout=io.StringIO("localhost:10000\n"),
-            stderr=io.StringIO(""),
-            pid=43,
-            terminate=lambda: None,
-            wait=lambda timeout=None: None,
-            poll=lambda: None,
-            kill=lambda: None,
-        )
-
-    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(node_fixture.os, "getpgid", lambda pid: 100)
-
-    def fake_killpg(_pgid, _sig):
-        raise ProcessLookupError()
-
-    monkeypatch.setattr(node_fixture.os, "killpg", fake_killpg)
-
-    env = {
-        "TENZIR_NODE_BINARY": "/usr/bin/tenzir-node",
-        "TENZIR_BINARY": "/usr/bin/tenzir",
-    }
-    context = fixture_api.FixtureContext(
-        test=Path("/tmp/test.tql"),
-        config={"timeout": 30},
-        coverage=False,
-        env=env,
-        config_args=("--config=/default/tenzir.yaml", "--package-dirs=/pkg"),
-        tenzir_binary=("/usr/bin/tenzir",),
-        tenzir_node_binary=("/usr/bin/tenzir-node",),
-    )
-
-    token = fixture_api.push_context(context)
-    try:
-        with node_fixture.node():
-            pass
-    finally:
-        fixture_api.pop_context(token)
-
-    cmd = captured["cmd"]
-    assert all(not arg.startswith("--config=") for arg in cmd)
-    assert "--package-dirs=/pkg" in cmd
-
-
-def test_node_fixture_adds_package_dirs_from_env(monkeypatch):
-    captured: dict[str, object] = {}
-
-    def fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return SimpleNamespace(
-            stdout=io.StringIO("localhost:20000\n"),
-            stderr=io.StringIO(""),
-            pid=44,
-            terminate=lambda: None,
-            wait=lambda timeout=None: None,
-            poll=lambda: None,
-            kill=lambda: None,
-        )
-
-    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(node_fixture.os, "getpgid", lambda pid: 100)
-
-    def fake_killpg(_pgid, _sig):
-        raise ProcessLookupError()
-
-    monkeypatch.setattr(node_fixture.os, "killpg", fake_killpg)
-
-    env = {
-        "TENZIR_NODE_BINARY": "/usr/bin/tenzir-node",
-        "TENZIR_BINARY": "/usr/bin/tenzir",
-        "TENZIR_PACKAGE_ROOT": "/pkg",
-    }
-    context = fixture_api.FixtureContext(
-        test=Path("/tmp/package-test.tql"),
-        config={"timeout": 30},
-        coverage=False,
-        env=env,
-        config_args=("--config=/default/tenzir.yaml",),
-        tenzir_binary=("/usr/bin/tenzir",),
-        tenzir_node_binary=("/usr/bin/tenzir-node",),
-    )
-
-    token = fixture_api.push_context(context)
-    try:
-        with node_fixture.node():
-            pass
-    finally:
-        fixture_api.pop_context(token)
-
-    cmd = captured["cmd"]
-    assert all(not arg.startswith("--config=") for arg in cmd)
-    package_flags = [arg for arg in cmd if arg.startswith("--package-dirs=")]
-    assert package_flags == ["--package-dirs=/pkg"]
-
-
-def test_node_fixture_deduplicates_package_dirs(monkeypatch):
-    """Verify package dirs are deduplicated when the same path appears in multiple sources."""
-    captured: dict[str, object] = {}
-
-    def fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return SimpleNamespace(
-            stdout=io.StringIO("localhost:20001\n"),
-            stderr=io.StringIO(""),
-            pid=45,
-            terminate=lambda: None,
-            wait=lambda timeout=None: None,
-            poll=lambda: None,
-            kill=lambda: None,
-        )
-
-    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(node_fixture.os, "getpgid", lambda pid: 100)
-
-    def fake_killpg(_pgid, _sig):
-        raise ProcessLookupError()
-
-    monkeypatch.setattr(node_fixture.os, "killpg", fake_killpg)
-
-    # Root, environment, and context flags merge in that order, retaining
-    # only the first occurrence even when a duplicate has a different spelling.
-    env = {
-        "TENZIR_NODE_BINARY": "/usr/bin/tenzir-node",
-        "TENZIR_BINARY": "/usr/bin/tenzir",
-        "TENZIR_PACKAGE_ROOT": "/pkg",
-        "TENZIR_PACKAGE_DIRS": "/env,/pkg,/other",
-    }
-    context = fixture_api.FixtureContext(
-        test=Path("/tmp/dedup-test.tql"),
-        config={"timeout": 30},
-        coverage=False,
-        env=env,
-        config_args=("--package-dirs=/config,/other,/pkg/../pkg,/env",),
-        tenzir_binary=("/usr/bin/tenzir",),
-        tenzir_node_binary=("/usr/bin/tenzir-node",),
-    )
-
-    token = fixture_api.push_context(context)
-    try:
-        with node_fixture.node():
-            pass
-    finally:
-        fixture_api.pop_context(token)
-
-    cmd = captured["cmd"]
-    package_flags = [arg for arg in cmd if arg.startswith("--package-dirs=")]
-    assert package_flags == ["--package-dirs=/pkg,/env,/other,/config"]
-
-
-@pytest.mark.parametrize("mode", ["sequential", "parallel"])
-def test_node_fixture_in_suite_receives_package_dirs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
-) -> None:
-    import json
-
-    from tenzir_test.runners.custom_python_fixture_runner import CustomPythonFixture
-
-    package_root = tmp_path / "pkg"
-    suite_dir = package_root / "tests" / "context"
-    tests = [suite_dir / name / "case.py" for name in ("01-first", "02-second")]
-    for index, test in enumerate(tests):
-        test.parent.mkdir(parents=True)
-        test.write_text("pass\n")
-        (test.parent / "test.yaml").write_text(
-            f"package_dirs: [../member-{index}]\ninputs: ../member-inputs-{index}\n"
-        )
-    (package_root / "package.yaml").write_text("name: pkg\n")
-    (suite_dir / "test.yaml").write_text(
-        f"suite:\n  name: context\n  mode: {mode}\nfixtures: [node]\n"
-        "package_dirs: [./suite-deps]\ninputs: ./suite-inputs\n"
-    )
-    general_config = tests[0].parent / "tenzir.yaml"
-    general_config.write_text("{}\n")
-    node_config = tests[0].parent / "tenzir-node.yaml"
-    node_config.write_text("{}\n")
-    cli = tmp_path / "cli-deps"
-    suite_dirs = f"{package_root},{suite_dir / 'suite-deps'},{cli}"
-    original_settings = run._settings
-    assert original_settings is not None
-    run.apply_settings(
-        config.Settings(
-            root=tmp_path, tenzir_binary=("tenzir",), tenzir_node_binary=("tenzir-node",)
-        )
-    )
-    monkeypatch.setattr(run, "_CLI_PACKAGES", [cli])
-    monkeypatch.setattr(run, "_CURRENT_PROJECT_ENV", None)
-    monkeypatch.setenv("TENZIR_PACKAGE_DIRS", "ambient-must-be-replaced")
-    run._clear_directory_config_cache()
-    counts = {"start": 0, "stop": 0}
-    stopped = threading.Event()
-    barrier = threading.Barrier(len(tests)) if mode == "parallel" else None
-    children: dict[Path, dict[str, str]] = {}
-
-    def fake_popen(cmd, **kwargs):
-        counts["start"] += 1
-        context = fixture_api.current_context()
-        assert context is not None
-        assert context.test == tests[0]  # Anchor at the first member, not the suite directory.
-        assert context.config["package_dirs"] == (str(suite_dir / "suite-deps"),)
-        assert context.config_args == (f"--config={general_config}", f"--package-dirs={suite_dirs}")
-        assert kwargs["cwd"] == tests[0].parent
-        assert kwargs["env"]["TENZIR_PACKAGE_DIRS"] == suite_dirs
-        assert kwargs["env"]["TENZIR_INPUTS"] == str(suite_dir / "suite-inputs")
-        assert [arg for arg in cmd if arg.startswith("--package-dirs=")] == [
-            f"--package-dirs={suite_dirs}"
-        ]
-        assert [arg for arg in cmd if arg.startswith("--config=")] == [f"--config={node_config}"]
-
-        def wait(timeout=None):
-            assert stopped.wait(timeout=5 if timeout is None else timeout)
-            return 0
-
-        return SimpleNamespace(
-            stdout=io.StringIO("localhost:10000\n"),
-            stderr=io.StringIO(""),
-            wait=wait,
-            poll=lambda: 0 if stopped.is_set() else None,
-        )
-
-    def terminate(process):
-        counts["stop"] += 1
-        stopped.set()
-        process.wait()
-
-    def execute(cmd, *, env, **kwargs):
-        test = Path(cmd[-1])
-        index = tests.index(test)
-        member_dirs = f"{package_root},{suite_dir / f'member-{index}'},{cli}"
-        assert counts == {"start": 1, "stop": 0}
-        assert env["TENZIR_PACKAGE_ROOT"] == str(package_root)
-        assert env["TENZIR_PACKAGE_DIRS"] == member_dirs
-        assert env["TENZIR_INPUTS"] == str(suite_dir / f"member-inputs-{index}")
-        assert env["TENZIR_NODE_CLIENT_ENDPOINT"] == "localhost:10000"
-        payload = json.loads(env["TENZIR_PYTHON_FIXTURE_CONTEXT"])
-        assert payload["config_args"] == [f"--package-dirs={member_dirs}"]
-        children[test] = dict(env)
-        if barrier is not None:
-            barrier.wait(timeout=5)
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
-
-    runner = CustomPythonFixture()
-    monkeypatch.setattr(run, "get_runner_for_test", lambda path: runner)
-    monkeypatch.setattr(run, "run_subprocess", execute)
-    monkeypatch.setattr(node_fixture.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(node_fixture, "_terminate_process", terminate)
-    try:
-        queue = run._build_queue_from_paths(tests, coverage=False)
-        assert len(queue) == 1
-        worker = run.Worker(queue, update=True, coverage=False, jobs=len(tests))
-        worker.start()
-        summary = worker.join()
-        assert summary.total == len(tests)
-        assert summary.failed == 0
-        assert counts == {"start": 1, "stop": 1}
-        assert set(children) == set(tests)
-        for env in children.values():
-            assert not Path(env[run.TEST_TMP_ENV_VAR]).exists()
-        assert fixture_api.current_context() is None
-    finally:
-        stopped.set()
-        run.apply_settings(original_settings)
-        run._clear_directory_config_cache()
-
-
 def test_worker_prints_passthrough_header(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2732,13 +2355,11 @@ def test_worker_prints_passthrough_header(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -2793,13 +2414,11 @@ write_json
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -2877,13 +2496,11 @@ version
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     run._clear_directory_config_cache()
@@ -2952,13 +2569,11 @@ def test_worker_retries_when_suite_fixture_assertion_fails_once(tmp_path: Path) 
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     run._clear_directory_config_cache()
@@ -3021,7 +2636,6 @@ def test_run_simple_test_runs_fixture_assertions_before_fixture_teardown(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run._clear_directory_config_cache()
     try:
@@ -3029,7 +2643,6 @@ def test_run_simple_test_runs_fixture_assertions_before_fixture_teardown(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=("tenzir",),
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         assert run.run_simple_test(test_file, update=True, output_ext="txt")
@@ -3413,13 +3026,11 @@ def test_cli_rejects_partial_suite_selection(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=project_root,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     run.refresh_runner_metadata()
@@ -4460,13 +4071,11 @@ write_json
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -4499,13 +4108,11 @@ def test_pre_compare_config_inheritance(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -4570,13 +4177,11 @@ write_json
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -4737,13 +4342,11 @@ class TestEnvSetsTenzirStdin:
         original_settings = config.Settings(
             root=run.ROOT,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
         run.apply_settings(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
 
@@ -4766,13 +4369,11 @@ class TestEnvSetsTenzirStdin:
         original_settings = config.Settings(
             root=run.ROOT,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
         run.apply_settings(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
 
@@ -4791,13 +4392,11 @@ class TestEnvSetsTenzirStdin:
         original_settings = config.Settings(
             root=run.ROOT,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
         run.apply_settings(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
 
@@ -4848,13 +4447,11 @@ class TestPathValidation:
         original_settings = config.Settings(
             root=run.ROOT,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
         run.apply_settings(
             config.Settings(
                 root=project_root,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
 
@@ -4888,13 +4485,11 @@ class TestPathValidation:
         original_settings = config.Settings(
             root=run.ROOT,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
         run.apply_settings(
             config.Settings(
                 root=project_root,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
 
@@ -4930,13 +4525,11 @@ class TestPathValidation:
         original_settings = config.Settings(
             root=run.ROOT,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
         run.apply_settings(
             config.Settings(
                 root=project_root,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
 
@@ -5334,13 +4927,11 @@ class TestExpandSuites:
         original_settings = config.Settings(
             root=run.ROOT,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
         run.apply_settings(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
 
@@ -5370,13 +4961,11 @@ class TestExpandSuites:
         original_settings = config.Settings(
             root=run.ROOT,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
         run.apply_settings(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
 
@@ -5399,13 +4988,11 @@ class TestExpandSuites:
         original_settings = config.Settings(
             root=run.ROOT,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
         run.apply_settings(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
 
@@ -5524,13 +5111,11 @@ class TestMatchPatternIntegration:
         original_settings = config.Settings(
             root=run.ROOT,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
         run.apply_settings(
             config.Settings(
                 root=info["root"],
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         run.refresh_runner_metadata()
@@ -5927,10 +5512,8 @@ def test_run_cli_reports_no_matching_run_skipped_filters(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
     monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
 
     try:
@@ -5964,7 +5547,6 @@ def test_run_cli_warns_for_parallel_suite_larger_than_jobs(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     class FakeWorker:
@@ -5982,7 +5564,6 @@ def test_run_cli_warns_for_parallel_suite_larger_than_jobs(
             return self._summary
 
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
     monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
     monkeypatch.setattr(run, "Worker", FakeWorker)
 
@@ -6015,7 +5596,6 @@ def test_run_cli_fails_fast_when_parallel_suite_min_jobs_is_unmet(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     class UnexpectedWorker:
@@ -6023,7 +5603,6 @@ def test_run_cli_fails_fast_when_parallel_suite_min_jobs_is_unmet(
             raise AssertionError("worker construction should not be reached")
 
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
     monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
     monkeypatch.setattr(run, "Worker", UnexpectedWorker)
 
@@ -6044,10 +5623,8 @@ def test_run_cli_handles_interrupt_during_version_probe(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
 
     def _raise_interrupt() -> str:
         raise subprocess.CalledProcessError(
@@ -6078,7 +5655,6 @@ def test_run_cli_wraps_fixture_unavailable_from_worker(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     class FailingWorker:
@@ -6093,7 +5669,6 @@ def test_run_cli_wraps_fixture_unavailable_from_worker(
             raise fixture_api.FixtureUnavailable("docker not found")
 
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
     monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
     monkeypatch.setattr(run, "Worker", FailingWorker)
 
@@ -6112,7 +5687,6 @@ def test_run_cli_handles_interrupt_exception_from_worker(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     class InterruptingWorker:
@@ -6133,7 +5707,6 @@ def test_run_cli_handles_interrupt_exception_from_worker(
                 raise RuntimeError("docker compose up failed (exit code 130)") from cause
 
     monkeypatch.setenv("TENZIR_BINARY", "/usr/bin/env")
-    monkeypatch.setenv("TENZIR_NODE_BINARY", "/usr/bin/env")
     monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
     monkeypatch.setattr(run, "Worker", InterruptingWorker)
 
@@ -6155,13 +5728,11 @@ def test_worker_run_skipped_reason_matches_static_skip_and_executes(tmp_path: Pa
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6212,13 +5783,11 @@ def test_worker_suite_static_skip_short_circuits_fixture_activation(tmp_path: Pa
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6267,13 +5836,11 @@ def test_worker_suite_static_skip_respects_run_skipped_selector(tmp_path: Path) 
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6318,13 +5885,11 @@ def test_worker_run_skipped_flag_matches_conditional_fixture_skip(tmp_path: Path
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6365,13 +5930,11 @@ def test_worker_run_skipped_reason_matches_conditional_skip_reason(tmp_path: Pat
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6435,13 +5998,11 @@ def test_worker_capability_unavailable_skips_suite_when_configured(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=("/usr/bin/tenzir",),
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6491,13 +6052,11 @@ def test_worker_capability_unavailable_without_skip_raises(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=("/usr/bin/tenzir",),
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6535,13 +6094,11 @@ def test_worker_capability_unavailable_respects_run_skipped_reason_selector(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=("/usr/bin/tenzir",),
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6582,13 +6139,11 @@ def test_worker_capability_unavailable_with_multi_skip_conditions(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=("/usr/bin/tenzir",),
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6628,13 +6183,11 @@ def test_worker_suite_requires_operator_requirements_are_runner_agnostic(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=("/usr/bin/tenzir",),
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6685,13 +6238,11 @@ def test_worker_fixture_unavailable_not_skipped_for_capability_only_condition(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6731,13 +6282,11 @@ def test_worker_per_test_fixture_unavailable_skip_from_frontmatter(tmp_path: Pat
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6798,13 +6347,11 @@ def test_worker_directory_fixture_unavailable_skip_with_per_test_options(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6867,13 +6414,11 @@ def test_worker_per_test_fixture_unavailable_without_skip_fails(tmp_path: Path) 
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6921,13 +6466,11 @@ def test_worker_run_skipped_matches_per_test_fixture_unavailable_skip(tmp_path: 
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -6979,13 +6522,11 @@ def test_worker_fixture_unavailable_skip_finish_hook_failure_runs_once(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7055,13 +6596,11 @@ def test_worker_fixture_unavailable_with_matching_config_marks_tests_skipped(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7111,13 +6650,11 @@ def test_worker_fixture_unavailable_without_matching_config_raises(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7165,13 +6702,11 @@ def test_worker_fixture_unavailable_reason_both_static_and_exc(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7221,13 +6756,11 @@ def test_worker_fixture_unavailable_reason_static_only(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7279,13 +6812,11 @@ def test_worker_fixture_unavailable_reason_exc_only(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7336,13 +6867,11 @@ def test_worker_fixture_unavailable_reason_neither(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7393,13 +6922,11 @@ def test_worker_fixture_unavailable_updates_runner_and_fixture_stats(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7459,13 +6986,11 @@ def test_worker_suite_fixture_unavailable_skips_tests_with_per_test_config(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7547,13 +7072,11 @@ def test_worker_suite_fixture_unavailable_ignores_first_member_frontmatter_skip(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7601,13 +7124,11 @@ def test_worker_suite_fixture_unavailable_ignores_later_member_frontmatter_skip(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 
@@ -7655,13 +7176,11 @@ def test_worker_suite_fixture_unavailable_uses_directory_skip_with_member_static
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
 

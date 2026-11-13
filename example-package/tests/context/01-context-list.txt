@@ -1,5 +1,0 @@
-{
-  num_entries: 0,
-  name: "ctx",
-  configured: true,
-}
