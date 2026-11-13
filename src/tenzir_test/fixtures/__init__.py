@@ -160,7 +160,6 @@ class Executor:
             *self.binary,
             "--bare-mode",
             "--console-verbosity=warning",
-            "--multi",
         ]
         if self.endpoint is not None:
             cmd.append(f"--endpoint={self.endpoint}")

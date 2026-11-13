@@ -1068,7 +1068,6 @@ def test_python_runner_transports_prepared_packages_to_real_child(
                 "--prefix=two words",
                 "--bare-mode",
                 "--console-verbosity=warning",
-                "--multi",
                 f"--package-dirs={child_packages}",
                 "from package_operator",
             ],
@@ -1182,7 +1181,7 @@ def test_executor_snapshots_package_dirs_from_its_binary_source(
         output = capsys.readouterr()
         assert output.out == ("ok\n" if mirror else "")
         assert output.err == ("diagnostic\n" if mirror else "")
-    expected = [*prefix, "--bare-mode", "--console-verbosity=warning", "--multi"]
+    expected = [*prefix, "--bare-mode", "--console-verbosity=warning"]
     if endpoint is not None:
         expected.append(f"--endpoint={endpoint}")
     if package_dirs:
