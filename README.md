@@ -35,11 +35,12 @@ uvx 'tenzir-test<3' --help
 
 ## 📚 Documentation
 
-Consult our [user guide](https://docs.tenzir.com/guides/testing/write-tests)
+Consult our [user guide](https://tenzir.com/docs/guides/testing/write-tests/)
 for an end-to-end walkthrough of writing tests.
 
-We also provide a dense [reference](https://docs.tenzir.com/reference/test) that
-explains concepts, configuration, multi-project execution, and CLI details.
+We also provide a dense
+[reference](https://tenzir.com/docs/reference/test-framework/) that explains
+concepts, configuration, multi-project execution, and CLI details.
 
 ## 📜 License
 

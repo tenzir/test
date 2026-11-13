@@ -73,7 +73,7 @@ Examples:
   tenzir-test --fixture mysql          Start fixture(s) in foreground mode
   tenzir-test --fixture 'kafka: {port: 9092}' --debug
 
-Documentation: https://docs.tenzir.com/reference/test-framework/
+Documentation: https://tenzir.com/docs/reference/test-framework/
 """,
 )
 @click.version_option(
