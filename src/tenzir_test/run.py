@@ -36,7 +36,7 @@ import tenzir_test.fixtures as fixtures_impl
 from . import hooks as hooks_impl
 from . import packages
 from .report import Report
-from .config import Settings, discover_settings
+from .config import Settings, discover_settings, platform_command
 from .inline_dependencies import extract_inline_dependencies, install_inline_dependencies
 from .runners import (
     ShellRunner,  # noqa: F401
@@ -2661,7 +2661,146 @@ def _prepare_package_environment(
     package_dirs = tuple(_deduplicate_package_dirs(candidates))
     if package_dirs:
         env["TENZIR_PACKAGE_DIRS"] = ",".join(package_dirs)
+    _select_workspace(package_root, package_dirs, env)
     return package_dirs
+
+
+WORKSPACE_ENV_VAR: typing.Final[str] = "TENZIR_WORKSPACE"
+_NO_WORKSPACE: typing.Final[str] = "none"
+_WARNED_IGNORED_PACKAGE_DIRS: set[Path] = set()
+_FETCHED_WORKSPACES: set[Path] = set()
+_WORKSPACE_LOCK = threading.Lock()
+# Fetching clones the repositories that locked packages come from.
+_PACKAGE_FETCH_TIMEOUT_SECONDS = 900
+
+
+def _select_workspace(
+    package_root: Path | None, package_dirs: Sequence[str], env: dict[str, str]
+) -> None:
+    """Choose the workspace that Tenzir runs the test's pipelines in.
+
+    With the unified command interface of Tenzir v7, `tenzir run` looks for a
+    workspace from its working directory and then ignores `--package-dirs`. A
+    package whose dependencies Tenzir must load from its lock runs in its
+    workspace, and every other test with package directories runs in none, so
+    that the directories load. Releases before v6.22 ignore the variable.
+    """
+    if env.get(WORKSPACE_ENV_VAR):
+        return
+    if package_root is not None:
+        root = packages.workspace_root(package_root)
+        if packages.uses_dependencies(root):
+            env[WORKSPACE_ENV_VAR] = str(root)
+            # The workspace loads its own packages, but no other directories.
+            ignored = [
+                entry for entry in package_dirs if not Path(entry).resolve().is_relative_to(root)
+            ]
+            if ignored:
+                _warn_ignored_package_dirs(root, ignored)
+            return
+    if package_dirs:
+        env[WORKSPACE_ENV_VAR] = _NO_WORKSPACE
+
+
+def _warn_ignored_package_dirs(root: Path, ignored: Sequence[str]) -> None:
+    with _WORKSPACE_LOCK:
+        if root in _WARNED_IGNORED_PACKAGE_DIRS:
+            return
+        _WARNED_IGNORED_PACKAGE_DIRS.add(root)
+    names = ", ".join(str(_relativize_path(Path(entry))) for entry in ignored)
+    with stdout_lock:
+        print(
+            f"{INFO} warning: ignoring package directories for {_describe_workspace(root)}, "
+            f"which has dependencies and therefore runs in its workspace: {names}; list these "
+            f"packages under `dependencies` in its {packages.PACKAGE_MANIFEST} instead"
+        )
+
+
+def _workspaces_for_tests(paths: Iterable[Path], env: Mapping[str, str]) -> list[Path]:
+    """Return the workspaces that the tests at `paths` run in, as far as they lock packages."""
+    chosen = env.get(WORKSPACE_ENV_VAR)
+    if chosen == _NO_WORKSPACE:
+        return []
+    if chosen:
+        return [Path(chosen).expanduser().resolve()]
+    roots: set[Path] = set()
+    package_roots: set[Path] = set()
+    for path in paths:
+        package_root = packages.find_package_root(path)
+        if package_root is not None:
+            package_roots.add(package_root)
+    for package_root in package_roots:
+        root = packages.workspace_root(package_root)
+        if packages.uses_dependencies(root):
+            roots.add(root)
+    return sorted(roots)
+
+
+def _ensure_locked_packages(paths: Iterable[Path]) -> None:
+    """Fetch the locked packages that the tests at `paths` need into the package cache.
+
+    Tenzir loads locked packages only from its cache, which `tenzir package
+    fetch` fills. This runs it for every workspace whose lock pins a package
+    that the cache lacks. A failure is no harness error: the affected tests fail
+    with Tenzir's own diagnostic.
+    """
+    ambient = os.environ if _CURRENT_PROJECT_ENV is None else _CURRENT_PROJECT_ENV
+    for root in _workspaces_for_tests(paths, ambient):
+        with _WORKSPACE_LOCK:
+            if root in _FETCHED_WORKSPACES:
+                continue
+        missing = packages.missing_locked_packages(root, ambient)
+        if missing and not _fetch_locked_packages(root, missing, ambient):
+            continue
+        with _WORKSPACE_LOCK:
+            _FETCHED_WORKSPACES.add(root)
+
+
+def _describe_workspace(root: Path) -> str:
+    relative = _relativize_path(root)
+    return root.name if relative == Path(".") else str(relative)
+
+
+def _fetch_locked_packages(
+    root: Path, missing: Sequence[packages.LockedPackage], env: Mapping[str, str]
+) -> bool:
+    rel_root = _describe_workspace(root)
+    names = ", ".join(package.describe() for package in missing)
+    hint = f"run `tenzir package fetch --locked` in {root}"
+    command = platform_command(TENZIR_BINARY)
+    if command is None:
+        print(
+            f"{INFO} warning: the package cache lacks packages that {rel_root} locks "
+            f"({names}); {hint}"
+        )
+        return False
+    print(f"{INFO} fetching locked packages of {rel_root}: {names}")
+    fetch_env = dict(env)
+    # Releases before v7 reach the package commands only in the unified command
+    # interface, and v7 uses it anyway.
+    fetch_env["TENZIR_UNIFIED"] = "1"
+    fetch_cmd = [*command, "package", "fetch", "--locked"]
+    _CLI_LOGGER.debug("fetching locked packages: %s (cwd=%s)", shlex.join(fetch_cmd), root)
+    try:
+        completed = subprocess.run(
+            fetch_cmd,
+            cwd=root,
+            env=fetch_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_PACKAGE_FETCH_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"{INFO} warning: failed to fetch locked packages of {rel_root}: {exc}; {hint}")
+        return False
+    if completed.returncode == 0:
+        return True
+    print(f"{INFO} warning: failed to fetch locked packages of {rel_root}; {hint}")
+    output = (completed.stderr or b"") + (completed.stdout or b"")
+    for line in output.decode(errors="replace").strip().splitlines():
+        print(f"{INFO}   {line}")
+    return False
 
 
 def _looks_like_project_root(path: Path) -> bool:
@@ -4358,6 +4497,10 @@ def get_version() -> str:
         "--bare-mode",
         "--console-verbosity=warning",
     ]
+    # The version needs no packages, so a workspace whose locked packages are
+    # not fetched yet must not keep it from running.
+    env = dict(os.environ)
+    env[WORKSPACE_ENV_VAR] = _NO_WORKSPACE
     # FIXME: Remove this fallback after tenzir/tenzir has bootstrapped onto a
     # v6 release candidate and downstream consumers no longer need to run the
     # harness against v5 binaries. The new probe is required by v6, but v5 only
@@ -4367,7 +4510,7 @@ def get_version() -> str:
         "version | select version | write_lines",
     ):
         try:
-            return subprocess.check_output([*command, pipeline]).decode().strip()
+            return subprocess.check_output([*command, pipeline], env=env).decode().strip()
         except subprocess.CalledProcessError:
             continue
     raise RuntimeError("failed to detect Tenzir version")
@@ -7089,6 +7232,7 @@ def run_cli(
                         version_segment = f" (v{version})" if version else ""
                         print(f"{INFO}   {count:>{count_width}}× {name}{version_segment}")
                     printed_projects += 1
+                    _ensure_locked_packages(collected_paths)
 
                     test_slots = threading.BoundedSemaphore(max(1, jobs))
                     slot_lock = threading.Lock()
