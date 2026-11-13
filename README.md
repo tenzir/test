@@ -26,6 +26,13 @@ uvx tenzir-test --help
 `uvx` downloads the newest compatible release, runs it in an isolated
 environment, and caches subsequent invocations for fast reuse.
 
+`tenzir-test` 3.0 and later require Tenzir 7 and run pipelines with
+`tenzir run`. To test against Tenzir 6, pin an earlier release:
+
+```sh
+uvx 'tenzir-test<3' --help
+```
+
 ## 📚 Documentation
 
 Consult our [user guide](https://docs.tenzir.com/guides/testing/write-tests)

@@ -68,7 +68,7 @@ def is_workspace_manifest(directory: Path) -> bool:
 
 
 def workspace_root(package_root: Path) -> Path:
-    """Return the workspace that Tenzir v7 finds for the package at `package_root`.
+    """Return the workspace that `tenzir run` finds for the package at `package_root`.
 
     A package under the `packages/` directory of a workspace belongs to that
     workspace. Any other package is a workspace of its own.

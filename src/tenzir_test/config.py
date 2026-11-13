@@ -1,26 +1,20 @@
 from __future__ import annotations
 
-import functools
 import os
 import re
 import shlex
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-# The subcommand that runs a pipeline locally. Tenzir v6.20 introduced it, and
-# from v7 on, the unified command interface sends everything else to the
-# platform CLI, so a bare `tenzir` no longer runs pipelines.
+# The subcommand that runs a pipeline locally. A bare `tenzir` runs platform
+# commands instead.
 RUN_SUBCOMMAND = "run"
 
 # The `tenzir` executable, also as a `uvx` tool with a version, such as
 # `tenzir@7.0.0` or `tenzir==7.0.0`.
 _TENZIR_EXECUTABLE = re.compile(r"tenzir(?:(?:@|==).+)?")
-
-# A first `uvx tenzir` downloads the package, so the probe must outlast that.
-_PROBE_TIMEOUT_SECONDS = 600
 
 
 @dataclass(slots=True)
@@ -29,7 +23,6 @@ class Settings:
 
     root: Path
     tenzir_binary: tuple[str, ...] | None
-    tenzir_node_binary: tuple[str, ...] | None
 
     @property
     def inputs_dir(self) -> Path:
@@ -42,78 +35,43 @@ class Settings:
         return direct
 
 
-@functools.cache
-def _supports_run_subcommand(command: tuple[str, ...]) -> bool:
-    """Return whether `command` accepts `run` as the subcommand for local pipelines.
-
-    Releases before v6.20 have no `run` subcommand and take `run --help` for a
-    malformed invocation, which fails.
-    """
-    try:
-        completed = subprocess.run(
-            [*command, RUN_SUBCOMMAND, "--help"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=_PROBE_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return completed.returncode == 0
-
-
 def _names_tenzir_executable(command: tuple[str, ...]) -> bool:
     """Return whether `command` ends with the `tenzir` executable itself."""
     return _TENZIR_EXECUTABLE.fullmatch(Path(command[-1]).name) is not None
 
 
 def _with_run_subcommand(command: tuple[str, ...]) -> tuple[str, ...]:
-    """Append `run` when `command` is the `tenzir` executable and supports it."""
-    if _names_tenzir_executable(command) and _supports_run_subcommand(command):
+    """Append `run` when `command` is the `tenzir` executable itself."""
+    if _names_tenzir_executable(command):
         return (*command, RUN_SUBCOMMAND)
     return command
 
 
-def _split_command(env_var: str, binary_name: str) -> tuple[str, ...]:
+def _split_command(env_var: str) -> tuple[str, ...]:
     try:
         parts = tuple(shlex.split(env_var))
     except ValueError as e:
-        raise ValueError(
-            f"Invalid shell syntax in environment variable for {binary_name}: {e}"
-        ) from e
+        raise ValueError(f"Invalid shell syntax in TENZIR_BINARY: {e}") from e
     if not parts:
-        raise ValueError(f"Empty command in environment variable for {binary_name}")
+        raise ValueError("Empty command in TENZIR_BINARY")
     return parts
-
-
-def _resolve_binary(
-    env_var: str | None,
-    binary_name: str,
-) -> tuple[str, ...] | None:
-    """Resolve a binary with fallback to uvx."""
-    if env_var:
-        return _split_command(env_var, binary_name)
-    which_result = shutil.which(binary_name)
-    if which_result:
-        return (which_result,)
-    if shutil.which("uvx"):
-        if binary_name == "tenzir-node":
-            return ("uvx", "--from", "tenzir", "tenzir-node")
-        return ("uvx", binary_name)
-    return None
 
 
 def _resolve_tenzir_binary(env_var: str | None) -> tuple[str, ...] | None:
     """Resolve the command that runs a pipeline locally.
 
-    When the command is the `tenzir` executable, as found on `PATH`, through
-    `uvx`, or named in `TENZIR_BINARY`, this adds the `run` subcommand if the
-    release has one. Commands that already end in `run`, or name another
+    The command comes from `TENZIR_BINARY`, else the `tenzir` on `PATH`, else
+    `uvx tenzir`. When it ends with the `tenzir` executable, this appends the
+    `run` subcommand. Commands that already end in `run`, or name another
     executable, stay as they are.
     """
-    command = _resolve_binary(env_var, "tenzir")
-    if command is None:
+    if env_var:
+        command = _split_command(env_var)
+    elif which_result := shutil.which("tenzir"):
+        command = (which_result,)
+    elif shutil.which("uvx"):
+        command = ("uvx", "tenzir")
+    else:
         return None
     return _with_run_subcommand(command)
 
@@ -145,6 +103,5 @@ def discover_settings(
     root_path = Path(chosen_root).resolve()
 
     tenzir_path = _resolve_tenzir_binary(environment.get("TENZIR_BINARY"))
-    node_path = _resolve_binary(environment.get("TENZIR_NODE_BINARY"), "tenzir-node")
 
-    return Settings(root=root_path, tenzir_binary=tenzir_path, tenzir_node_binary=node_path)
+    return Settings(root=root_path, tenzir_binary=tenzir_path)
