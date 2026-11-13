@@ -3,6 +3,8 @@ title: Support for the unified tenzir command and package dependencies
 type: feature
 authors:
   - mavam
+prs:
+  - 66
 created: 2026-11-13T11:11:14.636334Z
 ---
 
