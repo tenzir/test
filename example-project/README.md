@@ -91,10 +91,9 @@ example-project/
 - **Executor examples** (`tests/python/executor-*`): exercise the `Executor`
   helper on its own and against the project-defined HTTP fixture, with
   directory-level defaults selecting the right environments.
-- **Manual fixture control** (`tests/python/fixture-driving`): simply import the
-  `fixtures` package to trigger registration and then drive the `server` fixture
-  via `with acquire_fixture(...) as controller:` or explicit `start()`/`stop()`
-  calls.
+- **Manual fixture control** (`tests/python/fixture-driving`): drives the
+  project's `server` fixture via `with acquire_fixture(...) as controller:` or
+  explicit `start()`/`stop()` calls, without importing the `fixtures` package.
 - **Shell scenarios** (`tests/shell/http-fixture-check.sh`): show how inline
   frontmatter can request fixtures directly from shell scripts.
 - **Nested fixture options** (`tests/shell/server-fixture-options.sh`): shows a

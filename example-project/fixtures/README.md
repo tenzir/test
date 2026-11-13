@@ -7,8 +7,8 @@ edit them while iterating on harness behaviour.
 ## `__init__.py`
 
 Importing the package brings the concrete modules into scope so their
-`@fixture()` decorators run. Tests that need manual control just import the
-package (for example `import fixtures`) before acquiring controllers.
+`@fixture()` decorators run. The harness imports it for every test, including
+Python tests, so tests acquire these fixtures without importing the package.
 
 ## Inline dependencies
 
@@ -70,8 +70,8 @@ tidy shutdown logic.
 
 The `server` fixture spawns a controllable subprocess and exposes hooks:
 
-- Python-mode tests simply `import fixtures` and use `acquire_fixture("server")`
-  to obtain a controller without declaring the fixture in frontmatter.
+- Python-mode tests use `acquire_fixture("server")` to obtain a controller
+  without declaring the fixture in frontmatter.
 - Declarative tests can pass nested options, for example:
   `fixtures: [{server: {message: {greeting: world}}}]`.
 - `start()` launches the subprocess, `stop()` tears it down, and optional hooks
@@ -108,7 +108,6 @@ Python-mode scenarios can drive fixture lifecycle imperatively via
 
 ```python
 import signal
-import fixtures
 
 with acquire_fixture("server") as controller:
     controller.kill(signal.SIGTERM)  # start/stop happen automatically here

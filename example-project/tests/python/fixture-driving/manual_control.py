@@ -3,9 +3,8 @@
 
 import signal
 
-# Importing registers the fixtures defined in this example project as a side
-# effect.
-import fixtures
+# The harness registers the fixtures of this example project in the test
+# process, so the test acquires them without importing them.
 
 # Context-manager style: `with` calls start() on enter and stop() on exit.
 with acquire_fixture("server") as server:
