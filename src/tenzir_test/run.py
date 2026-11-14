@@ -1838,6 +1838,14 @@ def _normalize_suite_value(
     )
 
 
+# Keys that the frontmatter of a `.tql` test carries for its pipeline rather
+# than for the harness. The harness passes the file to Tenzir unchanged, and
+# Tenzir reads and validates these keys, so the harness neither stores nor
+# checks them. Directory configuration and the comment frontmatter of Python and
+# shell tests have no pipeline to pass them to.
+_PIPELINE_FRONTMATTER_KEYS: frozenset[str] = frozenset({"parallelism"})
+
+
 def _canonical_config_key(key: str) -> str:
     if key == "fixture":
         return "fixtures"
@@ -2258,6 +2266,12 @@ def _assign_config_option(
     }
     if origin == "directory":
         valid_keys.add("suite")
+    if canonical in _PIPELINE_FRONTMATTER_KEYS:
+        _raise_config_error(
+            location,
+            f"'{key}' configures the pipeline and is only allowed in the frontmatter of a .tql test",
+            line_number,
+        )
     if canonical not in valid_keys:
         _raise_config_error(location, f"Unknown configuration key '{key}'", line_number)
 
@@ -3556,6 +3570,9 @@ def parse_test_config(test_file: Path, coverage: bool = False) -> TestConfig:
             if not isinstance(yaml_data, dict):
                 _error("YAML frontmatter must define a mapping")
             for key, value in yaml_data.items():
+                # Left in the file for Tenzir to read.
+                if str(key) in _PIPELINE_FRONTMATTER_KEYS:
+                    continue
                 if _canonical_config_key(str(key)) == "runner":
                     explicit_test_runner = True
                 _assign_config_option(

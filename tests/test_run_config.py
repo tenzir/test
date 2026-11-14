@@ -169,6 +169,83 @@ write_json
     assert config["pre_compare"] == tuple()
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "4",
+        "max",
+        "\n  degree: 4\n  limit_partitions: 2\n  fuse: none",
+        "disabled",  # Invalid, but Tenzir says so, not the harness.
+    ],
+)
+def test_parse_test_config_leaves_pipeline_keys_to_tenzir(
+    tmp_path: Path, configured_root: Path, value: str
+) -> None:
+    test_file = tmp_path / "parallel.tql"
+    test_file.write_text(
+        f"""---
+error: true
+parallelism: {value}
+timeout: 75
+---
+
+version
+write_json
+""",
+        encoding="utf-8",
+    )
+
+    config = run.parse_test_config(test_file)
+
+    assert "parallelism" not in config
+    assert config["error"] is True
+    assert config["timeout"] == 75
+
+
+def test_parse_test_config_still_rejects_unknown_tql_keys(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    test_file = tmp_path / "unknown.tql"
+    test_file.write_text("---\nparallelism: 4\nparalelism: 4\n---\n\nversion\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc:
+        run.parse_test_config(test_file)
+
+    assert "Unknown configuration key 'paralelism'" in str(exc.value)
+
+
+def test_parse_test_config_rejects_pipeline_keys_in_directory_config(
+    tmp_path: Path, configured_root: Path
+) -> None:
+    suite_dir = tmp_path / "tests" / "parallel"
+    suite_dir.mkdir(parents=True)
+    (suite_dir / "test.yaml").write_text("parallelism: 4\n", encoding="utf-8")
+    run._clear_directory_config_cache()
+    test_file = suite_dir / "member.tql"
+    test_file.write_text("version\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc:
+        run.parse_test_config(test_file)
+
+    assert (
+        "'parallelism' configures the pipeline and is only allowed in the frontmatter of a .tql test"
+        in str(exc.value)
+    )
+
+
+@pytest.mark.parametrize("suffix", [".py", ".sh"])
+def test_parse_test_config_rejects_pipeline_keys_in_comment_frontmatter(
+    tmp_path: Path, configured_root: Path, suffix: str
+) -> None:
+    test_file = tmp_path / f"script{suffix}"
+    test_file.write_text("# parallelism: 4\necho ok\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc:
+        run.parse_test_config(test_file)
+
+    assert "'parallelism' configures the pipeline" in str(exc.value)
+
+
 def test_parse_test_config_allows_fixtures_frontmatter_without_suite(
     tmp_path: Path, configured_root: Path
 ) -> None:
