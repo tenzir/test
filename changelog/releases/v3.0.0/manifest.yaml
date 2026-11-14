@@ -1,0 +1,11 @@
+created: 2026-11-14
+title: Testing with Tenzir 7
+intro: >-
+  Tenzir Test now runs pipelines with the tenzir run command of Tenzir 7, fetches
+  the locked dependencies of a package before its tests, and gives Python tests the
+  fixtures of their project without imports. This release requires Tenzir 7 and drops
+  the built-in node fixture, so projects on Tenzir 6 should pin tenzir-test below
+  version 3.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.3.1
