@@ -3,6 +3,8 @@ title: Pipeline keys in test frontmatter
 type: feature
 authors:
   - jachris
+prs:
+  - 67
 created: 2026-11-14T15:14:43.807883Z
 ---
 
