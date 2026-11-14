@@ -113,7 +113,6 @@ class FixtureContext:
     env: dict[str, str]
     config_args: Sequence[str]
     tenzir_binary: tuple[str, ...] | None
-    tenzir_node_binary: tuple[str, ...] | None
     fixture_options: Mapping[str, Any] = field(default_factory=dict)
     fixture_assertions: Mapping[str, Any] = field(default_factory=dict)
 
@@ -129,15 +128,25 @@ logger = logging.getLogger(__name__)
 
 
 class Executor:
+    """Run Tenzir pipelines from Python tests with the harness's `tenzir` command.
+
+    The configuration comes from `env`, or from the process environment when
+    `env` is empty: the command from `TENZIR_PYTHON_FIXTURE_BINARY`, else
+    `TENZIR_BINARY`, the time budget from `TENZIR_PYTHON_FIXTURE_TIMEOUT`, the
+    package directories from `TENZIR_PACKAGE_DIRS`, and an optional
+    `--endpoint` from `TENZIR_PYTHON_FIXTURE_ENDPOINT`, which a project fixture
+    can provide.
+    """
+
     def __init__(self, env: Mapping[str, str] | None = None) -> None:
         source = env or os.environ
-        try:
-            self.binary: tuple[str, ...] = tuple(shlex.split(source["TENZIR_NODE_CLIENT_BINARY"]))
-        except KeyError as exc:  # pragma: no cover - defensive guard
-            raise RuntimeError("TENZIR_NODE_CLIENT_BINARY is not configured") from exc
+        binary = source.get("TENZIR_PYTHON_FIXTURE_BINARY") or source.get("TENZIR_BINARY")
+        if not binary:  # pragma: no cover - defensive guard
+            raise RuntimeError("TENZIR_PYTHON_FIXTURE_BINARY is not configured")
+        self.binary: tuple[str, ...] = tuple(shlex.split(binary))
         self.package_dirs: str | None = source.get("TENZIR_PACKAGE_DIRS")
-        self.endpoint: str | None = source.get("TENZIR_NODE_CLIENT_ENDPOINT")
-        timeout_raw = source.get("TENZIR_NODE_CLIENT_TIMEOUT")
+        self.endpoint: str | None = source.get("TENZIR_PYTHON_FIXTURE_ENDPOINT") or None
+        timeout_raw = source.get("TENZIR_PYTHON_FIXTURE_TIMEOUT")
         self.remaining_timeout: float = float(timeout_raw) if timeout_raw is not None else 0.0
 
     @classmethod
@@ -151,7 +160,6 @@ class Executor:
             *self.binary,
             "--bare-mode",
             "--console-verbosity=warning",
-            "--multi",
         ]
         if self.endpoint is not None:
             cmd.append(f"--endpoint={self.endpoint}")
@@ -843,6 +851,34 @@ def get_tags(name: str) -> frozenset[str]:
     return _FIXTURE_TAGS.get(name, frozenset())
 
 
+_DEFINITION_SITE_ATTR = "_tenzir_definition_site"
+
+
+def _definition_site(factory: object) -> tuple[str, str, int] | None:
+    """Return where `factory` is defined: its qualified name, file, and line.
+
+    Importing the same fixture module twice, for example once by the harness
+    and once through an explicit `import fixtures` in a test, defines the same
+    factory again at the same place.
+    """
+    try:
+        unwrapped = inspect.unwrap(typing.cast(Callable[..., Any], factory))
+    except (TypeError, ValueError):
+        unwrapped = factory
+    code = getattr(unwrapped, "__code__", None)
+    if code is None:
+        return None
+    qualname = getattr(unwrapped, "__qualname__", "")
+    return (qualname, os.path.realpath(code.co_filename), code.co_firstlineno)
+
+
+def _redefines_registered(name: str, factory: object) -> bool:
+    site = _definition_site(factory)
+    if site is None:
+        return False
+    return getattr(_FACTORIES[name], _DEFINITION_SITE_ATTR, None) == site
+
+
 def register(
     name: str | None,
     factory: _FactoryCallable,
@@ -852,8 +888,17 @@ def register(
     assertions: type | None = None,
     tags: Iterable[str] | str | None = None,
 ) -> None:
+    """Register a fixture factory under `name`.
+
+    Registering a name twice fails unless `replace` is set, or the factory is
+    the same definition again, as when its module is imported a second time.
+    """
     resolved_name = _infer_name(factory, name)
-    if resolved_name in _FACTORIES and not replace:
+    if (
+        resolved_name in _FACTORIES
+        and not replace
+        and not _redefines_registered(resolved_name, factory)
+    ):
         raise ValueError(f"fixture '{resolved_name}' already registered")
     if options is not None:
         if not isinstance(options, type) or not dataclasses.is_dataclass(options):
@@ -868,7 +913,9 @@ def register(
                 f"got {type(assertions).__name__}"
             )
     normalized_tags = _normalize_tags(tags) | _infer_tags_from_callable(factory)
-    _FACTORIES[resolved_name] = _normalize_factory(factory)
+    normalized = _normalize_factory(factory)
+    setattr(normalized, _DEFINITION_SITE_ATTR, _definition_site(factory))
+    _FACTORIES[resolved_name] = normalized
     if normalized_tags:
         _FIXTURE_TAGS[resolved_name] = normalized_tags
     else:
@@ -989,7 +1036,7 @@ def suite_scope(names: Iterable[FixtureSpec | str]) -> Iterator[dict[str, str]]:
 
 
 # Import built-in fixtures so they self-register on package import.
-from . import docker_compose, node  # noqa: F401,E402
+from . import docker_compose  # noqa: F401,E402
 
 
 __all__ = [

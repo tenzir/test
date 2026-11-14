@@ -42,7 +42,6 @@ class ShellRunner(ExtRunner):
                 env=env,
                 config_args=tuple(),
                 tenzir_binary=run_mod.TENZIR_BINARY,
-                tenzir_node_binary=run_mod.TENZIR_NODE_BINARY,
                 fixture_assertions=fixture_assertions,
             )
         )

@@ -18,7 +18,6 @@ def test_shell_runner_selected_by_default(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     try:
@@ -26,7 +25,6 @@ def test_shell_runner_selected_by_default(tmp_path: Path) -> None:
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         run.refresh_runner_metadata()
@@ -63,7 +61,6 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     try:
@@ -71,7 +68,6 @@ def test_shell_runner_executes_with_fixtures(tmp_path: Path) -> None:
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         parsed = run.parse_test_config(script)
@@ -120,7 +116,6 @@ def test_shell_runner_threads_fixture_options_into_context(tmp_path: Path) -> No
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     try:
@@ -128,7 +123,6 @@ def test_shell_runner_threads_fixture_options_into_context(tmp_path: Path) -> No
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         runner = run.ShellRunner()
@@ -180,14 +174,12 @@ def test_shell_runner_runs_fixture_assertions_while_fixtures_are_active(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     try:
         run.apply_settings(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         runner = run.ShellRunner()
@@ -209,7 +201,6 @@ def test_shell_runner_passthrough_streams_output(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     captured: dict[str, object] = {}
@@ -232,7 +223,6 @@ def test_shell_runner_passthrough_streams_output(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         previous = run.is_passthrough_enabled()
@@ -262,7 +252,6 @@ def test_shell_runner_reports_stderr_on_failure(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     class FakeCompletedProcess:
@@ -278,7 +267,6 @@ def test_shell_runner_reports_stderr_on_failure(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         runner = run.ShellRunner()
@@ -314,7 +302,6 @@ def test_shell_runner_passes_stdin_data(tmp_path: Path, monkeypatch: pytest.Monk
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     captured: dict[str, object] = {}
@@ -334,7 +321,6 @@ def test_shell_runner_passes_stdin_data(tmp_path: Path, monkeypatch: pytest.Monk
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         runner = run.ShellRunner()
@@ -360,7 +346,6 @@ def test_shell_runner_no_stdin_when_file_missing(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     captured: dict[str, object] = {}
@@ -376,7 +361,6 @@ def test_shell_runner_no_stdin_when_file_missing(
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         runner = run.ShellRunner()
@@ -408,7 +392,6 @@ def test_shell_runner_normalizes_paths_per_package(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     baselines: dict[str, str] = {}
@@ -420,7 +403,6 @@ def test_shell_runner_normalizes_paths_per_package(tmp_path: Path) -> None:
                 config.Settings(
                     root=root,
                     tenzir_binary=run.TENZIR_BINARY,
-                    tenzir_node_binary=run.TENZIR_NODE_BINARY,
                 )
             )
             runner = run.ShellRunner()
@@ -456,7 +438,6 @@ def test_shell_runner_applies_pre_compare_sort(tmp_path: Path) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     try:
@@ -464,7 +445,6 @@ def test_shell_runner_applies_pre_compare_sort(tmp_path: Path) -> None:
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         runner = run.ShellRunner()

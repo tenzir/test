@@ -16,11 +16,8 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (root / "tests").mkdir(parents=True)
     monkeypatch.chdir(root)
     monkeypatch.setenv("TENZIR_BINARY", sys.executable)
-    monkeypatch.setenv("TENZIR_NODE_BINARY", sys.executable)
     monkeypatch.setattr(run, "get_version", lambda: "0.0.0")
-    previous = config.Settings(
-        root=run.ROOT, tenzir_binary=run.TENZIR_BINARY, tenzir_node_binary=run.TENZIR_NODE_BINARY
-    )
+    previous = config.Settings(root=run.ROOT, tenzir_binary=run.TENZIR_BINARY)
     yield root
     run._clear_directory_config_cache()
     run.apply_settings(previous)

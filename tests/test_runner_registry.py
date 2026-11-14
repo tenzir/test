@@ -71,7 +71,6 @@ runners.register(FancyRunner())
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     try:
@@ -79,7 +78,6 @@ runners.register(FancyRunner())
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         run._RUNNER_LOAD_ROOTS.clear()  # type: ignore[attr-defined]
@@ -116,7 +114,6 @@ def test_default_runner_for_registered_extension(tmp_path: Path) -> None:
     original = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     try:
@@ -124,7 +121,6 @@ def test_default_runner_for_registered_extension(tmp_path: Path) -> None:
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         runners.register(runner, replace=True)
@@ -145,7 +141,6 @@ def test_missing_runner_raises(tmp_path: Path) -> None:
     original = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     try:
@@ -153,7 +148,6 @@ def test_missing_runner_raises(tmp_path: Path) -> None:
             config.Settings(
                 root=tmp_path,
                 tenzir_binary=run.TENZIR_BINARY,
-                tenzir_node_binary=run.TENZIR_NODE_BINARY,
             )
         )
         run.refresh_runner_metadata()

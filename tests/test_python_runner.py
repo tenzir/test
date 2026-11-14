@@ -27,12 +27,10 @@ def python_fixture_root(tmp_path: Path) -> Path:
     original = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     test_settings = config.Settings(
         root=tmp_path,
         tenzir_binary=run.TENZIR_BINARY or ("/usr/bin/tenzir",),
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(test_settings)
     (tmp_path / "inputs").mkdir(parents=True, exist_ok=True)
@@ -316,36 +314,6 @@ def test_python_runner_context_serializes_suite_mode(
     assert runner.run(script, update=True, coverage=False)
 
 
-def test_python_runner_sets_endpoint_for_node_fixture_spec(
-    python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    script = python_fixture_root / "python" / "fixture.py"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text('print("ok")\n', encoding="utf-8")
-    script.parent.joinpath("test.yaml").write_text(
-        "timeout: 30\nfixtures:\n  - node:\n      tls: true\n",
-        encoding="utf-8",
-    )
-
-    endpoint = "localhost:18200"
-
-    @contextmanager
-    def fake_activate(_specs):  # noqa: ANN001
-        yield {"TENZIR_NODE_CLIENT_ENDPOINT": endpoint}
-
-    monkeypatch.setattr(python_runner_impl.fixture_api, "activate", fake_activate)
-
-    def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
-        assert env["TENZIR_TEST_FIXTURES"] == "node"
-        assert env["TENZIR_PYTHON_FIXTURE_ENDPOINT"] == endpoint
-        return _DummyCompleted(stdout=b"payload", stderr=b"")
-
-    monkeypatch.setattr(run.subprocess, "run", fake_run)
-
-    runner = run.CustomPythonFixture()
-    assert runner.run(script, update=True, coverage=False)
-
-
 def test_python_runner_detects_mismatch(
     python_fixture_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -356,7 +324,7 @@ def test_python_runner_detects_mismatch(
     reference.write_bytes(b"expected")
 
     def fake_run(cmd, timeout, stdout, stderr, check, env, text=None, **kwargs):  # noqa: ANN001
-        assert env["TENZIR_NODE_CLIENT_TIMEOUT"] == "30"
+        assert env["TENZIR_PYTHON_FIXTURE_TIMEOUT"] == "30"
         assert env["TENZIR_TEST_FIXTURES"] == "sink"
         scratch = Path(env["TENZIR_TMP_DIR"])
         assert scratch.exists()
@@ -661,7 +629,6 @@ def test_acquire_fixture_uses_default_options_from_context() -> None:
         env={},
         config_args=tuple(),
         tenzir_binary=None,
-        tenzir_node_binary=None,
     )
     token = fixtures.push_context(context)
     try:
@@ -687,13 +654,19 @@ def test_acquire_fixture_uses_default_options_from_context() -> None:
 
 def test_executor_from_env() -> None:
     env = {
-        "TENZIR_NODE_CLIENT_BINARY": "/usr/bin/tenzir-node",
-        "TENZIR_NODE_CLIENT_ENDPOINT": "localhost:0",
-        "TENZIR_NODE_CLIENT_TIMEOUT": "5",
+        "TENZIR_PYTHON_FIXTURE_BINARY": "/usr/bin/tenzir run",
+        "TENZIR_PYTHON_FIXTURE_TIMEOUT": "5",
+        "TENZIR_PYTHON_FIXTURE_ENDPOINT": "localhost:0",
     }
     executor = fixtures.Executor.from_env(env)
-    assert executor.binary == ("/usr/bin/tenzir-node",)
+    assert executor.binary == ("/usr/bin/tenzir", "run")
+    assert executor.remaining_timeout == 5.0
     assert executor.endpoint == "localhost:0"
+
+
+def test_executor_falls_back_to_tenzir_binary() -> None:
+    executor = fixtures.Executor.from_env({"TENZIR_BINARY": "uvx tenzir run"})
+    assert executor.binary == ("uvx", "tenzir", "run")
 
 
 def test_fixture_decorator_registers_env() -> None:
@@ -1095,7 +1068,6 @@ def test_python_runner_transports_prepared_packages_to_real_child(
                 "--prefix=two words",
                 "--bare-mode",
                 "--console-verbosity=warning",
-                "--multi",
                 f"--package-dirs={child_packages}",
                 "from package_operator",
             ],
@@ -1156,25 +1128,26 @@ def test_executor_snapshots_package_dirs_from_its_binary_source(
 ) -> None:
     prefix = ("wrapped engine", "--label", "two words", "--package-dirs=/prefix")
     source = {
-        "TENZIR_NODE_CLIENT_BINARY": shlex.join(prefix),
-        "TENZIR_NODE_CLIENT_TIMEOUT": "5",
+        "TENZIR_PYTHON_FIXTURE_BINARY": shlex.join(prefix),
+        "TENZIR_PYTHON_FIXTURE_TIMEOUT": "5",
     }
     endpoint = "localhost:1234" if package_dirs else None
     if endpoint is not None:
-        source["TENZIR_NODE_CLIENT_ENDPOINT"] = endpoint
+        source["TENZIR_PYTHON_FIXTURE_ENDPOINT"] = endpoint
     if package_dirs is not None:
         source["TENZIR_PACKAGE_DIRS"] = package_dirs
     if source_kind == "mapping":
-        monkeypatch.setenv("TENZIR_NODE_CLIENT_BINARY", "ambient-engine")
+        monkeypatch.setenv("TENZIR_PYTHON_FIXTURE_BINARY", "ambient-engine")
         monkeypatch.setenv("TENZIR_PACKAGE_DIRS", "/ambient")
         before = source.copy()
         executor = fixtures.Executor.from_env(source)
         assert source == before
     else:
         for key in (
-            "TENZIR_NODE_CLIENT_BINARY",
-            "TENZIR_NODE_CLIENT_TIMEOUT",
-            "TENZIR_NODE_CLIENT_ENDPOINT",
+            "TENZIR_PYTHON_FIXTURE_BINARY",
+            "TENZIR_PYTHON_FIXTURE_TIMEOUT",
+            "TENZIR_PYTHON_FIXTURE_ENDPOINT",
+            "TENZIR_BINARY",
             "TENZIR_PACKAGE_DIRS",
         ):
             monkeypatch.delenv(key, raising=False)
@@ -1183,15 +1156,15 @@ def test_executor_snapshots_package_dirs_from_its_binary_source(
         executor = fixtures.Executor({}) if source_kind == "empty-mapping" else fixtures.Executor()
     # Neither later mapping changes nor process-environment changes affect the command.
     source.update(
-        TENZIR_NODE_CLIENT_BINARY="changed-engine",
+        TENZIR_PYTHON_FIXTURE_BINARY="changed-engine",
         TENZIR_PACKAGE_DIRS="/changed-mapping",
-        TENZIR_NODE_CLIENT_ENDPOINT="changed:1",
-        TENZIR_NODE_CLIENT_TIMEOUT="1",
+        TENZIR_PYTHON_FIXTURE_ENDPOINT="changed:1",
+        TENZIR_PYTHON_FIXTURE_TIMEOUT="1",
     )
-    monkeypatch.setenv("TENZIR_NODE_CLIENT_BINARY", "changed-ambient-engine")
+    monkeypatch.setenv("TENZIR_PYTHON_FIXTURE_BINARY", "changed-ambient-engine")
     monkeypatch.setenv("TENZIR_PACKAGE_DIRS", "/changed-ambient")
-    monkeypatch.setenv("TENZIR_NODE_CLIENT_ENDPOINT", "changed:2")
-    monkeypatch.setenv("TENZIR_NODE_CLIENT_TIMEOUT", "2")
+    monkeypatch.setenv("TENZIR_PYTHON_FIXTURE_ENDPOINT", "changed:2")
+    monkeypatch.setenv("TENZIR_PYTHON_FIXTURE_TIMEOUT", "2")
     calls: list[tuple[list[str], dict[str, object]]] = []
 
     def fake_run(cmd, **kwargs):  # noqa: ANN001
@@ -1208,7 +1181,7 @@ def test_executor_snapshots_package_dirs_from_its_binary_source(
         output = capsys.readouterr()
         assert output.out == ("ok\n" if mirror else "")
         assert output.err == ("diagnostic\n" if mirror else "")
-    expected = [*prefix, "--bare-mode", "--console-verbosity=warning", "--multi"]
+    expected = [*prefix, "--bare-mode", "--console-verbosity=warning"]
     if endpoint is not None:
         expected.append(f"--endpoint={endpoint}")
     if package_dirs:

@@ -19,7 +19,6 @@ def reset_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
 
     operations.update_registry_metadata(["tenzir"], ["tql"])
@@ -38,7 +37,6 @@ def test_get_test_env_sets_inputs_key(monkeypatch: pytest.MonkeyPatch, tmp_path:
         config.Settings(
             root=tmp_path,
             tenzir_binary=run.TENZIR_BINARY,
-            tenzir_node_binary=run.TENZIR_NODE_BINARY,
         )
     )
     state.refresh()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses as dc
 from pathlib import Path
 import shlex
@@ -67,11 +68,8 @@ def configured_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> typing.I
     original = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
-    test_settings = config.Settings(
-        root=tmp_path, tenzir_binary=run.TENZIR_BINARY, tenzir_node_binary=run.TENZIR_NODE_BINARY
-    )
+    test_settings = config.Settings(root=tmp_path, tenzir_binary=run.TENZIR_BINARY)
     monkeypatch.setattr(run, "_CLI_PACKAGES", [])
     monkeypatch.setattr(run, "_CURRENT_PROJECT_ENV", None)
     run.apply_settings(test_settings)
@@ -414,9 +412,6 @@ def test_get_test_env_and_config_args(configured_root: Path) -> None:
     assert args_override == [f"--config={config_file}"]
     if run.TENZIR_BINARY:
         assert env["TENZIR_BINARY"] == shlex.join(run.TENZIR_BINARY)
-    if run.TENZIR_NODE_BINARY:
-        assert env["TENZIR_NODE_BINARY"] == shlex.join(run.TENZIR_NODE_BINARY)
-    assert "TENZIR_NODE_CONFIG" not in env
     assert args == [f"--config={config_file}"]
 
 
@@ -445,22 +440,6 @@ def test_tmp_base_directory_removed_when_empty(configured_root: Path) -> None:
     expected_container = configured_root / run._TMP_ROOT_NAME
     if container_dir == expected_container:
         assert not container_dir.exists()
-
-
-def test_get_test_env_prefers_node_specific_config(configured_root: Path) -> None:
-    test_dir = configured_root / "suite"
-    test_dir.mkdir()
-    test_file = test_dir / "case.tql"
-    test_file.touch()
-    node_config = test_dir / "tenzir-node.yaml"
-    node_config.write_text("console-verbosity: warning\n", encoding="utf-8")
-    tenzir_config = test_dir / "tenzir.yaml"
-    tenzir_config.write_text("console-verbosity: info\n", encoding="utf-8")
-
-    env, args = run.get_test_env_and_config_args(test_file)
-
-    assert env["TENZIR_NODE_CONFIG"] == str(node_config)
-    assert args == [f"--config={tenzir_config}"]
 
 
 def test_directory_inputs_override(tmp_path: Path, configured_root: Path) -> None:
@@ -766,13 +745,11 @@ def test_run_simple_test_injects_package_dirs(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=package_root,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -838,13 +815,11 @@ def test_run_simple_test_merges_package_dirs_from_directory_config(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=package_root,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -901,13 +876,11 @@ def test_run_simple_test_respects_inputs_override(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=package_root,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -952,13 +925,11 @@ def test_run_simple_test_passthrough_streams_output(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -998,13 +969,11 @@ def test_run_simple_test_reports_stderr_on_failure(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -1040,13 +1009,11 @@ def test_run_simple_test_writes_stderr_before_stdout(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -1082,13 +1049,11 @@ def test_run_simple_test_writes_stderr_for_expected_error(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -1119,13 +1084,11 @@ def test_run_simple_test_suppresses_diff_on_interrupt(
     original_settings = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
     run.apply_settings(
         config.Settings(
             root=tmp_path,
             tenzir_binary=(sys.executable,),
-            tenzir_node_binary=None,
         )
     )
 
@@ -2173,11 +2136,7 @@ def test_prepare_package_environment_inputs_across_roots(
     test.write_text("version\n")
     (owner / "package.yaml").write_text("name: pkg\n")
     root = {"library": configured_root, "package": owner, "tests": owner / "tests"}[harness_root]
-    run.apply_settings(
-        config.Settings(
-            root=root, tenzir_binary=run.TENZIR_BINARY, tenzir_node_binary=run.TENZIR_NODE_BINARY
-        )
-    )
+    run.apply_settings(config.Settings(root=root, tenzir_binary=run.TENZIR_BINARY))
     expected = owner / "tests" / "inputs"
     if inputs in {"package", "nearest"}:
         expected.mkdir()
@@ -2261,7 +2220,7 @@ def test_tql_package_flag_order_and_fixture_overlay(
         counts["start"] += 1
         try:
             yield {
-                "TENZIR_NODE_CLIENT_ENDPOINT": "localhost:1234",
+                "TENZIR_ENDPOINT": "localhost:1234",
                 "TENZIR_PACKAGE_DIRS": "overlay",
             }
         finally:
@@ -2276,16 +2235,296 @@ def test_tql_package_flag_order_and_fixture_overlay(
             "--bare-mode",
             "--console-verbosity=warning",
             f"--config={general}",
-            "--endpoint=localhost:1234",
             package_flag,
             "--runner-flag",
             "-f",
             str(test),
         ]
         assert env["TENZIR_PACKAGE_DIRS"] == "overlay"
+        # A project fixture named `node` gets no special treatment.
+        assert env["TENZIR_ENDPOINT"] == "localhost:1234"
         return run.subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(run, "run_subprocess", execute)
     assert run.run_simple_test(test, update=True, args=("--runner-flag",), output_ext="txt")
     assert counts == {"start": 1, "stop": 1}
     assert fixture_api.current_context() is None
+
+
+def _make_package(directory: Path, manifest: str = "name: Package\n") -> Path:
+    test = directory / "tests" / "case.tql"
+    test.parent.mkdir(parents=True, exist_ok=True)
+    test.write_text("version\n")
+    (directory / "package.yaml").write_text(manifest)
+    return test
+
+
+_LOCK_DIGEST = "c41ccf9a03edd69e00f2af7048edde4d66e8dba686bc3d80584484c569f1dc40"
+_LOCK = (
+    "format: 1\npackages:\n"
+    f"  - id: stix\n    version: 0.0.1\n    commit: abc\n    hash: sha256:{_LOCK_DIGEST}\n"
+)
+
+
+@pytest.fixture()
+def no_ambient_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TENZIR_WORKSPACE", raising=False)
+    monkeypatch.setattr(run, "_WARNED_IGNORED_PACKAGE_DIRS", set())
+    monkeypatch.setattr(run, "_FETCHED_WORKSPACES", set())
+
+
+def test_package_without_dependencies_runs_in_no_workspace(
+    configured_root: Path, no_ambient_workspace: None
+) -> None:
+    """Package directories load only outside a workspace, so tests opt out of one."""
+    test = _make_package(configured_root / "pkg")
+    env: dict[str, str] = {}
+    assert run._prepare_package_environment(test, run.parse_test_config(test), env)
+    assert env["TENZIR_WORKSPACE"] == "none"
+
+
+def test_package_with_lock_runs_in_its_workspace(
+    configured_root: Path, no_ambient_workspace: None
+) -> None:
+    owner = configured_root / "pkg"
+    test = _make_package(owner)
+    (owner / "package.lock").write_text(_LOCK)
+    env: dict[str, str] = {}
+    assert run._prepare_package_environment(test, run.parse_test_config(test), env) == (str(owner),)
+    assert env["TENZIR_WORKSPACE"] == str(owner)
+
+
+def test_locked_package_warns_about_ignored_package_dirs(
+    configured_root: Path,
+    no_ambient_workspace: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    owner = configured_root / "pkg"
+    test = _make_package(owner, "name: Package\ndependencies:\n  stix: ^0.0.1\n")
+    (owner / "package.lock").write_text(_LOCK)
+    other = configured_root / "other"
+    _make_package(other)
+    (test.parent / "test.yaml").write_text("package-dirs: [../../other]\n")
+    for _ in range(2):
+        env: dict[str, str] = {}
+        result = run._prepare_package_environment(test, run.parse_test_config(test), env)
+        assert result == (str(owner), str(other))
+        assert env["TENZIR_WORKSPACE"] == str(owner)
+    warnings = [line for line in capsys.readouterr().out.splitlines() if "warning" in line]
+    assert len(warnings) == 1
+    assert "ignoring package directories for pkg" in warnings[0]
+    assert "because it has a package.lock: other;" in warnings[0]
+    assert warnings[0].endswith("lock these packages as dependencies instead")
+
+
+def test_unlocked_dependencies_load_from_package_dirs(
+    configured_root: Path,
+    no_ambient_workspace: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without a lock, sibling packages from package-dirs satisfy dependencies."""
+    owner = configured_root / "pkg"
+    test = _make_package(owner, "name: Package\ndependencies:\n  stix: ^0.0.1\n")
+    stix = configured_root / "stix"
+    _make_package(stix)
+    (test.parent / "test.yaml").write_text("package-dirs: [../../stix]\n")
+    env: dict[str, str] = {}
+    result = run._prepare_package_environment(test, run.parse_test_config(test), env)
+    assert result == (str(owner), str(stix))
+    assert env["TENZIR_WORKSPACE"] == "none"
+    assert "warning" not in capsys.readouterr().out
+
+
+def test_local_package_runs_in_enclosing_workspace(
+    configured_root: Path,
+    no_ambient_workspace: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = configured_root / "ws"
+    workspace.mkdir()
+    (workspace / "package.yaml").write_text("dependencies:\n  acme:\n    path: packages/acme\n")
+    test = _make_package(workspace / "packages" / "acme")
+    _make_package(workspace / "packages" / "other")
+    # The workspace loads its own packages, so naming them is no reason to warn.
+    (test.parent / "test.yaml").write_text("package-dirs: [../..]\n")
+    env: dict[str, str] = {}
+    run._prepare_package_environment(test, run.parse_test_config(test), env)
+    assert env["TENZIR_WORKSPACE"] == str(workspace)
+    assert "warning" not in capsys.readouterr().out
+
+
+def test_ambient_workspace_wins(configured_root: Path, no_ambient_workspace: None) -> None:
+    owner = configured_root / "pkg"
+    test = _make_package(owner)
+    (owner / "package.lock").write_text(_LOCK)
+    env = {"TENZIR_WORKSPACE": "/elsewhere"}
+    run._prepare_package_environment(test, run.parse_test_config(test), env)
+    assert env["TENZIR_WORKSPACE"] == "/elsewhere"
+
+
+def test_run_simple_test_passes_workspace_to_tenzir(
+    configured_root: Path, no_ambient_workspace: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = configured_root / "pkg"
+    test = _make_package(owner)
+    (owner / "package.lock").write_text(_LOCK)
+    monkeypatch.setattr(run, "TENZIR_BINARY", ("tenzir", "run"))
+    seen: dict[str, typing.Any] = {}
+
+    def execute(cmd, *, env, cwd=None, **kwargs):
+        seen.update(cmd=cmd, workspace=env.get("TENZIR_WORKSPACE"), cwd=cwd)
+        return run.subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(run, "run_subprocess", execute)
+    assert run.run_simple_test(test, update=True, output_ext="txt")
+    assert seen["cmd"][:2] == ["tenzir", "run"]
+    assert seen["workspace"] == str(owner)
+
+
+def _fake_tenzir(directory: Path, log: Path) -> Path:
+    """A `tenzir` whose `package fetch` fills the cache from the lock's hashes."""
+    script = directory / "tenzir"
+    directory.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "#!/bin/sh\n"
+        f'echo "$PWD|$TENZIR_UNIFIED|$*" >> {shlex.quote(str(log))}\n'
+        'if [ "$1 $2 $3" != "package fetch --locked" ]; then exit 2; fi\n'
+        'if [ -n "$FAIL_FETCH" ]; then echo "error: no network" >&2; exit 1; fi\n'
+        "for hash in $(sed -n 's/.*hash: sha256://p' package.lock); do\n"
+        '  mkdir -p "$XDG_CACHE_HOME/tenzir/packages/$hash"\n'
+        "done\n"
+    )
+    script.chmod(0o755)
+    return script
+
+
+def test_ensure_locked_packages_fetches_missing_packages(
+    configured_root: Path,
+    no_ambient_workspace: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    owner = configured_root / "pkg"
+    test = _make_package(owner)
+    (owner / "package.lock").write_text(_LOCK)
+    plain = _make_package(configured_root / "plain")
+    log = configured_root / "fetch.log"
+    cache = configured_root / "cache"
+    script = _fake_tenzir(configured_root / "bin", log)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setenv("TENZIR_UNIFIED", "0")
+    monkeypatch.setattr(run, "TENZIR_BINARY", (str(script), "run"))
+
+    run._ensure_locked_packages([test, plain])
+    run._ensure_locked_packages([test])
+
+    assert (cache / "tenzir" / "packages" / _LOCK_DIGEST).is_dir()
+    calls = log.read_text().splitlines()
+    assert calls == [f"{owner}|1|package fetch --locked"]
+    assert "fetching locked packages of pkg: stix 0.0.1" in capsys.readouterr().out
+
+
+def test_ensure_locked_packages_skips_fetched_packages(
+    configured_root: Path, no_ambient_workspace: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = configured_root / "pkg"
+    test = _make_package(owner)
+    (owner / "package.lock").write_text(_LOCK)
+    cache = configured_root / "cache"
+    (cache / "tenzir" / "packages" / _LOCK_DIGEST).mkdir(parents=True)
+    log = configured_root / "fetch.log"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setattr(run, "TENZIR_BINARY", (str(_fake_tenzir(configured_root / "bin", log)),))
+
+    run._ensure_locked_packages([test])
+
+    assert not log.exists()
+
+
+def test_ensure_locked_packages_reports_failed_fetch(
+    configured_root: Path,
+    no_ambient_workspace: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    owner = configured_root / "pkg"
+    test = _make_package(owner)
+    (owner / "package.lock").write_text(_LOCK)
+    log = configured_root / "fetch.log"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(configured_root / "cache"))
+    monkeypatch.setenv("FAIL_FETCH", "1")
+    monkeypatch.setattr(run, "TENZIR_BINARY", (str(_fake_tenzir(configured_root / "bin", log)),))
+
+    run._ensure_locked_packages([test])
+
+    out = capsys.readouterr().out
+    assert "failed to fetch locked packages of pkg" in out
+    assert "run `tenzir package fetch --locked`" in out
+    assert "error: no network" in out
+    assert owner not in run._FETCHED_WORKSPACES
+
+
+def test_ensure_locked_packages_without_platform_command(
+    configured_root: Path,
+    no_ambient_workspace: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    owner = configured_root / "pkg"
+    test = _make_package(owner)
+    (owner / "package.lock").write_text(_LOCK)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(configured_root / "cache"))
+    monkeypatch.setattr(run, "TENZIR_BINARY", ("/build/libexec/tenzir-engine",))
+
+    run._ensure_locked_packages([test])
+
+    out = capsys.readouterr().out
+    assert "the package cache lacks packages that pkg locks (stix 0.0.1)" in out
+    assert f"run `tenzir package fetch --locked` in {owner}" in out
+
+
+def test_ensure_locked_packages_honors_ambient_workspace(
+    configured_root: Path, no_ambient_workspace: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = configured_root / "pkg"
+    test = _make_package(owner)
+    (owner / "package.lock").write_text(_LOCK)
+    log = configured_root / "fetch.log"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(configured_root / "cache"))
+    monkeypatch.setenv("TENZIR_WORKSPACE", "none")
+    monkeypatch.setattr(run, "TENZIR_BINARY", (str(_fake_tenzir(configured_root / "bin", log)),))
+
+    run._ensure_locked_packages([test])
+
+    assert not log.exists()
+
+
+def test_get_version_runs_outside_workspaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TENZIR_WORKSPACE", "/unfetched/workspace")
+    monkeypatch.setattr(run, "TENZIR_BINARY", ("tenzir", "run"))
+    seen: dict[str, typing.Any] = {}
+
+    def check_output(cmd, *, env):
+        seen.update(cmd=cmd, workspace=env.get("TENZIR_WORKSPACE"))
+        return b"7.0.0\n"
+
+    monkeypatch.setattr(run.subprocess, "check_output", check_output)
+    assert run.get_version() == "7.0.0"
+    assert seen["cmd"][:3] == ["tenzir", "run", "--bare-mode"]
+    assert seen["workspace"] == "none"
+
+
+def test_project_fixture_may_register_as_node() -> None:
+    """No built-in fixture claims `node`, so a project can provide one."""
+    assert "node" not in fixture_api._FACTORIES  # type: ignore[attr-defined]
+
+    @contextlib.contextmanager
+    def node() -> typing.Iterator[dict[str, str]]:
+        yield {"TENZIR_ENDPOINT": "localhost:5158"}
+
+    fixture_api.register("node", node)
+    try:
+        with fixture_api.activate((FixtureSpec(name="node"),)) as env:
+            assert env == {"TENZIR_ENDPOINT": "localhost:5158"}
+    finally:
+        fixture_api._FACTORIES.pop("node", None)  # type: ignore[attr-defined]

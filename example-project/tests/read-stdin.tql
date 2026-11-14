@@ -1,3 +1,5 @@
 // Test stdin input - data piped directly as alternative to .input files
-read_ndjson
+from_stdin {
+  read_ndjson
+}
 where level != "info"

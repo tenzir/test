@@ -9,10 +9,9 @@ pieces fit together.
 
 - Python 3.12+ with [`uv`](https://docs.astral.sh/uv/) (used in the commands
   below).
-- A `tenzir` binary on your `PATH`. If not found, the harness falls back to
-  `uvx tenzir` when `uv` is installed. Set `TENZIR_BINARY` to override.
-- `tenzir-node` for scenarios that talk to a running node. Same fallback logic
-  applies via `TENZIR_NODE_BINARY`.
+- Tenzir 7: a `tenzir` binary on your `PATH`. If not found, the harness falls
+  back to `uvx tenzir` when `uv` is installed. Set `TENZIR_BINARY` to override.
+  The harness runs pipelines with `tenzir run`.
 
 ## Layout
 
@@ -34,16 +33,11 @@ example-project/
     ├── capability/
     │   ├── test.yaml
     │   └── 01-capability-check.{tql,txt}
-    ├── context/
-    │   ├── test.yaml
-    │   ├── 01-context-create.{tql,txt}
-    │   ├── 02-context-update.{tql,txt}
-    │   └── 03-context-inspect.{tql,txt}
     ├── parallel-suite/
     │   ├── test.yaml
-    │   ├── 01-publisher.{tql,txt}
-    │   ├── 02-subscriber-a.{tql,txt}
-    │   └── 03-subscriber-b.{tql,txt}
+    │   ├── 01-alpha.{tql,txt}
+    │   ├── 02-bravo.{tql,txt}
+    │   └── 03-charlie.{tql,txt}
     ├── docker-compose/
     │   ├── test.yaml
     │   ├── compose.yaml
@@ -53,7 +47,6 @@ example-project/
     ├── pre-compare-sort.{tql,txt}
     ├── http-fixture.{tql,txt}
     ├── http-fixture-assertions.{tql,txt}
-    ├── node-fixture.{tql,txt}
     ├── python/
     │   ├── pure-python/
     │   │   ├── flaky_coin.{py,txt}
@@ -62,7 +55,6 @@ example-project/
     │   ├── executor-with-http-fixture/
     │   │   ├── request.{py,txt}
     │   │   └── test.yaml
-    │   ├── executor-with-node-fixture/context-manager.{py,txt}
     │   └── fixture-driving/manual_control.{py,txt}
     └── shell/
         ├── pre-compare-sort.{sh,txt}
@@ -82,14 +74,11 @@ example-project/
   demonstrates first-class fixture validation with:
   `assertions.fixtures.http` for method/path/body/count
   checks that run after the test and fail the test on mismatch.
-- **Context suite** (`tests/context`): runs three sequential TQL programs inside
-  a suite so they share the `node` fixture and stateful context tables. Invoke
-  the directory (`uvx tenzir-test tests/context`) to exercise the full lifecycle.
 - **Parallel suite demo** (`tests/parallel-suite`): uses
-  `suite: {name: parallel-pubsub, mode: parallel}` so suite members start in
-  undefined order after fixture setup. The publisher and two subscriber tests
-  share the `node` fixture and validate publish/subscribe workflows under
-  concurrent suite execution.
+  `suite: {name: parallel-http, mode: parallel}` so suite members start in
+  undefined order after fixture setup. The three tests share one `http` fixture
+  and send their requests to it concurrently. Invoke the directory
+  (`uvx tenzir-test tests/parallel-suite`) to run the whole suite.
 - **Custom runner** (`tests/hex`): `runners/__init__.py` registers a tiny `xxd`
   runner that transforms `.xxd` inputs and compares the hex dump against a
   captured baseline.
@@ -100,12 +89,11 @@ example-project/
   capped at five attempts (`retry: 5`) that eventually reports `heads`, showing
   how the harness refires flaky logic until it stabilizes.
 - **Executor examples** (`tests/python/executor-*`): exercise the `Executor`
-  helper against the built-in `node` fixture and the project-defined HTTP
-  fixture, with directory-level defaults selecting the right environments.
-- **Manual fixture control** (`tests/python/fixture-driving`): simply import the
-  `fixtures` package to trigger registration and then drive the `server` fixture
-  via `with acquire_fixture(...) as controller:` or explicit `start()`/`stop()`
-  calls.
+  helper on its own and against the project-defined HTTP fixture, with
+  directory-level defaults selecting the right environments.
+- **Manual fixture control** (`tests/python/fixture-driving`): drives the
+  project's `server` fixture via `with acquire_fixture(...) as controller:` or
+  explicit `start()`/`stop()` calls, without importing the `fixtures` package.
 - **Shell scenarios** (`tests/shell/http-fixture-check.sh`): show how inline
   frontmatter can request fixtures directly from shell scripts.
 - **Nested fixture options** (`tests/shell/server-fixture-options.sh`): shows a

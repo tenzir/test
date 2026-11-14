@@ -32,7 +32,6 @@ class DiffRunner(TqlRunner):
                 test_config.get("assertions"),
             )
         )
-        node_requested = any(spec.name == "node" for spec in fixtures)
         timeout = typing.cast(int, test_config["timeout"])
 
         context_token = fixture_api.push_context(
@@ -43,7 +42,6 @@ class DiffRunner(TqlRunner):
                 env=env,
                 config_args=tuple(config_args),
                 tenzir_binary=run_mod.TENZIR_BINARY,
-                tenzir_node_binary=run_mod.TENZIR_NODE_BINARY,
                 fixture_assertions=fixture_assertions,
             )
         )
@@ -51,15 +49,6 @@ class DiffRunner(TqlRunner):
             with fixture_api.activate(fixtures) as fixture_env:
                 env.update(fixture_env)
                 run_mod._apply_fixture_env(env, fixtures)
-
-                node_args: list[str] = []
-                if node_requested:
-                    endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
-                    if not endpoint:
-                        raise RuntimeError(
-                            "node fixture did not provide TENZIR_NODE_CLIENT_ENDPOINT"
-                        )
-                    node_args.append(f"--endpoint={endpoint}")
 
                 binary = run_mod.TENZIR_BINARY
                 if not binary:
@@ -79,7 +68,7 @@ class DiffRunner(TqlRunner):
                     )
 
                 unoptimized = run_mod.run_subprocess(
-                    [*base_cmd, self._a, *node_args, "-f", str(test)],
+                    [*base_cmd, self._a, "-f", str(test)],
                     timeout=timeout,
                     env=env,
                     capture_output=True,
@@ -93,7 +82,7 @@ class DiffRunner(TqlRunner):
                     )
 
                 optimized = run_mod.run_subprocess(
-                    [*base_cmd, self._b, *node_args, "-f", str(test)],
+                    [*base_cmd, self._b, "-f", str(test)],
                     timeout=timeout,
                     env=env,
                     capture_output=True,

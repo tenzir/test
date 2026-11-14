@@ -12,7 +12,6 @@ import dataclasses
 import difflib
 import enum
 import fnmatch
-import importlib.util
 import logging
 import os
 import re
@@ -34,9 +33,10 @@ import yaml
 
 import tenzir_test.fixtures as fixtures_impl
 from . import hooks as hooks_impl
+from . import _project_fixtures as project_fixtures_impl
 from . import packages
 from .report import Report
-from .config import Settings, discover_settings
+from .config import Settings, discover_settings, platform_command
 from .inline_dependencies import extract_inline_dependencies, install_inline_dependencies
 from .runners import (
     ShellRunner,  # noqa: F401
@@ -522,7 +522,6 @@ def detect_execution_mode(root: Path) -> tuple[ExecutionMode, Path | None]:
 
 _settings: Settings | None = None
 TENZIR_BINARY: tuple[str, ...] | None = None
-TENZIR_NODE_BINARY: tuple[str, ...] | None = None
 ROOT: Path = Path.cwd()
 INPUTS_DIR: Path = ROOT / "inputs"
 EXECUTION_MODE: ExecutionMode = ExecutionMode.PROJECT
@@ -2661,7 +2660,146 @@ def _prepare_package_environment(
     package_dirs = tuple(_deduplicate_package_dirs(candidates))
     if package_dirs:
         env["TENZIR_PACKAGE_DIRS"] = ",".join(package_dirs)
+    _select_workspace(package_root, package_dirs, env)
     return package_dirs
+
+
+WORKSPACE_ENV_VAR: typing.Final[str] = "TENZIR_WORKSPACE"
+_NO_WORKSPACE: typing.Final[str] = "none"
+_WARNED_IGNORED_PACKAGE_DIRS: set[Path] = set()
+_FETCHED_WORKSPACES: set[Path] = set()
+_WORKSPACE_LOCK = threading.Lock()
+# Fetching clones the repositories that locked packages come from.
+_PACKAGE_FETCH_TIMEOUT_SECONDS = 900
+
+
+def _select_workspace(
+    package_root: Path | None, package_dirs: Sequence[str], env: dict[str, str]
+) -> None:
+    """Choose the workspace that Tenzir runs the test's pipelines in.
+
+    The `tenzir run` command looks for a workspace from its working directory
+    and then ignores `--package-dirs`. A workspace, or a package with a lock,
+    runs in its workspace, so that Tenzir loads the locked dependencies. Every
+    other test with package directories runs in none, so that the directories
+    load.
+    """
+    if env.get(WORKSPACE_ENV_VAR):
+        return
+    if package_root is not None:
+        root = packages.workspace_root(package_root)
+        if packages.uses_dependencies(root):
+            env[WORKSPACE_ENV_VAR] = str(root)
+            # The workspace loads its own packages, but no other directories.
+            ignored = [
+                entry for entry in package_dirs if not Path(entry).resolve().is_relative_to(root)
+            ]
+            if ignored:
+                _warn_ignored_package_dirs(root, ignored)
+            return
+    if package_dirs:
+        env[WORKSPACE_ENV_VAR] = _NO_WORKSPACE
+
+
+def _warn_ignored_package_dirs(root: Path, ignored: Sequence[str]) -> None:
+    with _WORKSPACE_LOCK:
+        if root in _WARNED_IGNORED_PACKAGE_DIRS:
+            return
+        _WARNED_IGNORED_PACKAGE_DIRS.add(root)
+    names = ", ".join(str(_relativize_path(Path(entry))) for entry in ignored)
+    with stdout_lock:
+        print(
+            f"{INFO} warning: ignoring package directories for {_describe_workspace(root)}, "
+            f"which runs in its workspace because it has a {packages.PACKAGE_LOCKFILE}: "
+            f"{names}; lock these packages as dependencies instead"
+        )
+
+
+def _workspaces_for_tests(paths: Iterable[Path], env: Mapping[str, str]) -> list[Path]:
+    """Return the workspaces that the tests at `paths` run in, as far as they lock packages."""
+    chosen = env.get(WORKSPACE_ENV_VAR)
+    if chosen == _NO_WORKSPACE:
+        return []
+    if chosen:
+        return [Path(chosen).expanduser().resolve()]
+    roots: set[Path] = set()
+    package_roots: set[Path] = set()
+    for path in paths:
+        package_root = packages.find_package_root(path)
+        if package_root is not None:
+            package_roots.add(package_root)
+    for package_root in package_roots:
+        root = packages.workspace_root(package_root)
+        if packages.uses_dependencies(root):
+            roots.add(root)
+    return sorted(roots)
+
+
+def _ensure_locked_packages(paths: Iterable[Path]) -> None:
+    """Fetch the locked packages that the tests at `paths` need into the package cache.
+
+    Tenzir loads locked packages only from its cache, which `tenzir package
+    fetch` fills. This runs it for every workspace whose lock pins a package
+    that the cache lacks. A failure is no harness error: the affected tests fail
+    with Tenzir's own diagnostic.
+    """
+    ambient = os.environ if _CURRENT_PROJECT_ENV is None else _CURRENT_PROJECT_ENV
+    for root in _workspaces_for_tests(paths, ambient):
+        with _WORKSPACE_LOCK:
+            if root in _FETCHED_WORKSPACES:
+                continue
+        missing = packages.missing_locked_packages(root, ambient)
+        if missing and not _fetch_locked_packages(root, missing, ambient):
+            continue
+        with _WORKSPACE_LOCK:
+            _FETCHED_WORKSPACES.add(root)
+
+
+def _describe_workspace(root: Path) -> str:
+    relative = _relativize_path(root)
+    return root.name if relative == Path(".") else str(relative)
+
+
+def _fetch_locked_packages(
+    root: Path, missing: Sequence[packages.LockedPackage], env: Mapping[str, str]
+) -> bool:
+    rel_root = _describe_workspace(root)
+    names = ", ".join(package.describe() for package in missing)
+    hint = f"run `tenzir package fetch --locked` in {root}"
+    command = platform_command(TENZIR_BINARY)
+    if command is None:
+        print(
+            f"{INFO} warning: the package cache lacks packages that {rel_root} locks "
+            f"({names}); {hint}"
+        )
+        return False
+    print(f"{INFO} fetching locked packages of {rel_root}: {names}")
+    fetch_env = dict(env)
+    # The package commands exist only in the unified command interface, which
+    # is the default; this keeps a temporary opt-out from breaking the fetch.
+    fetch_env["TENZIR_UNIFIED"] = "1"
+    fetch_cmd = [*command, "package", "fetch", "--locked"]
+    _CLI_LOGGER.debug("fetching locked packages: %s (cwd=%s)", shlex.join(fetch_cmd), root)
+    try:
+        completed = subprocess.run(
+            fetch_cmd,
+            cwd=root,
+            env=fetch_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_PACKAGE_FETCH_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"{INFO} warning: failed to fetch locked packages of {rel_root}: {exc}; {hint}")
+        return False
+    if completed.returncode == 0:
+        return True
+    print(f"{INFO} warning: failed to fetch locked packages of {rel_root}; {hint}")
+    output = (completed.stderr or b"") + (completed.stdout or b"")
+    for line in output.decode(errors="replace").strip().splitlines():
+        print(f"{INFO}   {line}")
+    return False
 
 
 def _looks_like_project_root(path: Path) -> bool:
@@ -2688,30 +2826,15 @@ def ensure_settings() -> Settings:
 
 
 def apply_settings(settings: Settings) -> None:
-    global TENZIR_BINARY, TENZIR_NODE_BINARY
+    global TENZIR_BINARY
     global _settings
     _settings = settings
     TENZIR_BINARY = settings.tenzir_binary
-    TENZIR_NODE_BINARY = settings.tenzir_node_binary
     _set_project_root(settings.root)
 
 
 def _import_module_from_path(module_name: str, path: Path, *, package: bool = False) -> ModuleType:
-    if package:
-        search_locations = [str(path.parent)]
-    else:
-        search_locations = None
-    spec = importlib.util.spec_from_file_location(
-        module_name,
-        path,
-        submodule_search_locations=search_locations,
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(f"could not load fixture module from {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
+    return project_fixtures_impl.import_module_from_path(module_name, path, package=package)
 
 
 def _hooks_disabled(no_hooks: bool = False) -> bool:
@@ -3141,9 +3264,6 @@ def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
     if resolved_root in _FIXTURE_LOAD_ROOTS:
         return
 
-    fixtures_package = root / "fixtures"
-    fixtures_file = root / "fixtures.py"
-
     def _import_fixture_module(
         module_name: str, path: Path, *, package: bool = False
     ) -> ModuleType:
@@ -3167,20 +3287,12 @@ def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
             context="project fixtures",
         )
 
-        alias_target = None
-        if fixtures_package.is_dir():
-            init_file = fixtures_package / "__init__.py"
-            if init_file.exists():
-                alias_target = _import_fixture_module(
-                    "_tenzir_project_fixtures", init_file, package=True
-                )
-            else:
-                for candidate in sorted(fixtures_package.glob("*.py")):
-                    alias_target = _import_fixture_module(
-                        f"_tenzir_project_fixture_{candidate.stem}", candidate
-                    )
-        elif fixtures_file.exists():
-            alias_target = _import_fixture_module("_tenzir_project_fixtures", fixtures_file)
+        alias_target = project_fixtures_impl.import_project_fixtures(
+            root,
+            importer=lambda name, path, package: _import_fixture_module(
+                name, path, package=package
+            ),
+        )
         if alias_target is not None and expose_namespace:
             if "fixtures" not in sys.modules:
                 sys.modules["fixtures"] = alias_target
@@ -3192,6 +3304,26 @@ def _load_project_fixtures(root: Path, *, expose_namespace: bool) -> None:
         raise RuntimeError(f"failed to load fixtures from {resolved_root}: {exc}") from exc
 
     _FIXTURE_LOAD_ROOTS.add(resolved_root)
+
+
+def _python_fixture_roots() -> tuple[Path, ...]:
+    """Return the projects whose fixtures a Python test process imports.
+
+    These are the root project and, for a satellite, the satellite itself, as
+    far as the harness imported their fixtures. The test's own project comes
+    last.
+    """
+    candidates = [ROOT] if _settings is None else [_settings.root, ROOT]
+    roots: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in _FIXTURE_LOAD_ROOTS and resolved not in roots:
+            roots.append(resolved)
+    own = ROOT.resolve()
+    if own in roots:
+        roots.remove(own)
+        roots.append(own)
+    return tuple(roots)
 
 
 def _load_project_runners(root: Path, *, expose_namespace: bool) -> None:
@@ -3233,7 +3365,6 @@ def get_test_env_and_config_args(
     inputs: str | os.PathLike[str] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     config_file = test.parent / "tenzir.yaml"
-    node_config_file = test.parent / "tenzir-node.yaml"
     config_args = [f"--config={config_file}"] if config_file.exists() else []
     env = (os.environ if _CURRENT_PROJECT_ENV is None else _CURRENT_PROJECT_ENV).copy()
     if inputs is None:
@@ -3263,18 +3394,11 @@ def get_test_env_and_config_args(
         env["TENZIR_STDIN"] = str(validated_stdin)
     if config_file.exists():
         env.setdefault("TENZIR_CONFIG", str(config_file))
-    if node_config_file.exists():
-        env["TENZIR_NODE_CONFIG"] = str(node_config_file)
     if TENZIR_BINARY:
         if _CURRENT_PROJECT_ENV is None:
             env["TENZIR_BINARY"] = shlex.join(TENZIR_BINARY)
         else:
             env.setdefault("TENZIR_BINARY", shlex.join(TENZIR_BINARY))
-    if TENZIR_NODE_BINARY:
-        if _CURRENT_PROJECT_ENV is None:
-            env["TENZIR_NODE_BINARY"] = shlex.join(TENZIR_NODE_BINARY)
-        else:
-            env.setdefault("TENZIR_NODE_BINARY", shlex.join(TENZIR_NODE_BINARY))
     env["TENZIR_TEST_ROOT"] = str(ROOT)
     tmp_dir = _create_test_tmp_dir(test)
     env[TEST_TMP_ENV_VAR] = str(tmp_dir)
@@ -4358,18 +4482,15 @@ def get_version() -> str:
         "--bare-mode",
         "--console-verbosity=warning",
     ]
-    # FIXME: Remove this fallback after tenzir/tenzir has bootstrapped onto a
-    # v6 release candidate and downstream consumers no longer need to run the
-    # harness against v5 binaries. The new probe is required by v6, but v5 only
-    # accepts it with --neo, and --neo no longer exists in v6.
-    for pipeline in (
-        "version | select version | to_stdout { write_lines }",
-        "version | select version | write_lines",
-    ):
-        try:
-            return subprocess.check_output([*command, pipeline]).decode().strip()
-        except subprocess.CalledProcessError:
-            continue
+    # The version needs no packages, so a workspace whose locked packages are
+    # not fetched yet must not keep it from running.
+    env = dict(os.environ)
+    env[WORKSPACE_ENV_VAR] = _NO_WORKSPACE
+    pipeline = "version | select version | to_stdout { write_lines }"
+    try:
+        return subprocess.check_output([*command, pipeline], env=env).decode().strip()
+    except subprocess.CalledProcessError:
+        pass
     raise RuntimeError("failed to detect Tenzir version")
 
 
@@ -4718,7 +4839,6 @@ def run_simple_test(
             env=env,
             config_args=tuple(config_args),
             tenzir_binary=TENZIR_BINARY,
-            tenzir_node_binary=TENZIR_NODE_BINARY,
             fixture_options=fixture_options,
             fixture_assertions=fixture_assertions,
         )
@@ -4740,15 +4860,6 @@ def run_simple_test(
                 env["LLVM_PROFILE_FILE"] = profile_path
                 env["COVERAGE_SOURCE_DIR"] = source_dir
 
-            node_args: list[str] = []
-            fixture_names = _fixture_names(fixture_specs)
-            node_requested = "node" in fixture_names
-            if node_requested:
-                endpoint = env.get("TENZIR_NODE_CLIENT_ENDPOINT")
-                if not endpoint:
-                    raise RuntimeError("node fixture did not provide TENZIR_NODE_CLIENT_ENDPOINT")
-                node_args.append(f"--endpoint={endpoint}")
-
             if not TENZIR_BINARY:
                 raise RuntimeError("TENZIR_BINARY must be configured before running tests")
             pipeline_test = test
@@ -4759,7 +4870,6 @@ def run_simple_test(
                 "--bare-mode",
                 "--console-verbosity=warning",
                 *config_args,
-                *node_args,
                 *package_args,
                 *args,
                 "-f",
@@ -5769,7 +5879,6 @@ class Worker:
                     env=env,
                     config_args=tuple(config_args),
                     tenzir_binary=TENZIR_BINARY,
-                    tenzir_node_binary=TENZIR_NODE_BINARY,
                     fixture_options=suite_fixture_options,
                 )
             )
@@ -6541,7 +6650,6 @@ def run_fixture_mode_cli(
                 env=env,
                 config_args=tuple(config_args),
                 tenzir_binary=TENZIR_BINARY,
-                tenzir_node_binary=TENZIR_NODE_BINARY,
                 fixture_options=fixture_options,
             )
         )
@@ -7089,6 +7197,7 @@ def run_cli(
                         version_segment = f" (v{version})" if version else ""
                         print(f"{INFO}   {count:>{count_width}}× {name}{version_segment}")
                     printed_projects += 1
+                    _ensure_locked_packages(collected_paths)
 
                     test_slots = threading.BoundedSemaphore(max(1, jobs))
                     slot_lock = threading.Lock()

@@ -30,7 +30,7 @@ dependencies = [
 Homepage = "https://github.com/tenzir/test"
 Repository = "https://github.com/tenzir/test"
 "Bug Tracker" = "https://github.com/tenzir/test/issues"
-Documentation = "https://docs.tenzir.com"
+Documentation = "https://tenzir.com/docs/"
 
 [project.scripts]
 tenzir-test = "tenzir_test.cli:main"

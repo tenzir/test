@@ -63,7 +63,7 @@ Examples:
                                        Run tests matching either pattern
   tenzir-test tests/ctx/ --match '*create*'
                                        Intersect directory with pattern
-  tenzir-test --fixture-name node      Run tests requesting a fixture by name
+  tenzir-test --fixture-name mysql     Run tests requesting a fixture by name
   tenzir-test --fixture-tag container  Run tests using tagged fixtures
   tenzir-test --run-skipped            Run all skipped tests unconditionally
   tenzir-test --run-skipped-reason maintenance
@@ -73,7 +73,7 @@ Examples:
   tenzir-test --fixture mysql          Start fixture(s) in foreground mode
   tenzir-test --fixture 'kafka: {port: 9092}' --debug
 
-Documentation: https://docs.tenzir.com/reference/test-framework/
+Documentation: https://tenzir.com/docs/reference/test-framework/
 """,
 )
 @click.version_option(

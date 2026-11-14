@@ -17,7 +17,6 @@ def _restore_settings(
         return
     run._settings = None
     run.TENZIR_BINARY = None
-    run.TENZIR_NODE_BINARY = None
     run._set_project_root(original_root)
 
 

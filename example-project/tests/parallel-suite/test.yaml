@@ -1,6 +1,7 @@
+# All members share one `http` fixture and start concurrently once it is up.
 suite:
-  name: parallel-pubsub
+  name: parallel-http
   mode: parallel
-timeout: 90
+timeout: 60
 fixtures:
-  - node
+  - http

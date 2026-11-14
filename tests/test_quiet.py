@@ -16,11 +16,8 @@ def configured_root(tmp_path: Path) -> Iterator[Path]:
     original = config.Settings(
         root=run.ROOT,
         tenzir_binary=run.TENZIR_BINARY,
-        tenzir_node_binary=run.TENZIR_NODE_BINARY,
     )
-    run.apply_settings(
-        config.Settings(root=tmp_path, tenzir_binary=(sys.executable,), tenzir_node_binary=None)
-    )
+    run.apply_settings(config.Settings(root=tmp_path, tenzir_binary=(sys.executable,)))
     try:
         yield tmp_path
     finally:

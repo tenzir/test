@@ -16,14 +16,3 @@ name: Example Package
 description: |
   This is an example package that demonstrates how to write tests for Tenzir
   packages.
-
-# Contexts live inside a node. The test harness passes --package-dirs to the node
-# fixture, making contexts also available in the fixture. The harness also
-# passes --package-dirs to the Tenzir running that invokes the the `tenzir`
-# binary. In this case the context configuration gets ignored.
-contexts:
-  ctx:
-    type: lookup-table
-    description: |
-      An example context that gets installed by the test framework when the
-      harness passes --package-dirs to the node fixture.

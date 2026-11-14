@@ -35,7 +35,6 @@ def _fixture_context(test_file: Path) -> Iterator[None]:
             env={},
             config_args=tuple(),
             tenzir_binary=None,
-            tenzir_node_binary=None,
             fixture_options={},
         )
     )
